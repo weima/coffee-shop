@@ -1,4 +1,4 @@
-# Coffee Time Vocabulary
+# Coffee Shop Vocabulary
 
 Draft language for the small Pi-worker dispatcher. Coffee and snack metaphors name product concepts; technical terms such as **Pi process**, **Git worktree**, **status**, and **report** keep their ordinary meanings.
 
@@ -6,8 +6,8 @@ Draft language for the small Pi-worker dispatcher. Coffee and snack metaphors na
 
 | Term | Definition | Aliases to avoid |
 | --- | --- | --- |
-| **Order** | The outcome a developer asks Coffee Time to deliver. | Request, ticket (unless referring to an external issue) |
-| **Recipe** | The explicit breakdown of an Order into independent units of work. | Plan, task list (use these only for their ordinary meanings outside Coffee Time) |
+| **Order** | The outcome a developer asks Coffee Shop to deliver. | Request, ticket (unless referring to an external issue) |
+| **Recipe** | The explicit breakdown of an Order into independent units of work. | Plan, task list (use these only for their ordinary meanings outside Coffee Shop) |
 | **Brew** | One execution of a Recipe, including dispatch, status tracking, and result collection. | Run, session (as names for the overall lifecycle) |
 | **Shot** | One unit of work from a Recipe, assigned to one Pi worker. | Job, subtask, lane |
 | **Barista** | The active Pi session that interprets an Order, prepares its Recipe, and reviews returned work. | Coordinator agent, first mate |
@@ -27,7 +27,7 @@ These are working mappings for the option-2 design, not a requirement to use eve
 | Coffee-shop term | Software concept | Fit |
 | --- | --- | --- |
 | **Beans** | The target repository and the context a Worker needs to work on it. | Good input metaphor; keep “repository” in technical interfaces. |
-| **Menu** | Coffee Time's CLI commands and supported options. | Good user-interface metaphor. |
+| **Menu** | Coffee Shop's CLI commands and supported options. | Good user-interface metaphor. |
 | **Grinder** | The Barista's step of splitting an Order into independent Shots. | Useful as a process name only if a distinct decomposition step exists. |
 | **Machine** | The Pi CLI runtime used to launch Workers. | Clear enough in architecture prose; use “Pi” in implementation details. |
 | **Filter** | Automated checks that a returned change must pass or report. | Good verification metaphor; a failing check does not silently discard work. |
@@ -45,7 +45,7 @@ These are working mappings for the option-2 design, not a requirement to use eve
 - A **Brew** fulfills one **Order** by executing its **Recipe** and produces one **Oreo** for review.
 - A **Recipe** contains one or more **Shots**; a Shot is the smallest independently dispatched unit.
 - Each **Shot** is assigned to one **Worker** and one **Station**; a Worker does not share a Station with another Worker during a Brew.
-- The **Barista** uses the **Beans**, prepares the Recipe, reviews the collected Shot results, and prepares the **Oreo**; Coffee Time does not merge or publish them automatically.
+- The **Barista** uses the **Beans**, prepares the Recipe, reviews the collected Shot results, and prepares the **Oreo**; Coffee Shop does not merge or publish them automatically.
 - The **Register** tracks current Brew and Shot status; the **Receipt** records status events; the **Oreo** summarizes the outcome for human review.
 - The **Scale** bounds concurrent Workers. The **Filter** reports verification results before an Oreo is served.
 
@@ -61,7 +61,7 @@ These are working mappings for the option-2 design, not a requirement to use eve
 
 ## Coffee-shop word bank
 
-Candidate words for future product vocabulary. These are a naming palette, not additional software concepts; only terms defined above have a Coffee Time meaning. The list covers common shop items and is not an exhaustive inventory of every café.
+Candidate words for future product vocabulary. These are a naming palette, not additional software concepts; only terms defined above have a Coffee Shop meaning. The list covers common shop items and is not an exhaustive inventory of every café.
 
 - **Drinks:** espresso, ristretto, lungo, americano, cappuccino, latte, flat white, mocha, macchiato, cortado, cold brew, drip coffee, pour-over, tea, chai, matcha, hot chocolate.
 - **Ingredients:** coffee beans, grounds, roast, water, milk, oat milk, cream, foam, sugar, syrup, cocoa, cinnamon, ice.

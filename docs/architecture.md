@@ -1,13 +1,13 @@
-# Coffee Time Architecture
+# Coffee Shop Architecture
 
-Coffee Time is a local Odin dispatcher. The active Pi session decides how to divide an Order. Coffee Time starts and tracks Pi workers; it does not act as another AI coordinator.
+Coffee Shop is a local Odin dispatcher. The active Pi session decides how to divide an Order. Coffee Shop starts and tracks Pi workers; it does not act as another AI coordinator.
 
 ## Architecture diagram
 
 ```mermaid
 flowchart TD
     Dev[Developer] -->|Order and review| Barista[Active Pi session<br/>Barista]
-    Barista -->|Recipe: order plus Shots| CLI[Coffee Time CLI<br/>Odin]
+    Barista -->|Recipe: order plus Shots| CLI[Coffee Shop CLI<br/>Odin]
     Beans[Target repository<br/>and task context] --> CLI
     CLI --> Register[Register<br/>current Brew and Shot status]
     CLI --> Receipt[Receipt<br/>append-only event history]
@@ -33,7 +33,7 @@ flowchart TD
 | Component | Responsibility |
 | --- | --- |
 | **Barista** | The active Pi session. It interprets an Order, writes a Recipe, and reviews results. |
-| **Coffee Time CLI** | The Odin program. It validates inputs, creates Stations, starts Workers, records state, and collects results. |
+| **Coffee Shop CLI** | The Odin program. It validates inputs, creates Stations, starts Workers, records state, and collects results. |
 | **Beans** | The target repository and task context supplied to workers. |
 | **Recipe** | An Order and its explicit list of Shots. The Barista owns task decomposition. |
 | **Shot** | One unit of work with one prompt and one Worker. |
@@ -58,7 +58,7 @@ flowchart TD
 
 - A Worker never shares a Station with another Worker in the same Brew.
 - The CLI passes the Pi executable and arguments as separate process arguments. It does not build shell commands from task text.
-- Coffee Time reports a missing or failed Worker as incomplete. It does not treat an unreadable state record as success.
+- Coffee Shop reports a missing or failed Worker as incomplete. It does not treat an unreadable state record as success.
 - Workers do not merge or publish their changes. A person reviews the Oreo and decides what to integrate.
 - There is no always-on watcher. The Barista starts an explicit Brew and asks for status or collection when needed.
 
