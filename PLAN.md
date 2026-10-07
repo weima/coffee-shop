@@ -67,12 +67,12 @@ This is a plan, not approval to begin implementation.
 
 ## Odin reference
 
-Use `~/learn/odin` as the implementation guide:
+Use [Odin in Practice](https://github.com/weima/odin-in-practice) as the implementation guide:
 
-- `docs/chapters/odin-foundations.md`: package structure, procedure contracts, and build loop.
-- `docs/chapters/cli-linux.md`: CLI contracts, argument parsing, errors and cleanup, allocators, environment, and child processes.
-- `docs/chapters/memory-philosophy.md`: ownership, allocation lifetime, error handling, and rollback boundaries.
-- `docs/chapters/parallel-programming.md`: bounded concurrency, process/thread distinction, cancellation, and completion evidence.
+- [Odin foundations](https://github.com/weima/odin-in-practice/blob/main/docs/chapters/odin-foundations.md): package structure, procedure contracts, and build loop.
+- [CLI and Linux](https://github.com/weima/odin-in-practice/blob/main/docs/chapters/cli-linux.md): CLI contracts, argument parsing, errors and cleanup, allocators, environment, and child processes.
+- [Memory and error philosophy](https://github.com/weima/odin-in-practice/blob/main/docs/chapters/memory-philosophy.md): ownership, allocation lifetime, error handling, and rollback boundaries.
+- [Parallel programming](https://github.com/weima/odin-in-practice/blob/main/docs/chapters/parallel-programming.md): bounded concurrency, process/thread distinction, cancellation, and completion evidence.
 
 Follow the book's advice to pass an argument vector to child processes, distinguish process-launch errors from child exit failures, and assign clear owners to buffers and resources.
 

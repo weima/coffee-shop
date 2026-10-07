@@ -27,7 +27,7 @@ See [the architecture](docs/architecture.md) for the diagram and boundaries. See
 
 ## Odin reference
 
-The implementation plan uses the local `~/learn/odin` book as its language reference. Key topics include CLI contracts, process arguments, child-process ownership, memory lifetimes, and parallel work. The plan lists the relevant chapters.
+The implementation plan uses [Odin in Practice](https://github.com/weima/odin-in-practice) as its language reference. Key topics include CLI contracts, process arguments, child-process ownership, memory lifetimes, and parallel work. The plan links to the relevant chapters.
 
 ## Current files
 
