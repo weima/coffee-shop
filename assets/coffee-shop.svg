@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 240" role="img" aria-labelledby="title desc">
+  <title id="title">Coffee Shop</title>
+  <desc id="desc">A friendly black dog and tabby cat fused into one mascot, beside the Coffee Shop wordmark.</desc>
+  <circle cx="124" cy="120" r="105" fill="#F4EBDD"/>
+  <circle cx="124" cy="120" r="101" fill="none" stroke="#4A3027" stroke-width="4"/>
+
+  <!-- One fused face: cat's pointed left ear, dog's floppy right ear, shared muzzle. -->
+  <path d="M54 84 43 39 91 60 Q108 51 128 58 Q151 54 171 83
+           Q190 91 194 119 L184 168 Q169 197 126 199 Q82 198 63 174 L51 127 Q48 102 54 84Z"
+        fill="#242323"/>
+  <path d="M157 73 Q179 65 190 83 L199 125 Q199 151 179 163 L168 144 175 109Z" fill="#242323"/>
+  <path d="M52 53 47 45 74 60 59 69Z" fill="#D3A66F"/>
+  <path d="M154 48 169 45 165 70 151 65Z" fill="#D3A66F"/>
+
+  <!-- Tabby markings and bright, friendly eyes. -->
+  <path d="m92 77 10-13 8 15m6-1 9-16 8 17" fill="none" stroke="#A9A39A" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <ellipse cx="91" cy="112" rx="8" ry="10" fill="#E8B85F"/>
+  <ellipse cx="151" cy="112" rx="8" ry="10" fill="#E8B85F"/>
+  <ellipse cx="92" cy="113" rx="3" ry="6" fill="#242323"/>
+  <ellipse cx="150" cy="113" rx="3" ry="6" fill="#242323"/>
+
+  <!-- Broad dog muzzle with cat whiskers. -->
+  <path d="M71 139 Q87 124 108 133 Q123 140 125 148 Q130 137 146 132 Q165 128 178 143 Q174 166 151 172 Q132 177 125 161 Q118 177 97 173 Q76 169 71 139Z" fill="#F2E8D8"/>
+  <path d="m117 139 8-7 9 7-9 7Z" fill="#6A4638"/>
+  <path d="M125 146v10m0 0q-8 9-15 0m15 0q8 9 15 0" fill="none" stroke="#6A4638" stroke-width="3" stroke-linecap="round"/>
+  <path d="m78 145-20-5m22 12-21 2m104-9 20-6m-22 13 22 3" fill="none" stroke="#9B9389" stroke-width="2.5" stroke-linecap="round"/>
+
+  <text x="252" y="119" fill="#3D2923" font-family="Georgia, 'Times New Roman', serif" font-size="62" font-weight="700" letter-spacing="-2">Coffee Shop</text>
+  <path d="M255 143h72" stroke="#C88748" stroke-width="5" stroke-linecap="round"/>
+  <text x="344" y="151" fill="#6C6259" font-family="Arial, Helvetica, sans-serif" font-size="19" letter-spacing="3">COFFEE + OREO</text>
+</svg>

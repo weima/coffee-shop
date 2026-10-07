@@ -1,140 +1,111 @@
-# Coffee Shop Implementation Roadmap
+# Coffee Shop Implementation Plan
 
-## Purpose
+Build Coffee Shop as a local Odin CLI that dispatches explicit work to parallel Pi workers. The Barista prepares a Recipe; Coffee Shop creates an isolated Station for each Shot, runs Workers in tmux, records their state, and returns an Oreo for human review. This plan turns [the architecture](docs/architecture.md) into ordered implementation slices. It does not authorize code changes by itself.
 
-Build a small Odin CLI that lets an active Pi session dispatch independent work to parallel Pi workers. Each Worker gets an isolated Git worktree and visible tmux session. A person reviews the results and decides whether to integrate them.
+## Delivery path
 
-This roadmap describes the work. It does not start implementation.
+Implement the slices in order. Each slice has a concrete result and a gate; do not start the next slice until the current gate passes. Resolve the open contracts in Slice 0 before choosing file formats or process behavior.
 
-## Architecture baseline
-
-- The active Pi session is the **Barista**. It interprets the **Order** and prepares a **Recipe** with explicit **Shots**.
-- Coffee Shop is a deterministic Odin CLI, not an AI coordinator.
-- Each Shot runs in one Pi **Worker** and one isolated Git worktree, called a **Station**.
-- One local machine, Pi, and tmux are the initial target.
-- The **Register** stores current Brew and Shot status. The **Receipt** stores status events.
-- The **Oreo** presents outcomes, evidence, and decisions for human review.
-- Coffee Shop does not merge or publish work. It has no daemon or always-on watcher.
-
-See [the architecture](docs/architecture.md) and [the vocabulary](specs/UBIQUITOUS_LANGUAGE_LATEST.md).
-
-## Roadmap at a glance
-
-| Milestone | Outcome | Depends on |
+| Slice | Result | Depends on |
 | --- | --- | --- |
-| 0. Resolve contracts | User-approved inputs, state location, process, and cancellation rules | Architecture review |
-| 1. CLI foundation | Odin CLI validates a Recipe and provides clear help and errors | Milestone 0 |
-| 2. Durable Brew state | Register and Receipt preserve Brew and Shot lifecycle | Milestone 1 |
-| 3. Isolated dispatch | Pi Workers run concurrently in tmux, each in its own Station | Milestone 2 |
-| 4. Recovery and collection | Status, cancellation, and Oreo work after restarts | Milestone 3 |
-| 5. Verification and dogfood | Tested local workflow and user-facing docs | Milestones 1–4 |
+| 0. Lock contracts | Decisions for CLI, Recipe, state, concurrency, and lifecycle | Architecture review |
+| 1. Project and CLI shell | Buildable Odin CLI with help and validation | 0 |
+| 2. Recipe and domain model | Validated Brew and Shot inputs | 1 |
+| 3. Durable state | Register and Receipt with tested transitions | 2 |
+| 4. Station and Worker dispatch | Isolated worktrees and tmux Pi workers | 3 |
+| 5. Status and recovery | Honest state after process restarts | 4 |
+| 6. Collection and Oreo | Reviewable results with Filter evidence | 5 |
+| 7. End-to-end dogfood | Verified local workflow and accurate docs | 1–6 |
 
-Each milestone ends with its acceptance checks. Stop and revise the plan if an acceptance check requires an excluded feature such as a daemon or second harness.
+## Slice 0 — Lock contracts before coding
 
-## Milestones
+Record the decisions in [the architecture](docs/architecture.md) or this plan. Prefer the smallest contract that supports the initial single-machine workflow.
 
-### 0. Resolve contracts before coding
+- Define the Recipe file format, required fields, and how a Barista supplies its path and the Beans repository path.
+- Define CLI command names, arguments, output, and exit behavior for `brew`, `status`, `cancel`, and `collect`.
+- Choose the Register and Receipt location, record format, retention, and handling of missing, malformed, or partially written records.
+- Define allowed Brew and Shot states and transitions, including how interrupted work is represented.
+- Choose the Scale default and upper bound, and the timeout behavior, if any.
+- Define how the CLI identifies and invokes the Pi executable and tmux; keep executable paths and arguments distinct from task text.
+- Define when a Station may be removed. Until then, retain it for human review.
 
-Confirm the choices that affect file formats and process control:
+**Gate:** Every item above has a recorded decision. The decisions preserve the architecture boundaries: one local machine, Pi, tmux, no daemon, no automatic merge, and no publishing.
 
-- Recipe directory layout and the command syntax for `brew`, `status`, `collect`, and `cancel`.
-- Register and Receipt location, retention, and behavior when records are missing or malformed.
-- Maximum concurrent Workers and timeout behavior.
-- Whether cancellation terminates a Worker or asks it to stop at a safe point.
-- How tmux starts Pi with task text as data, not as shell syntax.
-- When a Station becomes safe to remove after the person reviews its Oreo.
+## Slice 1 — Establish the Odin CLI shell
 
-**Exit check:** Record each choice in the architecture or plan. Do not add a general configuration system unless a real choice needs runtime configuration.
+- Confirm the Odin compiler and local Pi/tmux prerequisites needed for development and document the supported environment.
+- Create the smallest buildable Odin program and CLI entry point.
+- Add command parsing, `--help`, concise diagnostics, and non-zero exit codes for invalid input.
+- Keep command handling thin; defer worktree, process, and persistence logic to later slices.
 
-### 1. Build the CLI foundation
+**Gate:** The program builds; help lists the supported commands; invalid or incomplete arguments fail before creating files, worktrees, or processes.
 
-- Create a small Odin package with one entry point and focused modules for arguments, domain records, and process boundaries.
-- Add help and input validation for the chosen command set.
-- Validate repository paths and Recipe contents before making a Station or starting a process.
-- Return concise errors with non-zero exit codes. Keep diagnostics separate from machine-readable output.
+## Slice 2 — Validate Recipes and model work
 
-**Exit checks:**
+- Implement the Recipe format and validation from Slice 0.
+- Represent a Brew and its ordered Shots, including the identifiers and paths needed by later slices.
+- Validate that the Beans path is a Git repository, Shot identifiers are unique, and required task text is present.
+- Reject unsupported or ambiguous input before changing repository or state.
 
-- Help describes each command and required input.
-- Invalid input exits before any worktree, tmux session, or state file is created.
-- Odin's compiler checks the CLI package, and focused tests cover valid and invalid arguments.
+**Gate:** Tests cover a valid Recipe and malformed, incomplete, duplicate, and unsafe path inputs. No invalid Recipe creates a Station or starts a Worker.
 
-### 2. Add durable Brew and Shot state
+## Slice 3 — Add durable Brew state
 
-- Define the Brew and Shot state transitions, including queued, running, completed, failed, cancelled, and interrupted.
-- Write current state to the Register and append transitions to the Receipt.
-- Make state updates safe against partial writes and repeated status reads.
-- Treat missing, malformed, or conflicting state as unknown or incomplete, never as success.
+- Implement the Register as current Brew and Shot status, and the Receipt as append-only status events.
+- Centralize allowed state transitions and record each transition with enough context to diagnose failures.
+- Make state writes resilient to interruption; preserve the last valid state and report corrupt or conflicting records as incomplete/unknown.
+- Make repeated reads and state updates safe; do not turn uncertainty into success.
 
-**Exit checks:**
+**Gate:** Tests cover every allowed transition, reject invalid transitions, reload state in a fresh process, and verify malformed or interrupted writes do not erase valid evidence.
 
-- State survives a Coffee Shop process restart.
-- Tests cover every allowed transition and reject invalid transitions.
-- A damaged Register or Receipt produces an actionable error and does not erase evidence.
+## Slice 4 — Create Stations and dispatch Workers
 
-### 3. Dispatch isolated Pi Workers
+- Create one Git worktree per Shot, with no shared Station between Workers in a Brew.
+- Start one tmux session and Pi process per Shot, passing the executable and argument vector separately from task text.
+- Enforce the Scale and record each Station path, tmux session identity, launch result, and process outcome.
+- On partial launch failure, record which Shots started and leave their Stations available for inspection.
+- Keep shell command construction out of the task-data path.
 
-- Create one Git worktree per Shot.
-- Start one Pi Worker in a dedicated tmux session for each Station.
-- Keep task text and command arguments separate. Do not assemble a shell command from Order or Shot text.
-- Enforce the Scale so the number of active Workers stays within the agreed limit.
-- Record session identity, Station path, launch result, and Worker exit result.
+**Gate:** A local test with a temporary Git repository and fake Pi executable proves two Shots use distinct worktrees and sessions. Tests cover missing executables, tmux launch failure, and non-zero Worker exit without contacting GitHub or an AI service.
 
-**Exit checks:**
+## Slice 5 — Report status and recover
 
-- Two parallel Shots use different worktrees and tmux sessions.
-- A missing Pi executable, tmux failure, or Worker non-zero exit is visible in status.
-- Tests use a temporary Git repository and a fake Pi executable. They do not contact GitHub or an AI service.
+- Implement `status` using Register/Receipt records plus available tmux/process evidence.
+- On restart, reconcile persisted state with observable Worker state; mark uncertain work interrupted or unknown, never completed without evidence.
+- Implement the cancellation behavior selected in Slice 0 and record its outcome.
+- Ensure status and cancellation can be repeated without duplicating or hiding events.
 
-### 4. Recover, cancel, and collect
+**Gate:** Tests simulate restart, missing sessions, stale records, and repeated cancellation. Status distinguishes completed, failed, active, and uncertain Workers correctly.
 
-- Make `status` inspect durable records and current tmux and worktree evidence.
-- Mark a Worker interrupted when Coffee Shop cannot prove that it is active or complete.
-- Implement the agreed cancellation behavior and record its result.
-- Let `collect` create an Oreo only from collected Worker results and Filter evidence.
-- Keep Stations until a person reviews the Oreo. Do not merge, publish, or delete unreviewed work.
+## Slice 6 — Collect results and prepare the Oreo
 
-**Exit checks:**
+- Implement `collect` to gather each Shot's report and requested verification evidence.
+- Build the Oreo from collected results and Filter outcomes; show missing reports and failing checks explicitly.
+- Identify any decisions needed from the developer. Do not merge, publish, or remove unreviewed Stations.
+- Make collection repeatable without losing or duplicating evidence.
 
-- Restarting Coffee Shop preserves Brew and Shot records.
-- Status never reports an uncertain Worker as completed.
-- Cancellation and collection are repeatable without duplicating or hiding results.
-- The Oreo names each Shot's outcome, evidence, and any decision needed.
+**Gate:** Tests cover successful, failed, and missing reports; failing and missing check evidence; and repeated collection. The Oreo reports every Shot outcome, evidence, and unresolved decision.
 
-### 5. Verify and dogfood the vertical slice
+## Slice 7 — Verify the vertical slice and dogfood
 
-- Run Odin compiler checks and focused Odin tests.
-- Test invalid input, process launch failure, non-zero Worker exit, malformed state, cancellation, and interrupted sessions.
-- Run a local end-to-end Brew with fake Workers in a temporary repository.
-- Run one small real Pi dogfood task only after the fake-worker path passes.
-- Update the README with verified setup, commands, and known limits.
+- Run Odin compiler checks and the focused tests for input validation, state transitions, process boundaries, recovery, and collection.
+- Run a local end-to-end Brew with fake Workers in a temporary repository. Verify status after restart and collect an Oreo.
+- Run one small real Pi dogfood task only after the fake-worker workflow passes; keep it local and review the returned Station manually.
+- Update the README with verified prerequisites, commands, workflow, and limitations.
 
-**Exit checks:**
+**Release gate:** A multi-Shot Brew completes without GitHub access or a second coordinator; Stations remain isolated and available for human review; the Register and Receipt survive restart; the Oreo contains check evidence; documentation matches observed behavior.
 
-- A multi-Shot Brew reaches an Oreo without GitHub access or a second AI coordinator.
-- Each Station remains isolated until human review.
-- The README matches the behavior that the tests and dogfood run prove.
-- The person can inspect and integrate results without Coffee Shop doing it automatically.
+## Verification and implementation references
 
-## Odin reference
+Use the [Odin in Practice](https://github.com/weima/odin-in-practice) chapters as implementation references:
 
-Use [Odin in Practice](https://github.com/weima/odin-in-practice) as the implementation guide:
+- [Odin foundations](https://github.com/weima/odin-in-practice/blob/main/docs/chapters/odin-foundations.md) — package structure and build loop.
+- [CLI and Linux](https://github.com/weima/odin-in-practice/blob/main/docs/chapters/cli-linux.md) — CLI contracts, argument parsing, errors, allocators, environment, and child processes.
+- [Memory and error philosophy](https://github.com/weima/odin-in-practice/blob/main/docs/chapters/memory-philosophy.md) — ownership, allocation lifetime, error handling, and rollback boundaries.
+- [Parallel programming](https://github.com/weima/odin-in-practice/blob/main/docs/chapters/parallel-programming.md) — bounded concurrency, cancellation, and completion evidence.
 
-- [Odin foundations](https://github.com/weima/odin-in-practice/blob/main/docs/chapters/odin-foundations.md): package structure, procedure contracts, and build loop.
-- [CLI and Linux](https://github.com/weima/odin-in-practice/blob/main/docs/chapters/cli-linux.md): CLI contracts, argument parsing, errors and cleanup, allocators, environment, and child processes.
-- [Memory and error philosophy](https://github.com/weima/odin-in-practice/blob/main/docs/chapters/memory-philosophy.md): ownership, allocation lifetime, error handling, and rollback boundaries.
-- [Parallel programming](https://github.com/weima/odin-in-practice/blob/main/docs/chapters/parallel-programming.md): bounded concurrency, cancellation, and completion evidence.
+Pass child-process arguments as an argument vector. Distinguish a launch error from a Worker that starts and exits with an error. Give each allocated buffer and operating-system resource a clear owner.
 
-Pass child-process arguments as an argument vector. Distinguish a process-launch error from a Worker that starts and exits with an error. Give each allocated buffer and operating-system resource a clear owner.
+## Scope guardrails
 
-## Out of scope
-
-- Automatic task decomposition by a separate model call.
-- Persistent second mates, remote Workers, and fleet synchronization.
-- Other agent harnesses or tmux alternatives.
-- An always-on watcher, background daemon, Relay, or public integrations.
-- Automatic merge, pull request creation, or publishing.
-
-## Completion definition
-
-The first release is complete when a Barista can submit a Recipe, run multiple isolated Pi Workers in tmux, inspect durable status after a restart, collect an Oreo with evidence, and make the integration decision manually. The README must describe only verified behavior.
+The first release targets one machine, Pi, and tmux. Keep task decomposition with the Barista and integration decisions with the developer. Do not add remote workers, other agent harnesses, a daemon or watcher, Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.

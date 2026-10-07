@@ -1,5 +1,7 @@
 # Coffee Shop
 
+![Coffee Shop mascot: Coffee and Oreo](assets/coffee-shop.svg)
+
 Coffee Shop is planned as a small Odin command-line tool for dispatching parallel Pi workers. The active Pi session acts as the **Barista**: it turns a developer's **Order** into a **Recipe**, then asks Coffee Shop to run the work.
 
 > **Status:** planning only. This repository has no executable yet. The current files define product vocabulary, architecture, and an implementation plan.
