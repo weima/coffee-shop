@@ -24,11 +24,14 @@ run_cli :: proc(args: []string) -> int {
 
 	if command.kind == .Brew {
 		brew_id, err := run_brew(command.repo, command.recipe)
+		// Print the ID even on failure so the Brew can be inspected with `status`.
+		if brew_id != "" {
+			fmt.println(brew_id)
+		}
 		if err != "" {
 			write_error(err)
 			return 1
 		}
-		fmt.println(brew_id)
 		return 0
 	}
 	if command.kind == .Status {

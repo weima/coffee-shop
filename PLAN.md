@@ -102,6 +102,23 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 
 **Release gate:** A multi-Shot Brew completes without GitHub access or a second coordinator; Stations remain isolated and available for human review; the Register and Receipt survive restart; the Oreo contains check evidence; documentation matches observed behavior.
 
+## Verification status
+
+Slices 0–7 are implemented. `just test` runs 93 tests, including four end-to-end tests (`src/e2e_test.odin`) that drive the real binary with fake `herdr` and `pi`. Everything below was also run by hand against real Herdr and Pi, with up to three Shots and two Workers in parallel, from inside a Herdr pane and from a plain terminal with every `HERDR_*` variable removed.
+
+| Release gate | Evidence |
+| --- | --- |
+| A multi-Shot Brew completes without GitHub access or a second coordinator | End-to-end test: three Shots, one failing, no network. Live Brews with real Pi. |
+| Stations remain isolated and available for human review | End-to-end test: each Shot's output exists only in its own Station and never in the Beans repository; one Herdr tab per Shot. Nothing is deleted by `collect`. |
+| The Register and Receipt survive restart | End-to-end tests run `status` and `collect` as fresh processes, then kill the supervisor with `SIGKILL` and recover both Shots' results. A third test cancels a running Brew: Workers end, queued Shots are cancelled, and a repeat `cancel` changes nothing. A fourth shows `brew` exiting 1, with the Brew ID and Herdr's message, when no Herdr server is running. |
+| The Oreo contains check evidence | End-to-end test: review text, a passing `make test`, the failing Shot's reason, and the decisions list. A repeat `collect` is byte-identical. |
+| Documentation matches observed behaviour | README requirements, usage and limitations were written from the runs above. |
+
+Known gaps, deliberately not hidden:
+
+- Only Linux and WSL are supported; macOS needs a `ps`-based process-identity fallback.
+- Task decomposition, merging, publishing and cleanup stay manual by design.
+
 ## Verification and implementation references
 
 Use the [Odin in Practice](https://github.com/weima/odin-in-practice) chapters as implementation references:

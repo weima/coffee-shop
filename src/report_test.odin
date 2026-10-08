@@ -108,3 +108,37 @@ test_collect_reports_missing_station_changes_for_completed_shot :: proc(t: ^test
 	testing.expect(t, strings.contains(output, "(could not read Station changes)"), "missing Station changes are reported as unreadable")
 	testing.expect(t, !strings.contains(output, "Changes:\n(none)"), "a missing Station is not reported as having no changes")
 }
+
+@(test)
+test_launch_failure_is_reported_only_when_no_worker_ever_started :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+
+	// Every Shot failed before any Worker started: that is a launch failure.
+	nothing := make_test_register(t)
+	defer destroy_register(&nothing)
+	nothing_dir := fmt.tprintf("%s/brew-nothing", root)
+	_ = create_state(nothing_dir, &nothing)
+	_ = transition_shot(nothing_dir, &nothing, "shot-a", SHOT_FAILED, "Herdr workspace launch failed: no server")
+	_ = transition_shot(nothing_dir, &nothing, "shot-b", SHOT_FAILED, "Herdr workspace launch failed: no server")
+	testing.expect_value(t, brew_launch_failure(root, "brew-nothing"), "no Shot could be launched (Herdr workspace launch failed: no server)")
+
+	// One Worker started and failed: an ordinary Worker failure, not a launch failure.
+	ran := make_test_register(t)
+	defer destroy_register(&ran)
+	ran_dir := fmt.tprintf("%s/brew-ran", root)
+	_ = create_state(ran_dir, &ran)
+	_ = transition_shot(ran_dir, &ran, "shot-a", SHOT_RUNNING, "Worker started")
+	_ = transition_shot(ran_dir, &ran, "shot-a", SHOT_FAILED, "Pi exited with code 3")
+	_ = transition_shot(ran_dir, &ran, "shot-b", SHOT_FAILED, "Herdr tab launch failed")
+	testing.expect_value(t, brew_launch_failure(root, "brew-ran"), "")
+
+	// Cancelled before anything started is the user's choice, not a failure.
+	cancelled := make_test_register(t)
+	defer destroy_register(&cancelled)
+	cancelled_dir := fmt.tprintf("%s/brew-cancelled", root)
+	_ = create_state(cancelled_dir, &cancelled)
+	_ = transition_shot(cancelled_dir, &cancelled, "shot-a", SHOT_CANCELLED, "Brew cancelled before the Worker started")
+	_ = transition_shot(cancelled_dir, &cancelled, "shot-b", SHOT_CANCELLED, "Brew cancelled before the Worker started")
+	testing.expect_value(t, brew_launch_failure(root, "brew-cancelled"), "")
+}

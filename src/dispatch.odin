@@ -53,7 +53,11 @@ run_brew :: proc(repo, recipe_path: string) -> (brew_id: string, err: string) {
 		return "", "could not locate the Coffee Shop executable for Worker tabs"
 	}
 
-	return run_brew_with(repo, recipe_path, state_root, process_info.executable_path, "herdr")
+	brew_id, err = run_brew_with(repo, recipe_path, state_root, process_info.executable_path, "herdr")
+	if err == "" && brew_id != "" {
+		err = brew_launch_failure(state_root, brew_id)
+	}
+	return brew_id, err
 }
 
 run_brew_with :: proc(repo_path, recipe_path, state_root, executable, herdr: string) -> (brew_id: string, err: string) {
@@ -313,12 +317,32 @@ run_herdr :: proc(herdr: string, args: []string, allocator := context.allocator)
 		if detail == "" {
 			detail = strings.trim_space(transmute(string)stdout)
 		}
+		if message := herdr_error_message(detail); message != "" {
+			detail = message
+		}
 		if detail == "" {
 			detail = "Herdr command failed"
 		}
 		return stdout, stderr, detail
 	}
 	return stdout, stderr, ""
+}
+
+Herdr_Error_Response :: struct {
+	error: struct {
+		message: string,
+	},
+}
+
+// Herdr reports failures as {"id":...,"error":{"code":...,"message":...}}. Return
+// the message so a Shot's failure reads as a sentence; "" if text is not that shape.
+// The result is allocated on the temp allocator.
+herdr_error_message :: proc(text: string) -> string {
+	response: Herdr_Error_Response
+	if json.unmarshal_string(text, &response, .JSON, context.temp_allocator) != nil {
+		return ""
+	}
+	return response.error.message
 }
 
 destroy_herdr_response :: proc(response: ^Herdr_Response, allocator := context.allocator) {

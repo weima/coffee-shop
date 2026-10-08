@@ -57,11 +57,27 @@ discover_checks :: proc(station_path: string, allocator := context.allocator) ->
 	make_data, make_err := os.read_entire_file(make_path, allocator)
 	if make_err == nil {
 		recognized = true
-		discover_makefile(&candidates, transmute(string)make_data, allocator)
+		discover_recipes(&candidates, transmute(string)make_data, "make", "Makefile", allocator)
 		delete(make_data, allocator)
 	} else if discover_path_exists(station_path, "Makefile", allocator) {
 		recognized = true
 		discover_add_note(&result, fmt.tprintf("could not read Makefile: %v", make_err), allocator)
+	}
+
+	// Just accepts these three spellings; the first one present is the one used.
+	for name in ([]string{"justfile", "Justfile", ".justfile"}) {
+		just_path := fmt.tprintf("%s/%s", station_path, name)
+		just_data, just_err := os.read_entire_file(just_path, allocator)
+		if just_err == nil {
+			recognized = true
+			discover_recipes(&candidates, transmute(string)just_data, "just", name, allocator)
+			delete(just_data, allocator)
+			break
+		} else if discover_path_exists(station_path, name, allocator) {
+			recognized = true
+			discover_add_note(&result, fmt.tprintf("could not read %s: %v", name, just_err), allocator)
+			break
+		}
 	}
 
 	if discover_path_exists(station_path, "go.mod", allocator) {
@@ -197,16 +213,23 @@ discover_package_manager :: proc(root: json.Object, station_path: string, alloca
 	return ""
 }
 
-discover_makefile :: proc(candidates: ^[dynamic]discover_candidate, data: string, allocator: runtime.Allocator) {
+// Reads the recipe/target names a Makefile or justfile declares at the start of
+// a line. A recipe that takes parameters (`test target:`) is skipped: a bare
+// `just test` could not run it.
+discover_recipes :: proc(candidates: ^[dynamic]discover_candidate, data, runner, file_name: string, allocator: runtime.Allocator) {
 	lines, _ := strings.split_lines(data, allocator)
 	defer delete(lines, allocator)
 	for line in lines {
-		if strings.has_prefix(line, "test:") {
-			discover_add_candidate(candidates, .Unit, []string{"make", "test"}, "Makefile test", allocator)
-		} else if strings.has_prefix(line, "e2e:") {
-			discover_add_candidate(candidates, .E2E, []string{"make", "e2e"}, "Makefile e2e", allocator)
-		} else if strings.has_prefix(line, "test-e2e:") {
-			discover_add_candidate(candidates, .E2E, []string{"make", "test-e2e"}, "Makefile test-e2e", allocator)
+		for target in ([]string{"test", "e2e", "test-e2e"}) {
+			if !strings.has_prefix(line, target) || !strings.has_prefix(line[len(target):], ":") {
+				continue
+			}
+			kind := Check_Kind.Unit
+			if target != "test" {
+				kind = .E2E
+			}
+			source := fmt.tprintf("%s %s", file_name, target)
+			discover_add_candidate(candidates, kind, []string{runner, target}, source, allocator)
 		}
 	}
 }

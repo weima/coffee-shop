@@ -220,3 +220,55 @@ discover_expect_command :: proc(t: ^testing.T, commands: []Check_Command, kind: 
 	}
 	testing.expect(t, false, fmt.tprintf("missing %v command", kind))
 }
+
+@(test)
+test_discover_justfile_unit_and_e2e_recipes_under_every_accepted_name :: proc(t: ^testing.T) {
+	for name in ([]string{"justfile", "Justfile", ".justfile"}) {
+		root := discover_test_root(t)
+		defer discover_remove_root(root)
+		discover_write(root, name, "test: build\n    odin test src\ne2e:\n    echo e2e\n")
+		result := discover_checks(root)
+		defer destroy_discovery(&result)
+		testing.expect_value(t, len(result.commands), 2)
+		discover_expect_command(t, result.commands[:], Check_Kind.Unit, []string{"just", "test"}, fmt.tprintf("%s test", name))
+		discover_expect_command(t, result.commands[:], Check_Kind.E2E, []string{"just", "e2e"}, fmt.tprintf("%s e2e", name))
+	}
+}
+
+@(test)
+test_discover_justfile_ignores_recipe_bodies_comments_and_recipes_needing_arguments :: proc(t: ^testing.T) {
+	root := discover_test_root(t)
+	defer discover_remove_root(root)
+	// `test target:` requires an argument, so a bare `just test` could not run it.
+	discover_write(root, "justfile", "# test:\nbuild:\n    echo \"test: not a recipe\"\ntest target:\n    echo {{target}}\n")
+	result := discover_checks(root)
+	defer destroy_discovery(&result)
+	testing.expect_value(t, len(result.commands), 0)
+}
+
+@(test)
+test_discover_justfile_and_makefile_test_targets_are_ambiguous :: proc(t: ^testing.T) {
+	root := discover_test_root(t)
+	defer discover_remove_root(root)
+	discover_write(root, "justfile", "test:\n    echo a\n")
+	discover_write(root, "Makefile", "test:\n\techo b\n")
+	result := discover_checks(root)
+	defer destroy_discovery(&result)
+	testing.expect_value(t, len(result.commands), 0)
+	testing.expect(t, discover_has_note(result, "ambiguous unit test commands"))
+	testing.expect(t, discover_has_note(result, "justfile test"))
+	testing.expect(t, discover_has_note(result, "Makefile test"))
+}
+
+@(test)
+test_this_repository_declares_its_own_test_command :: proc(t: ^testing.T) {
+	// Tests run from the repository root. This keeps the Makefile's `test` target
+	// discoverable, so the Filter can verify Coffee Shop's own Stations.
+	discovery := discover_checks(".")
+	defer destroy_discovery(&discovery)
+	testing.expect_value(t, len(discovery.commands), 1)
+	if len(discovery.commands) == 1 {
+		testing.expect_value(t, discovery.commands[0].kind, Check_Kind.Unit)
+		testing.expect_value(t, strings.join(discovery.commands[0].argv, " ", context.temp_allocator), "just test")
+	}
+}

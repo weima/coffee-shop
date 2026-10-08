@@ -17,6 +17,7 @@ This file defines the coding and test standards for the Coffee Shop repository. 
 - Prefer Odin's `core:` libraries and existing project code. Add third-party source only for a concrete need, and record its upstream, exact version or commit, and license.
 - Make ownership and lifetime explicit. Match each allocation to its allocator and owner; release owned memory and operating-system resources on every exit path.
 - Handle errors at the layer with enough context to recover or report them. Do not use a result after failure, or report success when state is uncertain.
+- Return an error when an allocation holds user-supplied data or the caller can reasonably recover. For a small internal value built from known parts, such as a file path, an `assert` with a clear message is acceptable: Odin's allocators give no useful way to continue after exhaustion, and threading an error through every caller adds noise without adding recovery.
 - Keep CLI output predictable: write normal results to stdout, diagnostics to stderr, and return a non-zero status on failure.
 - Pass executable arguments as an argument vector. Never build shell commands from an Order, Shot, or other task text.
 

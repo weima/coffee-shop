@@ -14,6 +14,8 @@ test_filter_reviews_and_runs_discovered_checks_once_and_reuses_evidence :: proc(
 	defer delete(first.output)
 	testing.expect_value(t, err, "")
 	testing.expect(t, strings.contains(first.output, "Review:\nNo findings"), first.output)
+	// No Worker report was written for this Shot; the Oreo must say nothing about one.
+	testing.expect(t, !strings.contains(first.output, "Report:"), first.output)
 	testing.expect(t, strings.contains(first.output, "[unit] make test (Makefile test): passed"), first.output)
 
 	// Collecting again must not re-run Pi or the checks, and must show the same evidence.

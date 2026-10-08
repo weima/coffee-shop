@@ -4,9 +4,23 @@
 
 Coffee Shop is being built as a small Odin command-line tool for dispatching parallel Pi workers. The active Pi session acts as the **Barista**: it turns a developer's **Order** into a **Recipe**, then asks Coffee Shop to run the work.
 
-> **Status:** implementation in progress. The Odin CLI validates arguments, JSON Recipes, and Beans Git repositories, dispatches Workers, persists Brew state, and collects results.
+> **Status:** the vertical slice works on Linux and WSL. `brew`, `status`, `cancel` and `collect` are implemented, and automated end-to-end tests drive the real binary with fake Workers. See [Limitations](#limitations) before relying on it.
 
-## How it is intended to work
+## Requirements
+
+To **use** Coffee Shop you need:
+
+- Linux, including WSL. macOS is not supported yet: cancel and recovery identify processes through `/proc`.
+- [Git](https://git-scm.com/).
+- [Herdr](https://herdr.dev) `0.9.3` and [Pi](https://pi.dev) `1.1.0` on your `PATH`, with Pi already authenticated. A Herdr server must be running, but you do not need to run Coffee Shop inside a Herdr pane: from a plain terminal the Herdr CLI uses its default socket. If no server is reachable, `brew` records the Brew, exits 1, and reports Herdr's message (for example `no herdr server is running ...; run herdr to start or attach it`). Start Herdr, then run a new Brew.
+- Whatever the Beans repository's own tests need (for example `npm` or `make`), because the Filter runs them.
+
+To **develop** Coffee Shop you also need:
+
+- The Odin compiler `dev-2026-09-nightly:a2fb372`.
+- [`just`](https://github.com/casey/just), the command runner for the project's checks. Install it with `cargo install just --locked` or your package manager. `just test`, `just check` and `just build` are the supported entry points.
+
+## How it works
 
 1. The Barista prepares a Recipe with one or more independent Shots.
 2. Coffee Shop creates an isolated Git worktree, or **Station**, for each Shot.
@@ -55,6 +69,12 @@ Each Station is a fresh checkout, so gitignored directories such as `node_module
 
 ## Usage
 
+A typical session:
+
+1. The Barista writes a Recipe and runs `brew`. It blocks until every Shot is finished, so run it in the background (for example with Pi's `bg_run`) rather than in the foreground.
+2. While it runs, `status <brew-id>` shows each Shot, and `cancel <brew-id>` stops the Brew.
+3. `collect <brew-id>` produces the Oreo. Review each Station by hand, integrate the changes you want, and delete Stations and state yourself when you are done.
+
 ```sh
 coffee-shop brew --repo <path> --recipe <recipe.json>
 coffee-shop status <brew-id>
@@ -62,7 +82,7 @@ coffee-shop cancel <brew-id>
 coffee-shop collect <brew-id>
 ```
 
-- `brew` creates and runs the Brew, blocks until every Shot is terminal, then prints the Brew ID (`brew-<UTC start time>-<pid>`).
+- `brew` creates and runs the Brew, blocks until every Shot is terminal, then prints the Brew ID (`brew-<UTC start time>-<pid>`). It exits 0 even if some Workers failed, because those outcomes belong to `status` and `collect`. It exits 1, still printing the ID, only when no Worker could be started at all (for example, no Herdr server is running).
 - At most two Workers run at once.
 - `status` prints the Brew and each Shot's status.
 - `cancel` requests cancellation; repeating it is safe.
@@ -70,17 +90,34 @@ coffee-shop collect <brew-id>
 - Brew state is stored under `$CS_STATE_DIR/<brew-id>` when `CS_STATE_DIR` is set, or `~/.coffee-shop/<brew-id>` otherwise. `CS_STATE_DIR` must be an absolute path.
 - Stations and Brew state are never deleted automatically; `collect` preserves them.
 
+## Limitations
+
+These are the behaviours observed while building and dogfooding Coffee Shop, not future plans.
+
+- **Linux and WSL only.** Keep `CS_STATE_DIR` on the Linux filesystem, not under `/mnt/c`.
+- **Stations start from the Beans' `HEAD` commit.** Uncommitted changes in the Beans repository are invisible to Workers, so commit first.
+- **Two Workers at a time, no timeout.** A Worker that never finishes stays `running` until you `cancel` the Brew.
+- **Nothing is deleted automatically.** Stations, branches and state accumulate until you remove them.
+- **Shared paths are read-through.** A Worker that installs packages changes the Beans' real copy.
+- **The Filter's checks run inside the Station**, a fresh checkout. Dependencies the repository does not commit are missing unless shared, a command may write build output there, and output is buffered in memory with no timeout.
+- **The Filter's review is advisory.** It is a second pair of eyes and has missed real problems; read the diff yourself.
+- **State conflicts are never repaired.** If the Register and Receipt disagree, Coffee Shop reports the Brew's state as unknown and leaves both files for you to inspect.
+- **A Brew ID is not reused**, but the older `brew-<pid>-<n>` format from early development sorts before the current `brew-<UTC time>-<pid>` format.
+
 ## Development
 
-Coffee Shop currently supports Linux, including WSL. Cancel and recovery identify processes through `/proc`, so macOS is not supported yet. Keep `CS_STATE_DIR` on the Linux filesystem, not under `/mnt/c`.
-
-The initial implementation uses Odin `dev-2026-09-nightly:a2fb372`, Pi `1.1.0`, and Herdr `0.9.3`. Run the CLI checks with:
+Run the checks with:
 
 ```sh
-odin test src
-odin check src
+just test      # TZ=UTC odin test src, including the end-to-end tests
+just check     # odin check src
+just build     # builds ./coffee-shop
 odin run src -- --help
 ```
+
+The `justfile` only wraps the documented Odin commands, so `odin test src` and `odin check src` also work without `just`. Its `test` recipe is what the Filter discovers when it verifies a Station of this repository.
+
+The end-to-end tests in `src/e2e_test.odin` build the real binary and run it as separate processes against fake `herdr` and `pi` scripts in a temporary repository. They cover a multi-Shot Brew with a failure, `status` and `collect` from fresh processes, Station isolation, repeated collection, cancellation (running Workers stopped, queued Shots cancelled, repeatable), and recovery after the supervisor is killed. They need Git, a POSIX shell and the Odin compiler, but no network, AI service or Herdr.
 
 ## Odin reference
 

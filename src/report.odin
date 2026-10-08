@@ -276,6 +276,54 @@ load_brew :: proc(state_root, brew_id: string) -> (register: Register, brew_dir:
 	return register, brew_dir, ""
 }
 
+// A Brew where no Worker ever started and some Shot failed could not run at all
+// (for example, no Herdr server). That is an infrastructure problem the caller
+// should hear about, unlike a Worker that ran and failed. Returns "" otherwise.
+brew_launch_failure :: proc(state_root, brew_id: string) -> string {
+	register, brew_dir, load_err := load_brew(state_root, brew_id)
+	if load_err != "" {
+		return ""
+	}
+	defer destroy_register(&register)
+	defer delete(brew_dir)
+
+	failed_index := -1
+	for shot, index in register.shots {
+		if shot.status == SHOT_FAILED && failed_index < 0 {
+			failed_index = index
+		}
+	}
+	if failed_index < 0 || any_shot_started(brew_dir) {
+		return ""
+	}
+	details := last_details(brew_dir, register)
+	defer delete_details(details)
+	if details[failed_index] == "" {
+		return "no Shot could be launched"
+	}
+	return fmt.tprintf("no Shot could be launched (%s)", details[failed_index])
+}
+
+any_shot_started :: proc(brew_dir: string) -> bool {
+	path := state_file_path(brew_dir, RECEIPT_FILE_NAME)
+	defer delete(path)
+	data, read_err := os.read_entire_file(path, context.allocator)
+	defer delete(data)
+	if read_err != nil {
+		return false
+	}
+	remaining := string(data)
+	for line in strings.split_lines_iterator(&remaining) {
+		event: State_Event
+		started := json.unmarshal_string(line, &event, .JSON) == nil && event.kind == "shot_transition" && event.to_state == SHOT_RUNNING
+		destroy_state_event(&event)
+		if started {
+			return true
+		}
+	}
+	return false
+}
+
 // The Register keeps only current status; the reason for a failure is in the
 // Receipt. Returns the latest event detail per Shot, aligned with register.shots.
 last_details :: proc(brew_dir: string, register: Register) -> []string {

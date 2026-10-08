@@ -156,3 +156,29 @@ test_brew_records_the_beans_base_commit :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(register.base_commit), 40)
 	testing.expect_value(t, register.base_commit, strings.trim_space(string(stdout)))
 }
+
+@(test)
+test_herdr_json_errors_are_reported_as_their_message :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	repo := fmt.tprintf("%s/repo", root)
+	make_fixture_repo(t, repo)
+	recipe_path := fmt.tprintf("%s/recipe.json", root)
+	_ = os.write_entire_file(recipe_path, `{"order":"o","shots":[{"id":"a","prompt":"pa"}]}`, os.Permissions{.Read_User, .Write_User})
+	// What real Herdr does when no server is running: JSON on stderr, exit code 1.
+	herdr := fmt.tprintf("%s/herdr", root)
+	_ = os.write_entire_file(herdr, `#!/bin/sh
+echo '{"id":"cli:workspace:create","error":{"code":"server_not_running","message":"no herdr server is running; run herdr to start it"}}' >&2
+exit 1
+`, os.Permissions{.Read_User, .Write_User, .Execute_User})
+	state_root := fmt.tprintf("%s/state", root)
+
+	brew_id, err := run_brew_with(repo, recipe_path, state_root, "/nonexistent", herdr)
+	defer delete(brew_id)
+	testing.expect_value(t, err, "")
+
+	receipt, _ := os.read_entire_file(fmt.tprintf("%s/%s/receipt.ndjson", state_root, brew_id), context.allocator)
+	defer delete(receipt)
+	testing.expect(t, strings.contains(string(receipt), "Herdr workspace launch failed: no herdr server is running; run herdr to start it"), string(receipt))
+	testing.expect(t, !strings.contains(string(receipt), "server_not_running"), "the raw JSON must not be shown")
+}
