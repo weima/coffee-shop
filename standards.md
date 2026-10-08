@@ -12,7 +12,7 @@ This file defines the coding and test standards for the Coffee Shop repository. 
 
 ## Odin implementation
 
-- Use Odin `dev-2026-09-nightly:a2fb372` as the initial supported compiler version. Check version-sensitive behavior against it and the official Odin documentation; update this pin deliberately.
+- Use the official Odin monthly release `dev-2026-10` (compiler version `dev-2026-10-nightly:84bc3fc`) as the supported compiler. Odin has no semver-stable release, so pin one official `dev-YYYY-MM` release and verify its archive checksum. Check version-sensitive behavior against it and the official Odin documentation; update this pin deliberately, and re-run the whole suite when you do.
 - Treat each source directory as an Odin package. Keep files in one package when they share declarations; create a subpackage only for a clear responsibility or API boundary.
 - Prefer Odin's `core:` libraries and existing project code. Add third-party source only for a concrete need, and record its upstream, exact version or commit, and license.
 - Make ownership and lifetime explicit. Match each allocation to its allocator and owner; release owned memory and operating-system resources on every exit path.
