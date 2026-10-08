@@ -10,7 +10,8 @@ DEAD_IDENTITY :: Process_Identity{pid = 2147480000, start_time = 1}
 
 @(test)
 test_process_identity_distinguishes_live_reused_and_missing_processes :: proc(t: ^testing.T) {
-	me := current_identity()
+	me, me_ok := current_identity()
+	testing.expect(t, me_ok)
 	testing.expect(t, me.start_time != 0)
 	testing.expect(t, identity_alive(me))
 	testing.expect(t, !identity_alive(Process_Identity{pid = me.pid, start_time = me.start_time + 1}), "a reused PID has a different start time")
@@ -49,7 +50,7 @@ test_observe_leaves_live_workers_and_queued_shots_alone :: proc(t: ^testing.T) {
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
 	defer destroy_register(&register)
-	write_test_started(brew_dir, "shot-a", current_identity())
+	write_test_started(brew_dir, "shot-a", current_identity_or_dead())
 
 	testing.expect_value(t, settle_brew(brew_dir, &register, "unused", .Observe).kind, State_Error_Kind.None)
 	testing.expect_value(t, register.shots[0].status, SHOT_RUNNING)
@@ -91,7 +92,7 @@ test_cancel_marks_a_worker_interrupted_when_its_exit_cannot_be_confirmed :: proc
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
 	defer destroy_register(&register)
-	write_test_started(brew_dir, "shot-a", current_identity()) // never exits
+	write_test_started(brew_dir, "shot-a", current_identity_or_dead()) // never exits
 	herdr := fmt.tprintf("%s/herdr", root)
 	_ = os.write_entire_file(herdr, "#!/bin/sh\nexit 0\n", os.Permissions{.Read_User, .Write_User, .Execute_User})
 
@@ -175,4 +176,126 @@ write_test_result :: proc(brew_dir, shot_id: string, success: bool) {
 	path := worker_result_path(brew_dir, shot_id)
 	defer delete(path)
 	_ = write_worker_result(path, Worker_Result{brew_id = "brew-test", shot_id = shot_id, started = true, success = success, detail = "Pi exited with code 0"})
+}
+
+// A /proc entry that cannot be read says nothing about whether the process is
+// running. Only evidence of absence may say Gone.
+@(test)
+test_liveness_separates_gone_from_unknown :: proc(t: ^testing.T) {
+	identity := Process_Identity{pid = 77, start_time = 4242}
+	running := "77 (x) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 4242"
+	zombie := "77 (x) Z 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 4242"
+	reused := "77 (x) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 9999"
+	garbage := "not a stat line"
+
+	testing.expect_value(t, classify_proc_stat(identity, transmute([]byte)running, nil), Liveness.Alive)
+	// Evidence the process is gone: a zombie, a reused PID, or no such entry.
+	testing.expect_value(t, classify_proc_stat(identity, transmute([]byte)zombie, nil), Liveness.Gone)
+	testing.expect_value(t, classify_proc_stat(identity, transmute([]byte)reused, nil), Liveness.Gone)
+	testing.expect_value(t, classify_proc_stat(identity, nil, os.General_Error.Not_Exist), Liveness.Gone)
+	// No evidence either way: any other read failure (Invalid_File stands in for a
+	// platform error such as a permission problem), or text that does not parse.
+	testing.expect_value(t, classify_proc_stat(identity, nil, os.General_Error.Invalid_File), Liveness.Unknown)
+	testing.expect_value(t, classify_proc_stat(identity, transmute([]byte)garbage, nil), Liveness.Unknown)
+}
+
+@(test)
+test_current_identity_is_recorded_only_when_it_can_be_read :: proc(t: ^testing.T) {
+	identity, ok := current_identity()
+	testing.expect(t, ok)
+	testing.expect(t, identity.start_time != 0, "a recorded identity must carry a real start time")
+	testing.expect_value(t, identity_liveness(identity), Liveness.Alive)
+}
+
+unknown_liveness :: proc(identity: Process_Identity) -> Liveness {
+	return .Unknown
+}
+
+@(test)
+test_observe_does_not_declare_a_worker_dead_when_liveness_is_unknown :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	brew_dir, register := make_brew_fixture(t, root)
+	defer destroy_register(&register)
+	// The Worker started, left no result, and its /proc entry cannot be read.
+	write_test_started(brew_dir, "shot-a", DEAD_IDENTITY)
+
+	err := settle_brew(brew_dir, &register, "unused", .Observe, liveness = unknown_liveness)
+	testing.expect_value(t, err.kind, State_Error_Kind.None)
+	// It must not be recorded as interrupted: nobody has shown it is gone.
+	testing.expect_value(t, register.shots[0].status, SHOT_RUNNING)
+
+	// The same Worker is interrupted when /proc does show it is gone.
+	err = settle_brew(brew_dir, &register, "unused", .Observe)
+	testing.expect_value(t, err.kind, State_Error_Kind.None)
+	testing.expect_value(t, register.shots[0].status, SHOT_INTERRUPTED)
+}
+
+@(test)
+test_cancel_never_confirms_an_exit_it_cannot_see :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	brew_dir, register := make_brew_fixture(t, root)
+	defer destroy_register(&register)
+	write_test_started(brew_dir, "shot-a", current_identity_or_dead())
+	herdr := fmt.tprintf("%s/herdr", root)
+	_ = os.write_entire_file(herdr, "#!/bin/sh\nexit 0\n", os.Permissions{.Read_User, .Write_User, .Execute_User})
+
+	err := settle_brew(brew_dir, &register, herdr, .Cancel, 200 * time.Millisecond, unknown_liveness)
+	testing.expect_value(t, err.kind, State_Error_Kind.None)
+	testing.expect_value(t, register.shots[0].status, SHOT_INTERRUPTED)
+}
+
+current_identity_or_dead :: proc() -> Process_Identity {
+	identity, ok := current_identity()
+	return identity if ok else DEAD_IDENTITY
+}
+
+@(test)
+test_supervisor_liveness_distinguishes_missing_unreadable_and_running :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	brew_dir, register := make_brew_fixture(t, root)
+	defer destroy_register(&register)
+	path := supervisor_path(brew_dir)
+	defer delete(path)
+
+	// No supervisor file: a Brew from before the file existed, or one that crashed early.
+	testing.expect_value(t, supervisor_liveness(brew_dir), Liveness.Gone)
+	// A file that cannot be understood proves nothing.
+	_ = os.write_entire_file(path, "not json", os.Permissions{.Read_User, .Write_User})
+	testing.expect_value(t, supervisor_liveness(brew_dir), Liveness.Unknown)
+	// A real, running identity.
+	testing.expect(t, write_supervisor(brew_dir))
+	testing.expect_value(t, supervisor_liveness(brew_dir), Liveness.Alive)
+	// An identity whose process is not there.
+	testing.expect(t, write_identity_file(path, DEAD_IDENTITY))
+	testing.expect_value(t, supervisor_liveness(brew_dir), Liveness.Gone)
+}
+
+@(test)
+test_cancel_does_not_take_over_a_supervisor_it_cannot_confirm_is_gone :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	brew_dir, register := make_brew_fixture(t, root)
+	defer destroy_register(&register)
+	path := supervisor_path(brew_dir)
+	defer delete(path)
+	_ = os.write_entire_file(path, "not json", os.Permissions{.Read_User, .Write_User})
+
+	output, err := cancel_brew(root, "unused", "brew-test")
+	defer delete(output)
+	testing.expect_value(t, err, "")
+	testing.expect(t, strings.contains(output, "Cancellation requested"), output)
+	// Settling here could race a supervisor that is still running, so nothing changed.
+	reloaded, _ := read_state(brew_dir)
+	defer destroy_register(&reloaded)
+	testing.expect_value(t, reloaded.shots[0].status, SHOT_QUEUED)
+	testing.expect_value(t, reloaded.event_sequence, 0)
+
+	// Collect likewise leaves an orphan-looking Brew alone.
+	testing.expect_value(t, settle_orphaned_brew(root, "unused", "brew-test"), "")
+	again, _ := read_state(brew_dir)
+	defer destroy_register(&again)
+	testing.expect_value(t, again.event_sequence, 0)
 }

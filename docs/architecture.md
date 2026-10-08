@@ -84,6 +84,8 @@ Allowed transitions are `queued` → `running`, `failed`, or `cancelled`, and `r
 
 The supervisor records its process identity (PID plus kernel start time, so a reused PID is not mistaken for it) in `supervisor.json`; each Worker does the same in `workers/<shot>.started`. If the supervisor has died, `status` says so, and `collect` or `cancel` take over its job using only evidence: a Worker's result file is recorded as completed or failed, and a Worker that vanished without a result becomes `interrupted`. A live Worker is left alone unless the Brew is being cancelled. A Shot is never marked `completed` without a recorded successful result.
 
+Liveness has three answers, not two. A process is **gone** only on evidence: its `/proc/<pid>/stat` entry is missing, it is a zombie, or its start time differs. If that entry cannot be read, or does not parse, the answer is **unknown**, and unknown is never treated as gone: a Worker is not recorded as `interrupted`, `cancel` does not confirm an exit it cannot see (after its grace period the Shot ends `interrupted`, which says the exit was not confirmed), and `collect` and `cancel` do not take over from a supervisor whose state they cannot read. A process that cannot record its own identity says so and stops rather than writing a guessed start time.
+
 ## Filter and Oreo
 
 `collect` runs the Filter once for each `completed` Shot and saves its evidence in `<brew>/filter/<shot>.json`; later collections show the saved evidence without re-running Pi or the tests. Delete that file to run the Filter again for a Shot.
