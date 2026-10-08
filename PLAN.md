@@ -132,9 +132,9 @@ Pass child-process arguments as an argument vector. Distinguish a launch error f
 
 ## Roadmap: v0.2.0
 
-These items came from dogfooding v0.1 on the [Odin in Practice](https://github.com/weima/odin-in-practice) book, whose repository keeps the record of that exercise. Each item states its own evidence. They are planned, not started; the contracts below are proposals to settle before coding.
+These items came from dogfooding v0.1 on the [Odin in Practice](https://github.com/weima/odin-in-practice) book, whose repository keeps the record of that exercise. Each item states its implementation state and evidence. Item 1 is implemented; the remaining items are proposals.
 
-### 1. Show that a Worker is alive
+### 1. Show that a Worker is alive — implemented
 
 **Problem.** Workers run `pi --print`, which prints only its final answer. A running Worker's pane shows just the command line, and `status` says only `running`, so a busy Worker and a dead one look the same for the first ten minutes or more.
 
@@ -146,9 +146,9 @@ These items came from dogfooding v0.1 on the [Odin in Practice](https://github.c
 - Default output stays one line per Shot. A single per-Brew summary line gives counts (running, queued, done).
 - Liveness keeps using the existing process identity, so `running` still means "the Worker process exists".
 
-**Open questions.** Whether to switch the Worker to `--mode json` (richer activity, but the report must be reassembled from events) or to rely on Station changes and a Worker heartbeat file; whether `status` should offer a follow mode (`--watch`).
+**Implementation.** Workers parse Pi's JSON event stream and send bounded summaries over a per-Brew Unix-domain stream socket. The supervisor persists the latest event per Shot; `status` shows elapsed time, activity age, and description on one line. Activity is best-effort and never changes process-identity liveness. A Worker quiet for 12 minutes is marked quiet, not killed. The final assistant response remains the collected report. There is no `--watch` mode.
 
-**Gate.** Tests show a running Shot with recent activity, a running Shot that has been quiet past the threshold, and a dead Worker, each reported distinctly; output is bounded; a real Brew shows progress while Pi is still working.
+**Verification.** `TZ=UTC just test` passed all 115 tests; `just check` and `just build` pass. Real-Pi Brew `brew-20261008T163704Z-2395480` showed live activity in `status` while its Shot was running and then collected the final report successfully; the Station had no changes. A fake-Pi end-to-end test verifies tool activity is visible before Pi exits.
 
 ### 2. Choose the model and thinking level per task, and publish a Recipe schema
 

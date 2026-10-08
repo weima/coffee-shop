@@ -7,7 +7,7 @@ Coffee Shop is a local Odin dispatcher. The active Pi session decides how to div
 ```mermaid
 flowchart TD
     Dev[Developer] -->|Order and review| Barista[Active Pi session<br/>Barista]
-    Barista -->|Recipe: order plus Shots| CLI[Coffee Shop CLI<br/>Odin]
+    Barista -->|Recipe: order plus Shots| CLI[Coffee Shop brew command and supervisor<br/>Odin]
     Beans[Target repository<br/>and task context] --> CLI
     CLI --> Register[Register<br/>current Brew and Shot status]
     CLI --> Receipt[Receipt<br/>append-only event history]
@@ -15,10 +15,20 @@ flowchart TD
     CLI --> HERDR[Herdr workspace<br/>one per Brew]
     HERDR --> Tab1[Shot A tab]
     HERDR --> TabN[Shot N tab]
-    Tab1 --> Worker1[Pi Worker<br/>Shot A]
-    TabN --> WorkerN[Pi Worker<br/>Shot N]
+    Tab1 --> Worker1[Worker A<br/>Pi event adapter]
+    TabN --> WorkerN[Worker N<br/>Pi event adapter]
     Worker1 --> Station1[Station A<br/>isolated Git worktree]
     WorkerN --> StationN[Station N<br/>isolated Git worktree]
+    Worker1 --> Pi1[Pi CLI<br/>JSON mode]
+    WorkerN --> PiN[Pi CLI<br/>JSON mode]
+    Pi1 -->|newline-delimited JSON events| Worker1
+    PiN -->|newline-delimited JSON events| WorkerN
+    Worker1 -->|bounded normalized events| Activity[Per-Brew Unix-domain stream socket]
+    WorkerN -->|bounded normalized events| Activity
+    Activity -->|validate Brew and running Shot| CLI
+    CLI -->|atomically persist| ActivityState[Latest activity<br/>per running Shot]
+    Status[Coffee Shop status command] -->|read snapshot| Register
+    Status -->|read snapshot| ActivityState
     Worker1 --> Results[Worker reports and check evidence]
     WorkerN --> Results
     Results --> Filter[Filter<br/>review and existing tests]
@@ -27,6 +37,14 @@ flowchart TD
     Filter --> Collect
     Collect --> Oreo[Oreo<br/>summary, evidence, decisions]
     Oreo --> Barista
+    Barista -->|explicit request| Blend[Proposed Blend command<br/>one commit]
+    Station1 -->|Shot changes| Blend
+    StationN -->|Shot changes| Blend
+    Blend --> Delivery[Retained integration worktree]
+    Delivery -->|commit hash and path| Barista
+    Delivery -. commit succeeds .-> Cleanup[Close Herdr tabs<br/>remove per-Shot Stations]
+    Blend -. conflict or commit failure .-> Preserve[Keep tabs and Stations]
+    Preserve --> Barista
     Barista --> Dev
 ```
 
@@ -40,12 +58,14 @@ flowchart TD
 | **Recipe** | An Order and its explicit list of Shots. The Barista owns task decomposition. |
 | **Shot** | One unit of work with one prompt and one Worker. |
 | **Station** | A Git worktree isolated to one Shot. |
-| **Worker** | One Pi CLI process in a Herdr tab, working in its Shot's Station. |
+| **Worker** | One Pi CLI process in a Herdr tab, working in its Shot's Station. Pi's JSON event stream is reduced to bounded activity summaries. |
+| **Activity channel** | A per-Brew Unix-domain stream socket. Workers send bounded newline-delimited summaries best-effort; the supervisor validates Brew/Shot identity and persists the latest one per running Shot. It does not establish liveness. |
 | **Register** | Durable current status for each Brew and Shot. |
 | **Receipt** | Append-only events that explain status changes. |
 | **Scale** | The maximum number of concurrent Workers. |
 | **Filter** | Uses a separate one-shot Pi reviewer to check selected changes against the Beans repository's root `standards.md`, then discovers and runs unit/component and end-to-end test commands from existing manifests and test configuration. It reports evidence without fixing code or changing test setup. |
 | **Oreo** | The final review packet with the outcome, evidence, and any decision for the developer. |
+| **Blend (proposed)** | An explicit post-review operation that gathers a Brew's Shot changes into one commit in a retained integration worktree, then removes the per-Shot worktrees after success. |
 
 ## Recipe contract
 
@@ -78,6 +98,12 @@ The Receipt event is appended before the Register is rewritten. If a write is in
 
 Allowed transitions are `queued` → `running`, `failed`, or `cancelled`, and `running` → `completed`, `failed`, `cancelled`, or `interrupted`. A cancellation request is recorded separately; a running Shot stays `running` until the Worker exit is confirmed, then becomes `cancelled`. Cancelling a Brew marks queued Shots `cancelled` and interrupts active Workers. Brew status is derived from its Shots rather than maintained as a second state machine.
 
+## Worker activity
+
+A Worker runs Pi with `--mode json --print --no-session`. It parses newline-delimited Pi events and sends only short normalized summaries (for example, a tool name or “drafting response”) over the Brew's Unix-domain stream socket. Each newline-delimited event is bounded and includes a timestamp. The Worker does not send prompts, tool arguments, tool output, or response deltas; send and receive failures do not fail a successful Pi run. The Worker still extracts the final assistant text for the report.
+
+The supervisor stamps received events and atomically saves the latest activity under `workers/<shot>.activity.json`. `workers/<shot>.started_at` records the Worker start time. A `status` snapshot shows running time and the age/description of the last activity on the same line as the Shot. Activity older than 12 minutes is marked quiet; this is not a timeout. A missing socket or activity record only removes progress detail. Worker process identity remains the authority for liveness and completion.
+
 ## Cancellation and recovery
 
 `cancel <brew-id>` records a cancellation request and is safe to repeat. While the supervisor is alive it does the work: queued Shots become `cancelled`, and each running Worker has its Herdr tab closed, which ends Pi. A Shot becomes `cancelled` once its Worker process is confirmed gone, or `interrupted` if that cannot be confirmed within ten seconds.
@@ -99,11 +125,18 @@ Liveness has three answers, not two. A process is **gone** only on evidence: its
 
 1. The Barista supplies a JSON Recipe and the path to the Beans.
 2. The CLI validates the repository and Recipe before it starts Workers.
-3. The CLI creates one Station per Shot and one Herdr workspace per Brew. A per-Brew supervisor creates one tab per Shot, runs `pi --print --no-session` from each Station, and keeps at most two Workers active. It schedules queued Shots as slots open and exits when the Brew is terminal.
+3. The CLI creates one Station per Shot and one Herdr workspace per Brew. A per-Brew supervisor creates one tab per Shot, runs `pi --mode json --print --no-session` from each Station, and keeps at most two Workers active. It schedules queued Shots as slots open, receives best-effort activity messages, and exits when the Brew is terminal.
 4. Workers write their result and check evidence to their own Station. The Barista may assign a normal Shot to add tests from `standards.md`; that Worker receives the Taste-Driven Development skill as task guidance, without installing it into the Beans repository.
-5. The CLI updates the Register and Receipt as it observes Worker state. The Scale allows two active Workers; the supervisor continues queued independent Shots after a Worker fails. There is no automatic timeout.
+5. The CLI updates the Register and Receipt as it observes Worker state. The supervisor persists latest activity separately; activity recency never changes liveness. The Scale allows two active Workers; the supervisor continues queued independent Shots after a Worker fails. There is no automatic timeout.
 6. Filter runs a separate one-shot Pi code review against `standards.md`, then discovers and runs the repository's existing unit/component and end-to-end test commands without overriding them.
 7. The Barista collects Worker reports and Filter evidence into the Oreo for human review.
+8. The proposed `blend <brew-id>` action integrates reviewed Shot changes after the Barista approves the Oreo.
+
+## Blend (proposed)
+
+Blend creates one retained integration worktree from the Brew's recorded Beans base commit and combines its Shot changes into one local commit. Workers continue not to commit. On success, Blend closes that Brew's Herdr tabs and removes its per-Shot Station worktrees, but preserves Brew state, reports, and Filter evidence. It prints the commit hash and integration-worktree path; it never pushes or creates a PR. The Barista removes the retained integration worktree only after the owner is done with it.
+
+If changes conflict or the commit fails, Blend leaves the original tabs, Stations, and state intact. The action is explicit and scoped to one Brew; it does not clean up historical or unrelated Brews.
 
 ## Safety boundaries
 
@@ -112,8 +145,8 @@ Liveness has three answers, not two. A process is **gone** only on evidence: its
 - Coffee Shop reports a missing or failed Worker as incomplete. It does not treat an unreadable state record as success.
 - A test-authoring Worker reads the Beans repository's root `standards.md` and receives Taste-Driven Development as task guidance; Coffee Shop does not install the skill into the Beans repository.
 - Filter reports review findings and test outcomes; it does not auto-fix, commit, merge, publish, or manage CI. It does not rewrite test scripts or configuration. If discovery is ambiguous or setup is unavailable, it reports that instead of guessing.
-- Workers do not merge or publish their changes. A person reviews the Oreo and decides what to integrate.
-- Coffee Shop never automatically deletes Stations or local Brew state. Users remove reviewed Stations and state manually; `collect` preserves them.
+- Workers do not merge, commit, or publish their changes. A person reviews the Oreo and explicitly decides when to integrate them.
+- Coffee Shop preserves Stations and Brew state by default. The proposed Blend action removes only the target Brew's per-Shot worktrees after its single integration commit succeeds; Brew state, reports, and Filter evidence remain.
 - The per-Brew supervisor exists only while `brew` is active; there is no always-on watcher or automatic Worker timeout. The Barista asks for status or collection when needed.
 - The Register and Receipt live under the Coffee Shop state directory, outside the Beans repository.
 

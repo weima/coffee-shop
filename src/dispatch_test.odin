@@ -50,7 +50,15 @@ test_worker_records_pi_failure_and_passes_prompt_as_one_argument :: proc(t: ^tes
 	defer delete(brew_id)
 
 	fake_pi := fmt.tprintf("%s/pi", root)
-	_ = os.write_entire_file(fake_pi, "#!/bin/sh\nprintf '%s' \"$4\" > arg.txt\nexit 3\n", os.Permissions{.Read_User, .Write_User, .Execute_User})
+	fake_pi_script := `#!/bin/sh
+for last; do :; done
+printf '%s' "$last" > arg.txt
+exit 3
+`
+	_ = os.write_entire_file(
+		fake_pi, fake_pi_script,
+		os.Permissions{.Read_User, .Write_User, .Execute_User},
+	)
 	code := run_worker_with(state_root, brew_id, "a", fake_pi)
 	testing.expect_value(t, code, 3)
 
@@ -85,6 +93,128 @@ make_fixture_repo :: proc(t: ^testing.T, path: string) {
 		state, _, _, err := os.process_exec(os.Process_Desc{command = args}, context.allocator)
 		testing.expect(t, err == nil && state.success)
 	}
+}
+
+@(test)
+test_worker_streams_pi_json_and_preserves_final_report :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	repo := fmt.tprintf("%s/repo", root)
+	make_fixture_repo(t, repo)
+	recipe_path := fmt.tprintf("%s/recipe.json", root)
+	_ = os.write_entire_file(recipe_path, `{
+		"order":"o",
+		"shots":[{"id":"a","prompt":"pa"}]
+	}`, os.Permissions{.Read_User, .Write_User})
+	state_root := fmt.tprintf("%s/state", root)
+	brew_id, _ := run_brew_with(repo, recipe_path, state_root, "/nonexistent", "/nonexistent/herdr")
+	defer delete(brew_id)
+	brew_dir := fmt.tprintf("%s/%s", state_root, brew_id)
+
+	socket_path := activity_socket_path(brew_dir)
+	defer delete(socket_path)
+	listener, listening := activity_listener_open(socket_path)
+	testing.expect(t, listening)
+	defer activity_listener_close(&listener)
+	fake_pi := fmt.tprintf("%s/pi", root)
+	_ = os.write_entire_file(fake_pi, `#!/bin/sh
+printf '%s\n' '{"type":"turn_start"}'
+printf '%s\n' '{"type":"tool_execution_start","toolName":"read","args":{}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant",'\
+'"content":[{"type":"text","text":"final report"}]}}'
+printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant",'\
+'"content":[{"type":"text","text":"final report"}]}]}'
+`, os.Permissions{.Read_User, .Write_User, .Execute_User})
+	code := run_worker_with(state_root, brew_id, "a", fake_pi)
+	testing.expect_value(t, code, 0)
+
+	report_path := fmt.tprintf("%s/reports/a.md", brew_dir)
+	report, report_err := os.read_entire_file(report_path, context.allocator)
+	defer delete(report)
+	testing.expect_value(t, report_err, os.Error(nil))
+	testing.expect_value(t, string(report), "final report")
+
+	saw_start, saw_tool, saw_end := false, false, false
+	for {
+		received := activity_listener_receive(&listener)
+		switch received.kind {
+		case .Message:
+			if received.message.brew_id == brew_id && received.message.shot_id == "a" {
+				saw_start = saw_start || received.message.kind == "starting"
+				saw_tool = saw_tool || received.message.kind == "tool_start"
+				saw_end = saw_end || received.message.kind == "agent_end"
+			}
+			activity_message_destroy(&received.message)
+		case .Unavailable:
+			break
+		case .Malformed, .Failed:
+			testing.expect(t, false, "Pi activity message should be valid")
+		}
+		if received.kind == .Unavailable {
+			break
+		}
+	}
+	testing.expect(
+		t,
+		saw_start && saw_tool && saw_end,
+		"starting, tool and completion activity should be streamed",
+	)
+}
+
+@(test)
+test_supervisor_accepts_activity_only_for_running_shots_in_this_brew :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	register := make_test_register(t)
+	defer destroy_register(&register)
+	brew_dir := fmt.tprintf("%s/%s", root, register.brew_id)
+	_ = create_state(brew_dir, &register)
+	workers_dir := state_file_path(brew_dir, "workers")
+	defer delete(workers_dir)
+	_ = os.make_directory_all(workers_dir, os.Permissions{.Read_User, .Write_User, .Execute_User})
+	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_RUNNING, "Worker started")
+	delete(register.shots[1].status)
+	register.shots[1].status = strings.clone(SHOT_COMPLETED)
+
+	socket_path := activity_socket_path(brew_dir)
+	defer delete(socket_path)
+	listener, listening := activity_listener_open(socket_path)
+	testing.expect(t, listening)
+	defer activity_listener_close(&listener)
+	sender, sending := activity_sender_open(socket_path)
+	testing.expect(t, sending)
+	defer activity_sender_close(&sender)
+
+	for message in ([]Activity_Message{
+		{
+			brew_id = "other-brew", shot_id = "shot-a", kind = "tool_start",
+			description = "wrong Brew", timestamp_ns = 1,
+		},
+		{
+			brew_id = register.brew_id, shot_id = "shot-missing", kind = "tool_start",
+			description = "unknown Shot", timestamp_ns = 2,
+		},
+		{
+			brew_id = register.brew_id, shot_id = "shot-b", kind = "tool_start",
+			description = "terminal Shot", timestamp_ns = 3,
+		},
+		{
+			brew_id = register.brew_id, shot_id = "shot-a", kind = "tool_start",
+			description = "valid activity", timestamp_ns = 4,
+		},
+	}) {
+		testing.expect(t, activity_sender_send(&sender, message))
+	}
+	drain_worker_activity(brew_dir, register, &listener)
+
+	record, found := read_activity_record(brew_dir, "shot-a")
+	defer activity_record_destroy(&record)
+	testing.expect(t, found)
+	testing.expect_value(t, record.description, "valid activity")
+	_, found = read_activity_record(brew_dir, "shot-b")
+	testing.expect(t, !found)
+	_, found = read_activity_record(brew_dir, "shot-missing")
+	testing.expect(t, !found)
 }
 
 @(test)
@@ -141,7 +271,10 @@ test_brew_records_the_beans_base_commit :: proc(t: ^testing.T) {
 	repo := fmt.tprintf("%s/repo", root)
 	make_fixture_repo(t, repo)
 	recipe_path := fmt.tprintf("%s/recipe.json", root)
-	_ = os.write_entire_file(recipe_path, `{"order":"o","shots":[{"id":"a","prompt":"pa"}]}`, os.Permissions{.Read_User, .Write_User})
+	_ = os.write_entire_file(recipe_path, `{
+		"order":"o",
+		"shots":[{"id":"a","prompt":"pa"}]
+	}`, os.Permissions{.Read_User, .Write_User})
 	state_root := fmt.tprintf("%s/state", root)
 
 	brew_id, err := run_brew_with(repo, recipe_path, state_root, "/nonexistent", "/nonexistent/herdr")
@@ -164,7 +297,10 @@ test_herdr_json_errors_are_reported_as_their_message :: proc(t: ^testing.T) {
 	repo := fmt.tprintf("%s/repo", root)
 	make_fixture_repo(t, repo)
 	recipe_path := fmt.tprintf("%s/recipe.json", root)
-	_ = os.write_entire_file(recipe_path, `{"order":"o","shots":[{"id":"a","prompt":"pa"}]}`, os.Permissions{.Read_User, .Write_User})
+	_ = os.write_entire_file(recipe_path, `{
+		"order":"o",
+		"shots":[{"id":"a","prompt":"pa"}]
+	}`, os.Permissions{.Read_User, .Write_User})
 	// What real Herdr does when no server is running: JSON on stderr, exit code 1.
 	herdr := fmt.tprintf("%s/herdr", root)
 	_ = os.write_entire_file(herdr, `#!/bin/sh

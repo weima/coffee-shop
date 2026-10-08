@@ -1,5 +1,6 @@
 package main
 
+import "core:bufio"
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
@@ -38,6 +39,14 @@ Worker_Result :: struct {
 	exit_code: int,
 	success: bool,
 	detail: string,
+}
+
+Pi_Run_Result :: struct {
+	process_state: os.Process_State,
+	started: bool,
+	stream_ok: bool,
+	stderr: []byte,
+	error: string,
 }
 
 run_brew :: proc(repo, recipe_path: string) -> (brew_id: string, err: string) {
@@ -355,6 +364,11 @@ destroy_herdr_response :: proc(response: ^Herdr_Response, allocator := context.a
 }
 
 dispatch_workers :: proc(directory: string, register: ^Register, executable, state_root, herdr: string) -> State_Error {
+	socket_path := activity_socket_path(directory)
+	defer delete(socket_path)
+	listener, listening := activity_listener_open(socket_path)
+	defer activity_listener_close(&listener)
+
 	launched := make([]bool, len(register.shots))
 	defer delete(launched)
 
@@ -364,6 +378,9 @@ dispatch_workers :: proc(directory: string, register: ^Register, executable, sta
 		}
 		if err := settle_brew(directory, register, herdr, .Observe); err.kind != .None {
 			return err
+		}
+		if listening {
+			drain_worker_activity(directory, register^, &listener)
 		}
 
 		active := 0
@@ -407,6 +424,33 @@ dispatch_workers :: proc(directory: string, register: ^Register, executable, sta
 	}
 }
 
+ACTIVITY_DRAIN_LIMIT :: 64
+
+drain_worker_activity :: proc(directory: string, register: Register, listener: ^Activity_Listener) {
+	for _ in 0 ..< ACTIVITY_DRAIN_LIMIT {
+		result := activity_listener_receive(listener)
+		switch result.kind {
+		case .Message:
+			shot_index := find_shot(register, result.message.shot_id)
+			if result.message.brew_id != register.brew_id || shot_index < 0 ||
+				register.shots[shot_index].status != SHOT_RUNNING {
+				activity_message_destroy(&result.message)
+				continue
+			}
+			now_ns := time.now()._nsec
+			if result.message.timestamp_ns > now_ns {
+				result.message.timestamp_ns = now_ns
+			}
+			_ = write_activity_record(directory, result.message)
+			activity_message_destroy(&result.message)
+		case .Malformed:
+			continue
+		case .Unavailable, .Failed:
+			return
+		}
+	}
+}
+
 herdr_rename_tab :: proc(herdr, tab_id, shot_id: string) -> string {
 	label := fmt.tprintf("Shot %s", shot_id)
 	stdout, stderr, err := run_herdr(herdr, []string{"tab", "rename", tab_id, label})
@@ -436,6 +480,136 @@ worker_command :: proc(executable, state_root, brew_id, shot_id: string) -> (com
 shell_quote :: proc(value: string) -> string {
 	escaped, _ := strings.replace_all(value, "'", "'\\''", context.temp_allocator)
 	return fmt.aprintf("'%s'", escaped)
+}
+
+run_pi_json_with_activity :: proc(
+	pi, working_dir, prompt, brew_dir, brew_id, shot_id: string,
+	parser: ^Pi_Event_State,
+	sender: ^Activity_Sender,
+	allocator := context.allocator,
+) -> Pi_Run_Result {
+	result: Pi_Run_Result
+	stderr_name := fmt.aprintf("%s.stderr.log", shot_id)
+	defer delete(stderr_name)
+	reports_dir := state_file_path(brew_dir, "reports")
+	defer delete(reports_dir)
+	stderr_path := state_file_path(reports_dir, stderr_name)
+	defer delete(stderr_path)
+	stderr_file, stderr_open_err := os.create(stderr_path)
+	if stderr_open_err != nil {
+		result.error = "could not create Pi stderr log"
+		return result
+	}
+
+	stdout_read, stdout_write, pipe_err := os.pipe()
+	if pipe_err != nil {
+		_ = os.close(stderr_file)
+		result.error = "could not create Pi output pipe"
+		return result
+	}
+	defer os.close(stdout_read)
+	process, start_err := os.process_start(os.Process_Desc{
+		working_dir = working_dir,
+		command = []string{pi, "--mode", "json", "--print", "--no-session", "--", prompt},
+		stdout = stdout_write,
+		stderr = stderr_file,
+	})
+	_ = os.close(stdout_write)
+	_ = os.close(stderr_file)
+	if start_err != nil {
+		_ = os.remove(stderr_path)
+		result.error = fmt.aprintf("could not start Pi: %v", start_err)
+		return result
+	}
+
+	result.started = true
+	result.stream_ok = read_pi_event_stream(stdout_read, parser, sender, brew_id, shot_id)
+	if !result.stream_ok {
+		result.error = "could not read Pi JSON event stream"
+		_ = os.process_kill(process)
+	}
+	result.process_state, start_err = os.process_wait(process)
+	if start_err != nil && result.error == "" {
+		result.error = fmt.aprintf("could not wait for Pi: %v", start_err)
+	}
+
+	stderr, stderr_err := os.read_entire_file(stderr_path, allocator)
+	if stderr_err != nil {
+		delete(stderr)
+		if result.error == "" {
+			result.error = "could not read Pi stderr log"
+		}
+	} else {
+		result.stderr = stderr
+	}
+	return result
+}
+
+read_pi_event_stream :: proc(
+	stdout: ^os.File,
+	parser: ^Pi_Event_State,
+	sender: ^Activity_Sender,
+	brew_id, shot_id: string,
+) -> bool {
+	reader: bufio.Reader
+	bufio.reader_init(&reader, os.to_reader(stdout))
+	defer bufio.reader_destroy(&reader)
+
+	line: [PI_EVENT_LINE_MAX]u8
+	line_len := 0
+	discarding := false
+	for {
+		fragment, read_err := bufio.reader_read_slice(&reader, '\n')
+		if !discarding {
+			if len(fragment) > len(line)-line_len {
+				line_len = 0
+				discarding = true
+			} else {
+				copy(line[line_len:], fragment)
+				line_len += len(fragment)
+			}
+		}
+		if read_err == .Buffer_Full {
+			continue
+		}
+		if read_err == .EOF {
+			if !discarding && line_len > 0 {
+				pi_event_stream_line(parser, sender, brew_id, shot_id, string(line[:line_len]))
+			}
+			return true
+		}
+		if read_err != nil {
+			return false
+		}
+		if !discarding && line_len > 0 {
+			pi_event_stream_line(parser, sender, brew_id, shot_id, string(line[:line_len]))
+		}
+		line_len = 0
+		discarding = false
+	}
+}
+
+pi_event_stream_line :: proc(
+	parser: ^Pi_Event_State,
+	sender: ^Activity_Sender,
+	brew_id, shot_id, line: string,
+) {
+	if !pi_event_consume(parser, line) || sender.fd < 0 {
+		return
+	}
+	_ = activity_sender_send(sender, Activity_Message{
+		brew_id = brew_id,
+		shot_id = shot_id,
+		kind = parser.last_kind,
+		description = parser.last_description,
+		timestamp_ns = time.now()._nsec,
+	})
+}
+
+pi_run_result_destroy :: proc(result: ^Pi_Run_Result, allocator := context.allocator) {
+	delete(result.stderr, allocator)
+	delete(result.error, allocator)
+	result^ = Pi_Run_Result{}
 }
 
 run_worker :: proc(state_root, brew_id, shot_id: string) -> int {
@@ -492,32 +666,57 @@ run_worker_with :: proc(state_root, brew_id, shot_id, pi: string) -> int {
 
 	prompt := fmt.aprintf("Order: %s\n\nShot: %s", register.order, register.shots[index].prompt)
 	defer delete(prompt)
-	process_state, stdout, stderr, run_err := os.process_exec(os.Process_Desc{
-		working_dir = register.shots[index].station_path,
-		command = []string{pi, "--print", "--no-session", "--", prompt},
-	}, context.allocator)
-	defer delete(stdout)
-	defer delete(stderr)
-	if run_err != nil {
-		result.detail = fmt.aprintf("could not start Pi: %v", run_err)
+	activity_path := activity_socket_path(brew_dir)
+	defer delete(activity_path)
+	sender, sender_open := activity_sender_open(activity_path)
+	if !sender_open {
+		sender = Activity_Sender{fd = -1}
+	}
+	defer activity_sender_close(&sender)
+	if sender.fd >= 0 {
+		_ = activity_sender_send(&sender, Activity_Message{
+			brew_id = brew_id,
+			shot_id = shot_id,
+			kind = "starting",
+			description = "Starting Pi",
+			timestamp_ns = time.now()._nsec,
+		})
+	}
+	parser: Pi_Event_State
+	defer pi_event_state_destroy(&parser)
+	run_result := run_pi_json_with_activity(
+		pi, register.shots[index].station_path, prompt, brew_dir, brew_id, shot_id,
+		&parser, &sender,
+	)
+	defer pi_run_result_destroy(&run_result)
+	result.exit_code = run_result.process_state.exit_code
+	if !run_result.started {
+		result.detail = strings.clone(run_result.error)
 	} else {
-		result.exit_code = process_state.exit_code
-		result.success = process_state.success && process_state.exit_code == 0
-		if result.success {
+		result.success = run_result.process_state.success &&
+			run_result.process_state.exit_code == 0 && run_result.stream_ok && run_result.error == ""
+		switch {
+		case run_result.error != "":
+			result.detail = strings.clone(run_result.error)
+		case result.success:
 			result.detail = strings.clone("Pi exited with code 0")
-		} else {
-			result.detail = fmt.aprintf("Pi exited with code %d", process_state.exit_code)
+		case:
+			result.detail = fmt.aprintf("Pi exited with code %d", run_result.process_state.exit_code)
 		}
-		if !write_shot_output(brew_dir, shot_id, stdout, stderr) {
+		report := transmute([]byte)parser.final_report
+		if !write_shot_output(brew_dir, shot_id, report, run_result.stderr) {
 			result.success = false
 			delete(result.detail)
 			result.detail = strings.clone("Pi output could not be written to the Brew state")
 		}
-		if len(stdout) > 0 {
-			fmt.print(transmute(string)stdout)
+		if parser.final_report != "" {
+			fmt.print(parser.final_report)
+			if parser.final_report[len(parser.final_report)-1] != '\n' {
+				fmt.println()
+			}
 		}
-		if len(stderr) > 0 {
-			fmt.eprint(transmute(string)stderr)
+		if len(run_result.stderr) > 0 {
+			fmt.eprint(transmute(string)run_result.stderr)
 		}
 	}
 
@@ -622,10 +821,11 @@ write_worker_started :: proc(directory, shot_id: string) -> bool {
 	path := worker_started_path(directory, shot_id)
 	defer delete(path)
 	identity, ok := current_identity()
-	if !ok {
+	if !ok || !write_identity_file(path, identity) {
 		return false
 	}
-	return write_identity_file(path, identity)
+	_ = write_worker_started_at(directory, shot_id, time.now()._nsec)
+	return true
 }
 
 state_error_message :: proc(err: State_Error) -> string {
