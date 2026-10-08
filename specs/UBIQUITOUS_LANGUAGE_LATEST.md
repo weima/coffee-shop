@@ -30,7 +30,8 @@ These are working mappings for the option-2 design, not a requirement to use eve
 | **Menu** | Coffee Shop's CLI commands and supported options. | Good user-interface metaphor. |
 | **Grinder** | The Barista's step of splitting an Order into independent Shots. | Useful as a process name only if a distinct decomposition step exists. |
 | **Machine** | The Pi CLI runtime used to launch Workers. | Clear enough in architecture prose; use “Pi” in implementation details. |
-| **Filter** | Automated checks that a returned change must pass or report. | Good verification metaphor; a failing check does not silently discard work. |
+| **Filter** | Reviews selected changes against the Beans repository's root `standards.md`, discovers and runs its existing unit/component and end-to-end test commands, and reports evidence without changing test configuration. | Good verification metaphor; it does not author tests or hide failures. |
+| **Taste-Driven Development (TDD)** | The optional Worker skill for deriving and authoring tests from the Order and `standards.md`: test-first unit/component coverage and behavior-focused E2E scenarios using the repository's existing conventions. | TDD is the skill name; it does not change how test commands are discovered or run. |
 | **Scale** | A configured limit on concurrent Workers. | Strong fit for bounded parallelism. |
 | **Timer** | A timeout or deadline for a Worker or Brew. | Direct mapping. |
 | **Register** | The durable local index of active Brews and their current status. | Good state-store metaphor. |
@@ -47,7 +48,8 @@ These are working mappings for the option-2 design, not a requirement to use eve
 - Each **Shot** is assigned to one **Worker** and one **Station**; a Worker does not share a Station with another Worker during a Brew.
 - The **Barista** uses the **Beans**, prepares the Recipe, reviews the collected Shot results, and prepares the **Oreo**; Coffee Shop does not merge or publish them automatically.
 - The **Register** tracks current Brew and Shot status; the **Receipt** records status events; the **Oreo** summarizes the outcome for human review.
-- The **Scale** bounds concurrent Workers. The **Filter** reports verification results before an Oreo is served.
+- The **Scale** bounds concurrent Workers. The **Filter** reviews changes and reports existing test results before an Oreo is served.
+- The **Barista** may assign a normal **Shot** to add tests using **Taste-Driven Development**; Filter remains responsible for running the repository's existing test commands.
 
 ## Example dialogue
 
@@ -76,4 +78,5 @@ Candidate words for future product vocabulary. These are a naming palette, not a
 - **Recipe** is the explicit task breakdown, not a guarantee that tasks are independent. The Barista must keep dependent work in sequence rather than dispatching it as parallel Shots.
 - **Oreo** is intentionally a playful name for the review packet, not a new data format or a required file type.
 - The word bank is a candidate palette only; do not assign software meanings to these words without a concrete concept that needs naming.
+- **Taste-Driven Development** is a Worker skill name, not a new lifecycle component; test-authoring remains ordinary Shot work.
 - Coffee and snack terms are product vocabulary, not a reason to rename common engineering concepts in code or logs when that would reduce clarity.

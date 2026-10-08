@@ -28,6 +28,9 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 - Choose the Scale default and upper bound, and the timeout behavior, if any.
 - Define how the CLI identifies and invokes the Pi executable and tmux; keep executable paths and arguments distinct from task text.
 - Define when a Station may be removed. Until then, retain it for human review.
+- Require a root-level `standards.md` in the Beans repository for code review and test-authoring guidance.
+- Define how Coffee Shop supplies `standards.md` and the Taste-Driven Development skill to a test-authoring Worker without modifying the Beans repository.
+- Define how Filter discovers existing unit/component and end-to-end test commands. It must preserve repository scripts and configuration; ambiguous discovery is reported, not guessed.
 
 **Gate:** Every item above has a recorded decision. The decisions preserve the architecture boundaries: one local machine, Pi, tmux, no daemon, no automatic merge, and no publishing.
 
@@ -64,6 +67,7 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 - Start one tmux session and Pi process per Shot, passing the executable and argument vector separately from task text.
 - Enforce the Scale and record each Station path, tmux session identity, launch result, and process outcome.
 - On partial launch failure, record which Shots started and leave their Stations available for inspection.
+- A Recipe may assign a normal Shot to add unit/component or end-to-end tests from the target repository's `standards.md`. Supply the Taste-Driven Development skill as Worker guidance without installing it into the target repository; do not create a special test-authoring component.
 - Keep shell command construction out of the task-data path.
 
 **Gate:** A local test with a temporary Git repository and fake Pi executable proves two Shots use distinct worktrees and sessions. Tests cover missing executables, tmux launch failure, and non-zero Worker exit without contacting GitHub or an AI service.
@@ -79,12 +83,14 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 
 ## Slice 6 — Collect results and prepare the Oreo
 
-- Implement `collect` to gather each Shot's report and requested verification evidence.
-- Build the Oreo from collected results and Filter outcomes; show missing reports and failing checks explicitly.
-- Identify any decisions needed from the developer. Do not merge, publish, or remove unreviewed Stations.
+- Implement `collect` to gather each Shot's report and Filter evidence.
+- Review selected changes against the Beans repository's root `standards.md`.
+- Discover and run the repository's existing unit/component and end-to-end test commands without changing scripts, configuration, or test selection. For MFEs, use Playwright only for browser behavior that unit/component tests cannot prove, following the repository's conventions.
+- Report missing standards, ambiguous test commands, unavailable setup, and test failures explicitly; do not guess, override commands, or hide failures.
+- Build the Oreo from Worker reports and Filter evidence. Identify any decisions needed from the developer. Do not merge, publish, or remove unreviewed Stations.
 - Make collection repeatable without losing or duplicating evidence.
 
-**Gate:** Tests cover successful, failed, and missing reports; failing and missing check evidence; and repeated collection. The Oreo reports every Shot outcome, evidence, and unresolved decision.
+**Gate:** Tests cover successful, failed, and missing reports; review against `standards.md`; test discovery without command overrides; failing or unavailable test evidence; and repeated collection. The Oreo reports every Shot outcome, evidence, and unresolved decision.
 
 ## Slice 7 — Verify the vertical slice and dogfood
 

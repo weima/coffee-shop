@@ -5,3 +5,4 @@
 - Do not force-push or push to a different remote/branch unless the user explicitly requests it.
 - A request to make changes, commit, or open a PR does not by itself authorize a push.
 - Follow any higher-priority instructions that prescribe a different Git workflow; this file does not override them.
+- When a Shot authors or changes tests in a Beans repository, load [Taste-Driven Development](skills/taste-driven-development/SKILL.md). It uses the repository's root `standards.md` and existing test conventions; Filter separately discovers and runs the suites.
