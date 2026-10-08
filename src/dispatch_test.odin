@@ -343,3 +343,13 @@ exit 1
 	testing.expect(t, strings.contains(string(receipt), "Herdr workspace launch failed: no herdr server is running; run herdr to start it"), string(receipt))
 	testing.expect(t, !strings.contains(string(receipt), "server_not_running"), "the raw JSON must not be shown")
 }
+
+// A block line that other text follows still names its reason. The Shot stays
+// incomplete, because no marker ends the final message.
+@(test)
+test_completion_marker_names_a_block_followed_by_other_text :: proc(t: ^testing.T) {
+	marker, clean := completion_marker("I cannot do it.\nCS-BLOCKED: no access\n\nPREAMBLE-OK\n")
+	defer delete(marker)
+	defer delete(clean)
+	testing.expect_value(t, marker, "CS-BLOCKED: no access")
+}
