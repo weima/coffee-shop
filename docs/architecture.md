@@ -48,6 +48,110 @@ flowchart TD
     Barista --> Dev
 ```
 
+## Design views
+
+The views below show the same design from different angles. The server, retry and ownership views describe the target design in PLAN.md item 8; the Shot view describes today's states.
+
+### Processes
+
+Which processes exist, and what each one may talk to.
+
+```mermaid
+flowchart LR
+    Dev[Developer or Barista shell] -->|brew| Sup[Brew supervisor process]
+    Dev -->|status, cancel, collect| Cmd[Command process]
+    Sup -->|requests over server.sock| Srv[Repository server]
+    Cmd -->|requests over server.sock| Srv
+    Sup -->|opens tabs and runs Workers| Herdr[Herdr workspace]
+    Herdr --> W[Worker process, one per Shot]
+    W -->|requests with Brew token| Srv
+    W -->|runs| Pi[pi --mode json --print]
+    Srv -->|only writer| State[(register.json and receipt.ndjson)]
+```
+
+### File ownership
+
+Each file has one writer, so no file needs a lock shared between processes.
+
+```mermaid
+flowchart TD
+    Brew[brew command, before any Worker exists] -->|creates| Reg[register.json]
+    Brew -->|creates| Rec[receipt.ndjson]
+    Srv[Repository server] -->|sole writer after launch| Reg
+    Srv -->|sole writer after launch| Rec
+    Srv -->|rewrites with heartbeat| Meta[servers/name-hash/server.json]
+    Srv -->|holds| Lock[servers/name-hash/server.lock]
+    W[Worker for one Shot] -->|writes its own| Started[workers/shot.started]
+    W -->|writes its own| Result[results/shot.json]
+    W -->|writes its own| Report[reports/shot.md]
+    W -->|writes its own| Act[workers/shot.activity.json]
+    Cancel[cancel command] -->|writes marker only| Marker[cancel marker file]
+```
+
+Commands read only a Brew's repository path and token from `register.json`, to find their server. Brew status always comes from the server.
+
+### Transition through the server
+
+A Worker's state change, including the retry-then-abort path. No client reads or writes `register.json` directly.
+
+```mermaid
+sequenceDiagram
+    participant W as Worker
+    participant C as Client code
+    participant S as Repository server
+    participant F as register.json and receipt.ndjson
+    W->>C: transition Shot to running
+    C->>S: connect to server.sock
+    alt server reachable
+        S->>F: check repository and token, then append Receipt event
+        S->>F: rewrite Register
+        S-->>C: ok
+        C-->>W: ok
+    else server not reachable
+        C->>C: start a server if none is running
+        loop a fixed number of attempts, pausing between them
+            C->>S: connect to server.sock
+        end
+        C-->>W: abort with the cause, no state changed
+    end
+```
+
+### Server lifecycle
+
+The server is one process per repository. A restart keeps its id, so Workers launched earlier still reach it.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Electing
+    Electing --> Standby: lock held by another server
+    Standby --> [*]: this process exits
+    Electing --> Serving: lock acquired, generation plus one written
+    Serving --> Serving: serve request, heartbeat each second
+    Serving --> Idle: no non-terminal Brew for this repository
+    Idle --> Serving: a Brew becomes active
+    Idle --> Exited: idle timeout passes
+    Serving --> Crashed: process dies
+    Crashed --> Electing: kernel releases lock, next client starts a server with the same id
+    Exited --> [*]
+```
+
+### Shot states
+
+The states a Shot moves through, as recorded in its Register.
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued
+    queued --> running: Worker started
+    queued --> failed: no tab or launch failed
+    queued --> cancelled: cancelled before start
+    running --> completed: CS-DONE, or exit 0 in a v0.1 Brew
+    running --> incomplete: no marker, or CS-BLOCKED
+    running --> failed: exit with an error
+    running --> cancelled: exited after a cancel request
+    running --> interrupted: exit not seen, or not confirmed after cancel
+```
+
 ## Components
 
 | Component | Responsibility |
@@ -86,7 +190,7 @@ Store each Brew under `$CS_STATE_DIR/<brew-id>/`; when `CS_STATE_DIR` is unset, 
 
 Each Brew has a Brew token, `<brew-id>-<guid>`, recorded in `register.json` when the Brew is created. Workers receive it at launch and present it, and a Worker carrying another Brew's token is refused before it records a start. The GUID tells apart Workers that share a resource; it is not a security measure.
 
-Planned (PLAN.md item 8): one server per repository keeps its files under `$CS_STATE_DIR/servers/<name>-<hash>/`, with `server.json` (pid, generation, heartbeat, socket path, repository path) and `server.lock`. The server holds `server.lock` for its whole life, so liveness is a kernel fact: a command that cannot take the lock knows a server is running. The heartbeat is for display only. A restarted server keeps its id, `<name>-<hash>`, which is the directory name derived from the repository path, so Workers launched under the old server still reach its socket. Until stage 4 the Register and Receipt are still written directly under `state.lock`; that lock is retired once the server is the only writer.
+Planned (PLAN.md item 8): one server per repository keeps its files under `$CS_STATE_DIR/servers/<name>-<hash>/`, with `server.json` (pid, generation, heartbeat, socket path, repository path), `server.lock` and `server.sock`. The server holds `server.lock` for its whole life, so liveness is a kernel fact. The heartbeat is for display only. A restarted server keeps its id, `<name>-<hash>`, so Workers launched under the old server still reach its socket. The server is the only reader and writer of Brew state after launch: commands, the supervisor and Workers ask it over `server.sock`. If it cannot be reached, a client waits and retries a few times, starting the server if needed, and then aborts with the cause. There is no fallback to reading files directly. Before a Brew's first Worker starts, its files are created directly by `brew`.
 
 The Receipt event is appended before the Register is rewritten. If a write is interrupted, or the two files disagree, Coffee Shop reports the Brew's state as unknown, names the failing line when it can, and leaves both files untouched. It never repairs state automatically. To recover, inspect `receipt.ndjson` and `register.json` by hand; the Receipt is the more detailed record. A file that cannot be read for another reason, such as permissions, is reported as an I/O error rather than as corruption.
 

@@ -95,14 +95,14 @@ server_api_serve_one :: proc(api: Server_Api, timeout_ms: c.int) -> bool {
 	defer posix.close(conn)
 
 	response: Server_Response
-	defer server_response_destroy(&response)
+	defer destroy_struct(&response)
 	line, read_ok := server_read_line(conn)
 	defer delete(line)
 	if !read_ok {
 		response.error = strings.clone("request could not be read")
 	} else {
 		request: Server_Request
-		defer server_request_destroy(&request)
+		defer destroy_struct(&request)
 		if json.unmarshal_string(line, &request, .JSON) != nil {
 			response.error = strings.clone("request is not valid JSON")
 		} else {
@@ -124,11 +124,11 @@ server_api_handle :: proc(api: Server_Api, request: Server_Request) -> Server_Re
 		return Server_Response{error = strings.clone(state_error_message(state_err))}
 	}
 	if register.beans_path != api.repository {
-		destroy_register(&register)
+		destroy_struct(&register)
 		return Server_Response{error = strings.clone("Brew belongs to another repository")}
 	}
 	if register.brew_token != request.token {
-		destroy_register(&register)
+		destroy_struct(&register)
 		return Server_Response{error = strings.clone("token does not match this Brew")}
 	}
 
@@ -136,25 +136,44 @@ server_api_handle :: proc(api: Server_Api, request: Server_Request) -> Server_Re
 	case "snapshot":
 		return Server_Response{ok = true, register = register}
 	case "transition":
-		err := transition_shot(brew_dir, &register, request.shot_id, request.to_state, request.detail)
-		destroy_register(&register)
-		if err.kind != .None {
-			return Server_Response{error = strings.clone(state_error_message(err))}
-		}
-		return Server_Response{ok = true}
+		err := apply_transition(brew_dir, &register, request.shot_id, request.to_state, request.detail)
+		return server_mutation_response(err, register)
+	case "request_cancel":
+		err := apply_request_shot_cancel(brew_dir, &register, request.shot_id, request.detail)
+		return server_mutation_response(err, register)
 	}
-	destroy_register(&register)
+	destroy_struct(&register)
 	return Server_Response{error = strings.clone("unknown operation")}
 }
 
-// Sends one request and waits for its response. Used by commands and Workers.
-server_api_call :: proc(socket_path: string, request: Server_Request) -> (response: Server_Response, err: string) {
+// A change returns the Register, so the caller can refresh its view in one round trip.
+server_mutation_response :: proc(err: State_Error, register: Register) -> Server_Response {
+	if err.kind != .None {
+		failed := register
+		destroy_struct(&failed)
+		return Server_Response{error = strings.clone(state_error_message(err))}
+	}
+	return Server_Response{ok = true, register = register}
+}
+
+// Sends one request and waits for its response. A transport error means the
+// server could not be reached or did not answer; a refusal comes back in response.
+server_api_call :: proc(socket_path: string, request: Server_Request) -> (response: Server_Response, transport_err: string) {
 	conn, send_err := server_api_send(socket_path, request)
 	if send_err != "" {
 		return {}, send_err
 	}
 	defer posix.close(conn)
-	return server_api_receive(conn)
+	line, ok := server_read_line(conn)
+	defer delete(line)
+	if !ok {
+		return {}, "server did not respond"
+	}
+	if json.unmarshal_string(line, &response, .JSON) != nil {
+		destroy_struct(&response)
+		return {}, "server response is not valid JSON"
+	}
+	return response, ""
 }
 
 // Connects and sends a request without waiting. Pair with server_api_receive.
@@ -195,7 +214,7 @@ server_api_receive :: proc(conn: posix.FD) -> (response: Server_Response, err: s
 		return {}, "server did not respond"
 	}
 	if json.unmarshal_string(line, &response, .JSON) != nil {
-		server_response_destroy(&response)
+		destroy_struct(&response)
 		return {}, "server response is not valid JSON"
 	}
 	if !response.ok {
@@ -241,27 +260,11 @@ server_write_response :: proc(conn: posix.FD, response: Server_Response) {
 server_write_all :: proc(conn: posix.FD, data: []byte) -> bool {
 	sent := uint(0)
 	for sent < uint(len(data)) {
-		n := posix.write(conn, raw_data(data[sent:]), c.size_t(uint(len(data)) - sent))
+		n := posix.send(conn, raw_data(data[sent:]), c.size_t(uint(len(data)) - sent), {.NOSIGNAL})
 		if n <= 0 {
 			return false
 		}
 		sent += uint(n)
 	}
 	return true
-}
-
-server_request_destroy :: proc(request: ^Server_Request) {
-	delete(request.op)
-	delete(request.brew_id)
-	delete(request.token)
-	delete(request.shot_id)
-	delete(request.to_state)
-	delete(request.detail)
-	request^ = Server_Request{}
-}
-
-server_response_destroy :: proc(response: ^Server_Response) {
-	delete(response.error)
-	destroy_register(&response.register)
-	response^ = Server_Response{}
 }

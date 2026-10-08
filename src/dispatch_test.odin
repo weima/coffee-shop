@@ -43,7 +43,7 @@ test_brew_fails_every_shot_when_herdr_is_unavailable :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, "")
 
 	register, state_err := read_state(fmt.tprintf("%s/%s", state_root, brew_id))
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	testing.expect_value(t, state_err.kind, State_Error_Kind.None)
 	for shot in register.shots {
 		testing.expect_value(t, shot.status, SHOT_FAILED)
@@ -74,7 +74,7 @@ exit 3
 		fake_pi, fake_pi_script,
 		os.Permissions{.Read_User, .Write_User, .Execute_User},
 	)
-	code := run_worker_with(state_root, brew_id, "a", fake_pi)
+	code := run_worker_with(state_root, brew_id, "a", "", fake_pi)
 	testing.expect_value(t, code, 3)
 
 	arg, _ := os.read_entire_file(fmt.tprintf("%s/%s/stations/a/arg.txt", state_root, brew_id), context.allocator)
@@ -87,7 +87,7 @@ exit 3
 	result_path := worker_result_path(fmt.tprintf("%s/%s", state_root, brew_id), "a")
 	defer delete(result_path)
 	result, result_err := read_worker_result(result_path)
-	defer destroy_worker_result(&result)
+	defer destroy_struct(&result)
 	testing.expect_value(t, result_err, "")
 	testing.expect(t, result.started && !result.success)
 	testing.expect_value(t, result.exit_code, 3)
@@ -144,7 +144,7 @@ printf '%s\n' '{"type":"message_end","message":{"role":"assistant",'\
 printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant",'\
 '"content":[{"type":"text","text":"final report"}]}]}'
 `, os.Permissions{.Read_User, .Write_User, .Execute_User})
-	code := run_worker_with(state_root, brew_id, "a", fake_pi)
+	code := run_worker_with(state_root, brew_id, "a", "", fake_pi)
 	testing.expect_value(t, code, 0)
 
 	report_path := fmt.tprintf("%s/reports/a.md", brew_dir)
@@ -163,7 +163,7 @@ printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant",'\
 				saw_tool = saw_tool || received.message.kind == "tool_start"
 				saw_end = saw_end || received.message.kind == "agent_end"
 			}
-			activity_message_destroy(&received.message)
+			destroy_struct(&received.message)
 		case .Unavailable:
 			break
 		case .Malformed, .Failed:
@@ -185,7 +185,7 @@ test_supervisor_accepts_activity_only_for_running_shots_in_this_brew :: proc(t: 
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	register := make_test_register(t)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	brew_dir := fmt.tprintf("%s/%s", root, register.brew_id)
 	_ = create_state(brew_dir, &register)
 	workers_dir := state_file_path(brew_dir, "workers")
@@ -227,7 +227,7 @@ test_supervisor_accepts_activity_only_for_running_shots_in_this_brew :: proc(t: 
 	drain_worker_activity(brew_dir, register, &listener)
 
 	record, found := read_activity_record(brew_dir, "shot-a")
-	defer activity_record_destroy(&record)
+	defer destroy_struct(&record)
 	testing.expect(t, found)
 	testing.expect_value(t, record.description, "valid activity")
 	_, found = read_activity_record(brew_dir, "shot-b")
@@ -303,7 +303,7 @@ test_brew_records_the_beans_base_commit :: proc(t: ^testing.T) {
 	_, stdout, _, _ := os.process_exec(os.Process_Desc{command = []string{"git", "-C", repo, "rev-parse", "HEAD"}}, context.allocator)
 	defer delete(stdout)
 	register, state_err := read_state(fmt.tprintf("%s/%s", state_root, brew_id))
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	testing.expect_value(t, state_err.kind, State_Error_Kind.None)
 	testing.expect_value(t, len(register.base_commit), 40)
 	testing.expect_value(t, register.base_commit, strings.trim_space(string(stdout)))

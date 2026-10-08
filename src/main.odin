@@ -43,6 +43,9 @@ run_cli :: proc(args: []string) -> int {
 	if command.kind == .Collect {
 		return run_collect(command.brew_id)
 	}
+	if command.kind == .Server {
+		return run_server(command.state_root, command.repo)
+	}
 	if command.kind == .Worker {
 		return run_worker(command.state_root, command.brew_id, command.shot_id, command.token)
 	}

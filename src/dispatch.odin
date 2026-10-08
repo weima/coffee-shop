@@ -88,7 +88,7 @@ run_brew_with :: proc(repo_path, recipe_path, state_root, executable, herdr: str
 	if recipe_err != "" {
 		return "", recipe_err
 	}
-	defer destroy_recipe(&recipe)
+	defer destroy_struct(&recipe)
 	if share_err := validate_shared_paths(repo, recipe.share[:]); share_err != "" {
 		return "", share_err
 	}
@@ -103,7 +103,7 @@ run_brew_with :: proc(repo_path, recipe_path, state_root, executable, herdr: str
 	if state_error.kind != .None {
 		return brew_id, "could not allocate Brew state"
 	}
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	base_commit, base_err := git_head_commit(repo)
 	if base_err != "" {
 		return brew_id, base_err
@@ -194,7 +194,7 @@ run_brew_with :: proc(repo_path, recipe_path, state_root, executable, herdr: str
 	herdr_workspace_id, clone_err := strings.clone(workspace.result.workspace.workspace_id)
 	first_tab_id, tab_clone_err := strings.clone(workspace.result.tab.tab_id)
 	first_pane_id, pane_clone_err := strings.clone(workspace.result.root_pane.pane_id)
-	destroy_herdr_response(&workspace)
+	destroy_struct(&workspace)
 	if clone_err != nil || tab_clone_err != nil || pane_clone_err != nil {
 		return brew_id, "could not save Herdr workspace identity"
 	}
@@ -223,7 +223,7 @@ run_brew_with :: proc(repo_path, recipe_path, state_root, executable, herdr: str
 		}
 		tab_copy, tab_clone_err := strings.clone(tab.result.tab.tab_id)
 		pane_copy, pane_clone_err := strings.clone(tab.result.root_pane.pane_id)
-		destroy_herdr_response(&tab)
+		destroy_struct(&tab)
 		if tab_clone_err != nil || pane_clone_err != nil {
 			return brew_id, "could not save Herdr tab identity"
 		}
@@ -338,7 +338,7 @@ herdr_create_workspace :: proc(herdr, cwd, repository_name, brew_id: string, all
 		return Herdr_Response{}, run_err
 	}
 	if json.unmarshal_string(transmute(string)stdout, &response, .JSON, allocator) != nil || response.result.type != "workspace_created" || response.result.workspace.workspace_id == "" || response.result.tab.tab_id == "" || response.result.root_pane.pane_id == "" {
-		destroy_herdr_response(&response, allocator)
+		destroy_struct(&response, allocator)
 		return Herdr_Response{}, "Herdr returned an invalid workspace response"
 	}
 	return response, ""
@@ -353,7 +353,7 @@ herdr_create_tab :: proc(herdr, workspace_id, shot_id, cwd: string, allocator :=
 		return Herdr_Response{}, run_err
 	}
 	if json.unmarshal_string(transmute(string)stdout, &response, .JSON, allocator) != nil || response.result.type != "tab_created" || response.result.tab.tab_id == "" || response.result.root_pane.pane_id == "" {
-		destroy_herdr_response(&response, allocator)
+		destroy_struct(&response, allocator)
 		return Herdr_Response{}, "Herdr returned an invalid tab response"
 	}
 	return response, ""
@@ -401,15 +401,6 @@ herdr_error_message :: proc(text: string) -> string {
 		return ""
 	}
 	return response.error.message
-}
-
-destroy_herdr_response :: proc(response: ^Herdr_Response, allocator := context.allocator) {
-	delete(response.id, allocator)
-	delete(response.result.type, allocator)
-	delete(response.result.workspace.workspace_id, allocator)
-	delete(response.result.tab.tab_id, allocator)
-	delete(response.result.root_pane.pane_id, allocator)
-	response^ = Herdr_Response{}
 }
 
 dispatch_workers :: proc(directory: string, register: ^Register, executable, state_root, herdr: string) -> State_Error {
@@ -483,7 +474,7 @@ drain_worker_activity :: proc(directory: string, register: Register, listener: ^
 			shot_index := find_shot(register, result.message.shot_id)
 			if result.message.brew_id != register.brew_id || shot_index < 0 ||
 				register.shots[shot_index].status != SHOT_RUNNING {
-				activity_message_destroy(&result.message)
+				destroy_struct(&result.message)
 				continue
 			}
 			now_ns := time.now()._nsec
@@ -491,7 +482,7 @@ drain_worker_activity :: proc(directory: string, register: Register, listener: ^
 				result.message.timestamp_ns = now_ns
 			}
 			_ = write_activity_record(directory, result.message)
-			activity_message_destroy(&result.message)
+			destroy_struct(&result.message)
 		case .Malformed:
 			continue
 		case .Unavailable, .Failed:
@@ -548,14 +539,14 @@ run_pi_json_with_activity :: proc(
 	defer delete(stderr_path)
 	stderr_file, stderr_open_err := os.create(stderr_path)
 	if stderr_open_err != nil {
-		result.error = "could not create Pi stderr log"
+		result.error = strings.clone("could not create Pi stderr log")
 		return result
 	}
 
 	stdout_read, stdout_write, pipe_err := os.pipe()
 	if pipe_err != nil {
 		_ = os.close(stderr_file)
-		result.error = "could not create Pi output pipe"
+		result.error = strings.clone("could not create Pi output pipe")
 		return result
 	}
 	defer os.close(stdout_read)
@@ -583,7 +574,7 @@ run_pi_json_with_activity :: proc(
 	result.started = true
 	result.stream_ok = read_pi_event_stream(stdout_read, parser, sender, brew_id, shot_id)
 	if !result.stream_ok {
-		result.error = "could not read Pi JSON event stream"
+		result.error = strings.clone("could not read Pi JSON event stream")
 		_ = os.process_kill(process)
 	}
 	result.process_state, start_err = os.process_wait(process)
@@ -595,7 +586,7 @@ run_pi_json_with_activity :: proc(
 	if stderr_err != nil {
 		delete(stderr)
 		if result.error == "" {
-			result.error = "could not read Pi stderr log"
+			result.error = strings.clone("could not read Pi stderr log")
 		}
 	} else {
 		result.stderr = stderr
@@ -664,34 +655,18 @@ pi_event_stream_line :: proc(
 	})
 }
 
-pi_run_result_destroy :: proc(result: ^Pi_Run_Result, allocator := context.allocator) {
-	delete(result.stderr, allocator)
-	delete(result.error, allocator)
-	result^ = Pi_Run_Result{}
-}
-
 run_worker :: proc(state_root, brew_id, shot_id, token: string) -> int {
-	// A Worker must carry its Brew's token before it may record that it started.
-	if !worker_token_matches(state_root, brew_id, token) {
-		write_error("Worker token does not match its Brew")
+	// The server must accept this Worker's token before it may record that it started.
+	checked, check_err := worker_snapshot(state_root, brew_id, token)
+	if check_err != "" {
+		write_error(check_err)
 		return 2
 	}
-	return run_worker_with(state_root, brew_id, shot_id, "pi")
+	destroy_struct(&checked)
+	return run_worker_with(state_root, brew_id, shot_id, token, "pi")
 }
 
-// Unreadable state is left to the Worker's own error path, which records it.
-worker_token_matches :: proc(state_root, brew_id, token: string) -> bool {
-	brew_dir := state_file_path(state_root, brew_id)
-	defer delete(brew_dir)
-	register, err := read_state(brew_dir)
-	if err.kind != .None {
-		return true
-	}
-	defer destroy_register(&register)
-	return register.brew_token == "" || register.brew_token == token
-}
-
-run_worker_with :: proc(state_root, brew_id, shot_id, pi: string) -> int {
+run_worker_with :: proc(state_root, brew_id, shot_id, token, pi: string) -> int {
 	if !valid_shot_id(brew_id) || !valid_shot_id(shot_id) {
 		write_error("Worker IDs are invalid")
 		return 2
@@ -715,27 +690,27 @@ run_worker_with :: proc(state_root, brew_id, shot_id, pi: string) -> int {
 	result_path := worker_result_path(brew_dir, shot_id)
 	defer delete(result_path)
 
-	register, state_err := read_state(brew_dir)
-	if state_err.kind != .None {
-		result.detail = fmt.aprintf("could not read Brew state: %s", state_error_message(state_err))
+	register, snapshot_err := worker_snapshot(state_root, brew_id, token)
+	if snapshot_err != "" {
+		result.detail = fmt.aprintf("could not read Brew state: %s", snapshot_err)
 		if !write_worker_result(result_path, result) {
 			write_error("Worker could not persist its result")
-			destroy_worker_result(&result)
+			destroy_struct(&result)
 			return 2
 		}
-		destroy_worker_result(&result)
+		destroy_struct(&result)
 		return 1
 	}
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	index := find_shot(register, shot_id)
 	if index < 0 || register.shots[index].station_path == "" {
 		result.detail = fmt.aprintf("Worker Shot %s has no Station", shot_id)
 		if !write_worker_result(result_path, result) {
 			write_error("Worker could not persist its result")
-			destroy_worker_result(&result)
+			destroy_struct(&result)
 			return 2
 		}
-		destroy_worker_result(&result)
+		destroy_struct(&result)
 		return 1
 	}
 
@@ -765,13 +740,13 @@ run_worker_with :: proc(state_root, brew_id, shot_id, pi: string) -> int {
 		})
 	}
 	parser: Pi_Event_State
-	defer pi_event_state_destroy(&parser)
+	defer destroy_struct(&parser)
 	run_result := run_pi_json_with_activity(
 		pi, register.shots[index].station_path, prompt, register.preamble, brew_dir, brew_id, shot_id,
 		register.shots[index].model, register.shots[index].thinking,
 		&parser, &sender,
 	)
-	defer pi_run_result_destroy(&run_result)
+	defer destroy_struct(&run_result)
 	result.exit_code = run_result.process_state.exit_code
 	if !run_result.started {
 		result.detail = strings.clone(run_result.error)
@@ -818,14 +793,14 @@ run_worker_with :: proc(state_root, brew_id, shot_id, pi: string) -> int {
 
 	if !write_worker_result(result_path, result) {
 		write_error("Worker could not persist its result")
-		destroy_worker_result(&result)
+		destroy_struct(&result)
 		return 2
 	}
 	code := result.exit_code
 	if code == 0 && !result.success {
 		code = 1
 	}
-	destroy_worker_result(&result)
+	destroy_struct(&result)
 	return code
 }
 
@@ -904,17 +879,10 @@ read_worker_result :: proc(path: string) -> (result: Worker_Result, err: string)
 	}
 	defer delete(data)
 	if json.unmarshal_string(transmute(string)data, &result) != nil || result.brew_id == "" || result.shot_id == "" {
-		destroy_worker_result(&result)
+		destroy_struct(&result)
 		return Worker_Result{}, "Worker result is malformed"
 	}
 	return result, ""
-}
-
-destroy_worker_result :: proc(result: ^Worker_Result) {
-	delete(result.brew_id)
-	delete(result.shot_id)
-	delete(result.detail)
-	result^ = Worker_Result{}
 }
 
 worker_result_path :: proc(directory, shot_id: string) -> string {
@@ -959,6 +927,8 @@ state_error_message :: proc(err: State_Error) -> string {
 	case .Invalid_Register: return "Register is invalid"
 	case .Out_Of_Memory: return "not enough memory to update Brew state"
 	case .IO_Error: return "could not read or write Brew state"
+	case .Server_Unavailable: return "the repository server could not be reached"
+	case .Server_Refused: return "the repository server refused the change"
 	case .None: return ""
 	}
 	return "unknown state error"

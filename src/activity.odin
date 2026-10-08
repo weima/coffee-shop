@@ -111,16 +111,10 @@ read_activity_record :: proc(directory, shot_id: string) -> (record: Activity_Re
 		record.kind == "" || record.description == "" ||
 		len(record.kind) > ACTIVITY_MAX_KIND ||
 		len(record.description) > ACTIVITY_MAX_DESCRIPTION || record.observed_at_ns <= 0 {
-		activity_record_destroy(&record)
+		destroy_struct(&record)
 		return Activity_Record{}, false
 	}
 	return record, true
-}
-
-activity_record_destroy :: proc(record: ^Activity_Record, allocator := context.allocator) {
-	delete(record.kind, allocator)
-	delete(record.description, allocator)
-	record^ = Activity_Record{}
 }
 
 activity_age_seconds :: proc(now_ns, then_ns: i64) -> i64 {

@@ -4,6 +4,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:hash"
 import "core:os"
+import "core:strings"
 import "core:sys/linux"
 import "core:time"
 
@@ -85,7 +86,7 @@ server_start :: proc(directory, id, repository_path, socket_path: string) -> (lo
 	generation := 1
 	if has_previous {
 		generation = previous.generation + 1
-		server_record_destroy(&previous)
+		destroy_struct(&previous)
 	}
 	record = Server_Record{
 		id = id,
@@ -96,7 +97,7 @@ server_start :: proc(directory, id, repository_path, socket_path: string) -> (lo
 		repository_path = repository_path,
 	}
 	if !server_write_record(directory, record) {
-		state_unlock(acquired)
+		file_lock_release(acquired)
 		return nil, {}, false
 	}
 	return acquired, record, true
@@ -118,7 +119,7 @@ server_read_record :: proc(directory: string) -> (record: Server_Record, ok: boo
 		return {}, false
 	}
 	if json.unmarshal_string(transmute(string)data, &record, .JSON) != nil {
-		server_record_destroy(&record)
+		destroy_struct(&record)
 		return {}, false
 	}
 	return record, true
@@ -135,9 +136,94 @@ server_write_record :: proc(directory: string, record: Server_Record) -> bool {
 	return write_file_atomic(path, data)
 }
 
-server_record_destroy :: proc(record: ^Server_Record) {
-	delete(record.id)
-	delete(record.socket_path)
-	delete(record.repository_path)
-	record^ = Server_Record{}
+// Releases the election lock. Closing the file is what lets a new server start.
+file_lock_release :: proc(file: ^os.File) {
+	_ = linux.flock(linux.Fd(os.fd(file)), {.UN})
+	_ = os.close(file)
+}
+
+// True while some Brew on this repository has a Shot that has not finished.
+repository_has_active_brew :: proc(state_root, repository: string) -> bool {
+	handle, open_err := os.open(state_root)
+	if open_err != nil {
+		return false
+	}
+	defer os.close(handle)
+	entries, read_err := os.read_dir(handle, -1, context.allocator)
+	defer os.file_info_slice_delete(entries, context.allocator)
+	if read_err != nil {
+		return false
+	}
+	for entry in entries {
+		if !strings.has_prefix(entry.name, "brew-") {
+			continue
+		}
+		brew_dir := state_file_path(state_root, entry.name)
+		brew_repository, brew_token, ok := brew_identity(brew_dir)
+		active := false
+		if ok && brew_repository == repository {
+			register, state_err := read_state(brew_dir)
+			active = state_err.kind == .None && !all_terminal(register)
+			destroy_struct(&register)
+		}
+		delete(brew_repository)
+		delete(brew_token)
+		delete(brew_dir)
+		if active {
+			return true
+		}
+	}
+	return false
+}
+
+SERVER_HEARTBEAT_NS :: 1_000_000_000
+SERVER_IDLE_NS :: 30 * 1_000_000_000
+
+// The __server process: one per repository. It exits quietly if another server
+// already holds the repository, and after a period with no active Brew.
+run_server :: proc(state_root, repository: string) -> int {
+	id := server_id(repository)
+	defer delete(id)
+	directory := server_directory(state_root, id)
+	defer delete(directory)
+	socket_path, path_err := strings.concatenate({directory, "/", SERVER_SOCKET_NAME})
+	if path_err != nil {
+		write_error("could not build the server socket path")
+		return 2
+	}
+	defer delete(socket_path)
+
+	lock, started_record, started := server_start(directory, id, repository, socket_path)
+	if !started {
+		if server_running(directory) {
+			return 0
+		}
+		write_error("could not start the server")
+		return 2
+	}
+	defer file_lock_release(lock)
+	record := started_record
+	api, api_ok := server_api_open(state_root, repository, directory)
+	if !api_ok {
+		write_error("the server socket could not be opened")
+		return 2
+	}
+	defer server_api_close(&api)
+
+	last_beat := time.now()._nsec
+	last_active := last_beat
+	for {
+		server_api_serve_one(api, 100)
+		now := time.now()._nsec
+		if now - last_beat >= SERVER_HEARTBEAT_NS {
+			last_beat = now
+			_ = server_heartbeat(directory, &record)
+			if repository_has_active_brew(state_root, repository) {
+				last_active = now
+			}
+		}
+		if now - last_active >= SERVER_IDLE_NS {
+			return 0
+		}
+	}
 }

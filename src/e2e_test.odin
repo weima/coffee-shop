@@ -93,7 +93,7 @@ test_e2e_multi_shot_brew_status_collect_and_isolation :: proc(t: ^testing.T) {
 
 	// The Register and Receipt survive and agree: three Shots started, three ended.
 	register, state_err := read_state(fmt.tprintf("%s/%s", e2e.state, brew_id))
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	testing.expect_value(t, state_err.kind, State_Error_Kind.None)
 	testing.expect_value(t, register.event_sequence, 6)
 
@@ -183,7 +183,7 @@ test_e2e_a_killed_supervisor_is_recovered_without_losing_results :: proc(t: ^tes
 	testing.expect(t, strings.contains(oreo, "## Shot alpha: completed"), oreo)
 	testing.expect(t, strings.contains(oreo, "## Shot beta: completed"), oreo)
 	register, state_err := read_state(fmt.tprintf("%s/%s", e2e.state, brew_id))
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	testing.expect_value(t, state_err.kind, State_Error_Kind.None)
 	testing.expect_value(t, register.event_sequence, 4)
 }
@@ -248,7 +248,7 @@ test_e2e_cancel_stops_running_workers_cancels_queued_shots_and_is_repeatable :: 
 
 	// The Receipt says why, and the Register agrees with it.
 	register, state_err := read_state(fmt.tprintf("%s/%s", e2e.state, brew_id))
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	testing.expect_value(t, state_err.kind, State_Error_Kind.None)
 	receipt, _ := os.read_entire_file(fmt.tprintf("%s/%s/receipt.ndjson", e2e.state, brew_id), context.temp_allocator)
 	testing.expect_value(t, strings.count(string(receipt), `"kind":"cancel_requested"`), 2)
@@ -260,7 +260,7 @@ test_e2e_cancel_stops_running_workers_cancels_queued_shots_and_is_repeatable :: 
 	testing.expect_value(t, repeat_code, 0)
 	testing.expect(t, strings.contains(again, "already finished: cancelled"), again)
 	after, _ := read_state(fmt.tprintf("%s/%s", e2e.state, brew_id))
-	defer destroy_register(&after)
+	defer destroy_struct(&after)
 	testing.expect_value(t, after.event_sequence, sequence)
 }
 
@@ -332,14 +332,14 @@ test_e2e_cancel_of_a_full_brew_settles_within_the_grace_period :: proc(t: ^testi
 
 	// Cancelling again changes nothing.
 	register, state_err := read_state(fmt.tprintf("%s/%s", e2e.state, brew_id))
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	testing.expect_value(t, state_err.kind, State_Error_Kind.None)
 	sequence := register.event_sequence
 	repeat_code, again, _ := e2e_run(e2e, "cancel", brew_id)
 	testing.expect_value(t, repeat_code, 0)
 	testing.expect(t, strings.contains(again, "already finished: cancelled"), again)
 	after, _ := read_state(fmt.tprintf("%s/%s", e2e.state, brew_id))
-	defer destroy_register(&after)
+	defer destroy_struct(&after)
 	testing.expect_value(t, after.event_sequence, sequence)
 }
 
@@ -513,11 +513,18 @@ e2e_exec :: proc(command: []string, env: []string) -> (code: int, stdout, stderr
 }
 
 e2e_first_brew :: proc(e2e: E2E) -> string {
+	// The state directory also holds servers/, and listing order is not sorted, so
+	// only an entry named brew-... is a Brew.
 	entries, err := os.read_all_directory_by_path(e2e.state, context.temp_allocator)
-	if err != nil || len(entries) == 0 {
+	if err != nil {
 		return ""
 	}
-	return entries[0].name
+	for entry in entries {
+		if strings.has_prefix(entry.name, "brew-") {
+			return entry.name
+		}
+	}
+	return ""
 }
 
 e2e_worker_logs :: proc(e2e: E2E) -> string {

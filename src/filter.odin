@@ -45,7 +45,7 @@ load_or_run_filter :: proc(brew_dir: string, register: Register, index: int, pi:
 		data, read_err := os.read_entire_file(path, context.allocator)
 		defer delete(data)
 		if read_err != nil || json.unmarshal(data, &evidence, .JSON) != nil {
-			destroy_filter_evidence(&evidence)
+			destroy_struct(&evidence)
 			return Filter_Evidence{}, fmt.tprintf("saved Filter evidence for %s is unreadable: %s", shot.id, path)
 		}
 		return evidence, ""
@@ -58,7 +58,7 @@ load_or_run_filter :: proc(brew_dir: string, register: Register, index: int, pi:
 	defer delete(data)
 	// The directory is shared by every Shot in the Brew, so it may already exist.
 	if marshal_err != nil || !ensure_directory(directory) || !write_file_atomic(path, data) {
-		destroy_filter_evidence(&evidence)
+		destroy_struct(&evidence)
 		return Filter_Evidence{}, "could not save Filter evidence"
 	}
 	return evidence, ""
@@ -75,7 +75,7 @@ run_filter :: proc(register: Register, shot: Register_Shot, pi: string) -> (evid
 	}
 
 	discovery := discover_checks(shot.station_path)
-	defer destroy_discovery(&discovery)
+	defer destroy_struct(&discovery)
 	for note in discovery.notes {
 		append(&evidence.notes, strings.clone(note))
 	}
@@ -102,24 +102,6 @@ run_filter :: proc(register: Register, shot: Register_Shot, pi: string) -> (evid
 		})
 	}
 	return evidence
-}
-
-destroy_filter_evidence :: proc(evidence: ^Filter_Evidence) {
-	delete(evidence.review_findings)
-	delete(evidence.review_detail)
-	for check in evidence.checks {
-		delete(check.kind)
-		delete(check.source)
-		delete(check.command)
-		delete(check.output_tail)
-		delete(check.detail)
-	}
-	delete(evidence.checks)
-	for note in evidence.notes {
-		delete(note)
-	}
-	delete(evidence.notes)
-	evidence^ = Filter_Evidence{}
 }
 
 // Renders the Filter evidence for one Shot and appends anything the developer

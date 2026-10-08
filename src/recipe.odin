@@ -50,7 +50,7 @@ load_recipe :: proc(
 
 	parsed, parse_err := parse_recipe(transmute(string)data, allocator)
 	if parse_err != "" { return parsed, parse_err }
-	if input_err := resolve_recipe_inputs(&parsed, path, allocator); input_err != "" { destroy_recipe(&parsed, allocator); return Recipe{}, input_err }
+	if input_err := resolve_recipe_inputs(&parsed, path, allocator); input_err != "" { destroy_struct(&parsed, allocator); return Recipe{}, input_err }
 	return parsed, ""
 }
 
@@ -101,46 +101,46 @@ parse_recipe :: proc(
 	defer context.allocator = previous_allocator
 
 	if json.unmarshal_string(data, &recipe, .JSON, allocator) != nil || !recipe_fields_known(data, allocator) {
-		destroy_recipe(&recipe, allocator)
+		destroy_struct(&recipe, allocator)
 		return Recipe{}, "recipe must be valid JSON with no unknown fields"
 	}
 
 	if (strings.trim_space(recipe.order) == "") == (recipe.order_file == "") {
-		destroy_recipe(&recipe, allocator)
+		destroy_struct(&recipe, allocator)
 		return Recipe{}, "recipe must have exactly one of order or order_file"
 	}
 	if len(recipe.order) > RECIPE_TEXT_MAX_BYTES {
-		destroy_recipe(&recipe, allocator)
+		destroy_struct(&recipe, allocator)
 		return Recipe{}, "inline order is over the 131071-byte limit; use order_file for longer text"
 	}
 	if recipe.workers == 0 {
 		recipe.workers = 2
 	}
 	if recipe.workers < 1 || recipe.workers > 5 || !valid_model(recipe.model) || !valid_thinking(recipe.thinking) || !valid_model(recipe.review_model) || !valid_thinking(recipe.review_thinking) {
-		destroy_recipe(&recipe, allocator)
+		destroy_struct(&recipe, allocator)
 		return Recipe{}, "recipe model, thinking, or workers setting is invalid"
 	}
 	if recipe.preamble != "" && recipe.preamble_file != "" {
-		destroy_recipe(&recipe, allocator)
+		destroy_struct(&recipe, allocator)
 		return Recipe{}, "recipe preamble must use one input form"
 	}
 	if len(recipe.preamble) > RECIPE_TEXT_MAX_BYTES {
-		destroy_recipe(&recipe, allocator)
+		destroy_struct(&recipe, allocator)
 		return Recipe{}, "inline preamble is over the 131071-byte limit; use preamble_file for longer text"
 	}
 	if len(recipe.shots) == 0 {
-		destroy_recipe(&recipe, allocator)
+		destroy_struct(&recipe, allocator)
 		return Recipe{}, "recipe must contain at least one shot"
 	}
 
 	for path, index in recipe.share {
 		if !valid_share_path(path) {
-			destroy_recipe(&recipe, allocator)
+			destroy_struct(&recipe, allocator)
 			return Recipe{}, "share paths must be relative paths inside the repository"
 		}
 		for previous in recipe.share[:index] {
 			if previous == path {
-				destroy_recipe(&recipe, allocator)
+				destroy_struct(&recipe, allocator)
 				return Recipe{}, "share paths must be unique"
 			}
 		}
@@ -148,54 +148,26 @@ parse_recipe :: proc(
 
 	for shot, i in recipe.shots {
 		if !valid_shot_id(shot.id) {
-			destroy_recipe(&recipe, allocator)
+			destroy_struct(&recipe, allocator)
 			return Recipe{}, "shot IDs must be safe path segments"
 		}
 		if len(shot.prompt) > RECIPE_TEXT_MAX_BYTES || (strings.trim_space(shot.prompt) == "") == (shot.prompt_file == "") {
-			destroy_recipe(&recipe, allocator)
+			destroy_struct(&recipe, allocator)
 			return Recipe{}, "each shot must have exactly one of prompt or prompt_file"
 		}
 		if !valid_model(shot.model) || !valid_thinking(shot.thinking) {
-			destroy_recipe(&recipe, allocator)
+			destroy_struct(&recipe, allocator)
 			return Recipe{}, "shot model or thinking setting is invalid"
 		}
 		for previous in recipe.shots[:i] {
 			if previous.id == shot.id {
-				destroy_recipe(&recipe, allocator)
+				destroy_struct(&recipe, allocator)
 				return Recipe{}, "shot IDs must be unique"
 			}
 		}
 	}
 
 	return recipe, ""
-}
-
-destroy_recipe :: proc(recipe: ^Recipe, allocator := context.allocator) {
-	previous_allocator := context.allocator
-	context.allocator = allocator
-	defer context.allocator = previous_allocator
-
-	for shot in recipe.shots {
-		delete(shot.id, allocator)
-		delete(shot.prompt, allocator)
-		delete(shot.prompt_file, allocator)
-		delete(shot.model, allocator)
-		delete(shot.thinking, allocator)
-	}
-	delete(recipe.shots)
-	for path in recipe.share {
-		delete(path, allocator)
-	}
-	delete(recipe.share)
-	delete(recipe.order, allocator)
-	delete(recipe.order_file, allocator)
-	delete(recipe.preamble, allocator)
-	delete(recipe.preamble_file, allocator)
-	delete(recipe.model, allocator)
-	delete(recipe.thinking, allocator)
-	delete(recipe.review_model, allocator)
-	delete(recipe.review_thinking, allocator)
-	recipe^ = Recipe{}
 }
 
 // Shot IDs are path-safe segments: 1–64 ASCII characters, starting with a

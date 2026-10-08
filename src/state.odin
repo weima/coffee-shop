@@ -32,6 +32,8 @@ State_Error_Kind :: enum {
 	Cancellation_Pending,
 	Shot_Not_Found,
 	IO_Error,
+	Server_Unavailable,
+	Server_Refused,
 	Out_Of_Memory,
 }
 
@@ -114,13 +116,13 @@ register_from_recipe :: proc(
 	beans_path_copy, beans_path_err := strings.clone(beans_path, allocator)
 	register.beans_path = beans_path_copy
 	if beans_path_err != nil {
-		destroy_register(&register, allocator)
+		destroy_struct(&register, allocator)
 		return Register{}, State_Error{kind = .Out_Of_Memory}
 	}
 	order_copy, order_err := strings.clone(recipe.order, allocator)
 	register.order = order_copy
 	if order_err != nil {
-		destroy_register(&register, allocator)
+		destroy_struct(&register, allocator)
 		return Register{}, State_Error{kind = .Out_Of_Memory}
 	}
 
@@ -128,35 +130,35 @@ register_from_recipe :: proc(
 	register.brew_token = brew_token(brew_id, allocator)
 	register.completion_marker_required = true
 	register.order_source, alloc_err = strings.clone(recipe.order_file, allocator)
-	if alloc_err != nil { destroy_register(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
+	if alloc_err != nil { destroy_struct(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
 	register.preamble, alloc_err = strings.clone(recipe.preamble, allocator)
-	if alloc_err != nil { destroy_register(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
+	if alloc_err != nil { destroy_struct(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
 	register.preamble_source, alloc_err = strings.clone(recipe.preamble_file, allocator)
-	if alloc_err != nil { destroy_register(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
+	if alloc_err != nil { destroy_struct(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
 	register.model, alloc_err = strings.clone(recipe.model, allocator)
-	if alloc_err != nil { destroy_register(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
+	if alloc_err != nil { destroy_struct(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
 	register.thinking, alloc_err = strings.clone(recipe.thinking, allocator)
-	if alloc_err != nil { destroy_register(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
+	if alloc_err != nil { destroy_struct(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
 	register.review_model, alloc_err = strings.clone(recipe.review_model, allocator)
-	if alloc_err != nil { destroy_register(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
+	if alloc_err != nil { destroy_struct(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
 	register.review_thinking, alloc_err = strings.clone(recipe.review_thinking, allocator)
-	if alloc_err != nil { destroy_register(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
+	if alloc_err != nil { destroy_struct(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
 	register.shots, alloc_err = make([dynamic]Register_Shot, 0, len(recipe.shots), allocator)
 	if alloc_err != nil {
-		destroy_register(&register, allocator)
+		destroy_struct(&register, allocator)
 		return Register{}, State_Error{kind = .Out_Of_Memory}
 	}
 
 	for path in recipe.share {
 		path_copy, path_err := strings.clone(path, allocator)
 		if path_err != nil {
-			destroy_register(&register, allocator)
+			destroy_struct(&register, allocator)
 			return Register{}, State_Error{kind = .Out_Of_Memory}
 		}
 		_, append_err := append(&register.share, path_copy)
 		if append_err != nil {
 			delete(path_copy, allocator)
-			destroy_register(&register, allocator)
+			destroy_struct(&register, allocator)
 			return Register{}, State_Error{kind = .Out_Of_Memory}
 		}
 	}
@@ -164,13 +166,13 @@ register_from_recipe :: proc(
 	for shot in recipe.shots {
 		id, clone_err := strings.clone(shot.id, allocator)
 		if clone_err != nil {
-			destroy_register(&register, allocator)
+			destroy_struct(&register, allocator)
 			return Register{}, State_Error{kind = .Out_Of_Memory}
 		}
 		prompt, prompt_err := strings.clone(shot.prompt, allocator)
 		if prompt_err != nil {
 			delete(id, allocator)
-			destroy_register(&register, allocator)
+			destroy_struct(&register, allocator)
 			return Register{}, State_Error{kind = .Out_Of_Memory}
 		}
 
@@ -178,7 +180,7 @@ register_from_recipe :: proc(
 		if status_err != nil {
 			delete(id, allocator)
 			delete(prompt, allocator)
-			destroy_register(&register, allocator)
+			destroy_struct(&register, allocator)
 			return Register{}, State_Error{kind = .Out_Of_Memory}
 		}
 		model_value := shot.model
@@ -189,11 +191,11 @@ register_from_recipe :: proc(
 		thinking, thinking_err := strings.clone(thinking_value, allocator)
 		if model_err != nil || thinking_err != nil {
 			delete(id, allocator); delete(prompt, allocator); delete(status, allocator); delete(model, allocator); delete(thinking, allocator)
-			destroy_register(&register, allocator)
+			destroy_struct(&register, allocator)
 			return Register{}, State_Error{kind = .Out_Of_Memory}
 		}
 		prompt_source, source_err := strings.clone(shot.prompt_file, allocator)
-		if source_err != nil { delete(id, allocator); delete(prompt, allocator); delete(status, allocator); delete(model, allocator); delete(thinking, allocator); destroy_register(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
+		if source_err != nil { delete(id, allocator); delete(prompt, allocator); delete(status, allocator); delete(model, allocator); delete(thinking, allocator); destroy_struct(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
 		_, append_err := append(&register.shots, Register_Shot{
 			id = id,
 			prompt = prompt,
@@ -207,61 +209,12 @@ register_from_recipe :: proc(
 			delete(id, allocator)
 			delete(prompt, allocator)
 			delete(status, allocator)
-			destroy_register(&register, allocator)
+			destroy_struct(&register, allocator)
 			return Register{}, State_Error{kind = .Out_Of_Memory}
 		}
 	}
 
 	return register, State_Error{}
-}
-
-destroy_register :: proc(register: ^Register, allocator := context.allocator) {
-	previous_allocator := context.allocator
-	context.allocator = allocator
-	defer context.allocator = previous_allocator
-
-	for shot in register.shots {
-		delete(shot.id, allocator)
-		delete(shot.prompt, allocator)
-		delete(shot.status, allocator)
-		delete(shot.model, allocator)
-		delete(shot.thinking, allocator)
-		delete(shot.prompt_source, allocator)
-		delete(shot.detail, allocator)
-		if len(shot.station_path) > 0 {
-			delete(shot.station_path, allocator)
-		}
-		if len(shot.herdr_tab_id) > 0 {
-			delete(shot.herdr_tab_id, allocator)
-		}
-		if len(shot.herdr_pane_id) > 0 {
-			delete(shot.herdr_pane_id, allocator)
-		}
-	}
-	delete(register.shots)
-	delete(register.brew_id, allocator)
-	delete(register.beans_path, allocator)
-	delete(register.repository_name, allocator)
-	delete(register.brew_token, allocator)
-	delete(register.model, allocator)
-	delete(register.thinking, allocator)
-	delete(register.review_model, allocator)
-	delete(register.review_thinking, allocator)
-	delete(register.order_source, allocator)
-	delete(register.preamble, allocator)
-	delete(register.preamble_source, allocator)
-	for path in register.share {
-		delete(path, allocator)
-	}
-	delete(register.share)
-	if len(register.base_commit) > 0 {
-		delete(register.base_commit, allocator)
-	}
-	if len(register.herdr_workspace_id) > 0 {
-		delete(register.herdr_workspace_id, allocator)
-	}
-	delete(register.order, allocator)
-	register^ = Register{}
 }
 
 create_state :: proc(directory: string, register: ^Register) -> State_Error {
@@ -290,47 +243,7 @@ create_state :: proc(directory: string, register: ^Register) -> State_Error {
 	return write_register_atomic(register_path, register^)
 }
 
-STATE_LOCK_FILE_NAME :: "state.lock"
-
-// One advisory lock per Brew, shared by every process that touches its Register
-// or Receipt: the supervisor, Workers, and status, cancel and collect. Exclusive
-// for writes, shared for reads. The kernel releases it if the holder dies.
-state_lock :: proc(directory: string, exclusive: bool) -> (file: ^os.File, locked: bool) {
-	path := state_file_path(directory, STATE_LOCK_FILE_NAME)
-	defer delete(path)
-	file_err: os.Error
-	file, file_err = os.open(path, os.O_RDWR|os.O_CREATE, private_file_permissions())
-	if file_err != nil {
-		return nil, false
-	}
-	op := linux.FLock_Op{.SH}
-	if exclusive {
-		op = {.EX}
-	}
-	if linux.flock(linux.Fd(os.fd(file)), op) != .NONE {
-		_ = os.close(file)
-		return nil, false
-	}
-	return file, true
-}
-
-state_unlock :: proc(file: ^os.File) {
-	_ = linux.flock(linux.Fd(os.fd(file)), {.UN})
-	_ = os.close(file)
-}
-
-// Reads the Register and Receipt under a shared lock, so a write in progress is
-// never seen half done.
 read_state :: proc(directory: string, allocator := context.allocator) -> (register: Register, err: State_Error) {
-	file, locked := state_lock(directory, false)
-	defer if locked {
-		state_unlock(file)
-	}
-	return read_state_unlocked(directory, allocator)
-}
-
-// The caller must already hold the Brew's lock.
-read_state_unlocked :: proc(directory: string, allocator := context.allocator) -> (register: Register, err: State_Error) {
 	register_path := state_file_path(directory, REGISTER_FILE_NAME, allocator)
 	defer delete(register_path, allocator)
 	receipt_path := state_file_path(directory, RECEIPT_FILE_NAME, allocator)
@@ -349,13 +262,13 @@ read_state_unlocked :: proc(directory: string, allocator := context.allocator) -
 	defer delete(register_data, allocator)
 
 	if json.unmarshal_string(transmute(string)register_data, &register, .JSON, allocator) != nil || !valid_register(register) {
-		destroy_register(&register, allocator)
+		destroy_struct(&register, allocator)
 		return Register{}, State_Error{kind = .Corrupt_Register}
 	}
 
 	receipt_data, receipt_io_err := os.read_entire_file(receipt_path, allocator)
 	if receipt_io_err != nil {
-		destroy_register(&register, allocator)
+		destroy_struct(&register, allocator)
 		delete(receipt_data, allocator)
 		if receipt_io_err == os.General_Error.Not_Exist {
 			return Register{}, State_Error{kind = .Corrupt_Receipt}
@@ -365,23 +278,17 @@ read_state_unlocked :: proc(directory: string, allocator := context.allocator) -
 	defer delete(receipt_data, allocator)
 
 	if conflict := validate_receipt(register, transmute(string)receipt_data, allocator); conflict.kind != .None {
-		destroy_register(&register, allocator)
+		destroy_struct(&register, allocator)
 		return Register{}, conflict
 	}
 	return register, State_Error{}
 }
 
-transition_shot :: proc(
+apply_transition :: proc(
 	directory: string,
 	register: ^Register,
 	shot_id, to_state, detail: string,
-) -> State_Error {
-	lock, locked := state_lock(directory, true)
-	if !locked {
-		return State_Error{kind = .IO_Error}
-	}
-	defer state_unlock(lock)
-	index := find_shot(register^, shot_id)
+) -> State_Error {	index := find_shot(register^, shot_id)
 	if index < 0 {
 		return State_Error{kind = .Shot_Not_Found}
 	}
@@ -438,13 +345,7 @@ transition_shot :: proc(
 	return State_Error{}
 }
 
-request_shot_cancel :: proc(directory: string, register: ^Register, shot_id, detail: string) -> State_Error {
-	lock, locked := state_lock(directory, true)
-	if !locked {
-		return State_Error{kind = .IO_Error}
-	}
-	defer state_unlock(lock)
-	index := find_shot(register^, shot_id)
+apply_request_shot_cancel :: proc(directory: string, register: ^Register, shot_id, detail: string) -> State_Error {	index := find_shot(register^, shot_id)
 	if index < 0 {
 		return State_Error{kind = .Shot_Not_Found}
 	}
@@ -575,13 +476,7 @@ apply_event :: proc(register: Register, expected: []Replay_Shot, event: State_Ev
 	return true
 }
 
-save_register_metadata :: proc(directory: string, register: Register) -> State_Error {
-	lock, locked := state_lock(directory, true)
-	if !locked {
-		return State_Error{kind = .IO_Error}
-	}
-	defer state_unlock(lock)
-	if err := verify_current_state(directory, register); err.kind != .None {
+save_register_metadata :: proc(directory: string, register: Register) -> State_Error {	if err := verify_current_state(directory, register); err.kind != .None {
 		return err
 	}
 	path := state_file_path(directory, REGISTER_FILE_NAME)
@@ -590,8 +485,8 @@ save_register_metadata :: proc(directory: string, register: Register) -> State_E
 }
 
 verify_current_state :: proc(directory: string, register: Register) -> State_Error {
-	current, err := read_state_unlocked(directory)
-	defer destroy_register(&current)
+	current, err := read_state(directory)
+	defer destroy_struct(&current)
 	if err.kind != .None {
 		return err
 	}

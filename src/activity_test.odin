@@ -23,7 +23,7 @@ test_activity_state_round_trips_record_and_worker_start_time :: proc(t: ^testing
 	}
 	testing.expect(t, write_activity_record(directory, message))
 	record, ok := read_activity_record(directory, "shot-a")
-	defer activity_record_destroy(&record)
+	defer destroy_struct(&record)
 	testing.expect(t, ok)
 	testing.expect_value(t, record.kind, "tool_start")
 	testing.expect_value(t, record.description, "Running tool: read")

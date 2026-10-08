@@ -226,7 +226,7 @@ cancelled_worker_confirmed :: proc(directory, shot_id: string, identity: Process
 
 settle_from_result :: proc(directory: string, register: ^Register, shot: ^Register_Shot, result_path: string) -> State_Error {
 	result, err := read_worker_result(result_path)
-	defer destroy_worker_result(&result)
+	defer destroy_struct(&result)
 	if err != "" || result.brew_id != register.brew_id || result.shot_id != shot.id {
 		return State_Error{kind = .Corrupt_Register}
 	}

@@ -20,7 +20,7 @@ api_fixture :: proc(t: ^testing.T) -> (root: string, register: Register, api: Se
 test_server_api_snapshot_returns_the_brew :: proc(t: ^testing.T) {
 	root, register, api, ok := api_fixture(t)
 	defer remove_test_state_directory(root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	testing.expect(t, ok, "the server socket must open")
 	defer server_api_close(&api)
 
@@ -30,7 +30,7 @@ test_server_api_snapshot_returns_the_brew :: proc(t: ^testing.T) {
 	testing.expect(t, server_api_serve_one(api, 2000), "the waiting request must be served")
 
 	response, recv_err := server_api_receive(conn)
-	defer server_response_destroy(&response)
+	defer destroy_struct(&response)
 	testing.expect_value(t, recv_err, "")
 	testing.expect_value(t, response.register.brew_id, register.brew_id)
 }
@@ -39,7 +39,7 @@ test_server_api_snapshot_returns_the_brew :: proc(t: ^testing.T) {
 test_server_api_transition_writes_through_the_server :: proc(t: ^testing.T) {
 	root, register, api, ok := api_fixture(t)
 	defer remove_test_state_directory(root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	testing.expect(t, ok, "the server socket must open")
 	defer server_api_close(&api)
 
@@ -49,11 +49,11 @@ test_server_api_transition_writes_through_the_server :: proc(t: ^testing.T) {
 	testing.expect(t, server_api_serve_one(api, 2000), "the waiting request must be served")
 
 	response, recv_err := server_api_receive(conn)
-	defer server_response_destroy(&response)
+	defer destroy_struct(&response)
 	testing.expect_value(t, recv_err, "")
 
 	stored, stored_err := read_state(fmt.tprintf("%s/%s", root, register.brew_id))
-	defer destroy_register(&stored)
+	defer destroy_struct(&stored)
 	testing.expect_value(t, stored_err.kind, State_Error_Kind.None)
 	testing.expect_value(t, stored.shots[0].status, SHOT_RUNNING)
 }
@@ -62,7 +62,7 @@ test_server_api_transition_writes_through_the_server :: proc(t: ^testing.T) {
 test_server_api_refuses_a_wrong_token :: proc(t: ^testing.T) {
 	root, register, api, ok := api_fixture(t)
 	defer remove_test_state_directory(root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	testing.expect(t, ok, "the server socket must open")
 	defer server_api_close(&api)
 
@@ -71,7 +71,7 @@ test_server_api_refuses_a_wrong_token :: proc(t: ^testing.T) {
 	testing.expect(t, server_api_serve_one(api, 2000), "the waiting request must be served")
 
 	response, _ := server_api_receive(conn)
-	defer server_response_destroy(&response)
+	defer destroy_struct(&response)
 	testing.expect(t, !response.ok, "a wrong token must be refused")
 	testing.expect(t, strings.contains(response.error, "token"), response.error)
 }
@@ -80,7 +80,7 @@ test_server_api_refuses_a_wrong_token :: proc(t: ^testing.T) {
 test_server_api_refuses_a_brew_from_another_repository :: proc(t: ^testing.T) {
 	root, register, api, ok := api_fixture(t)
 	defer remove_test_state_directory(root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	testing.expect(t, ok, "the server socket must open")
 	defer server_api_close(&api)
 
@@ -93,7 +93,7 @@ test_server_api_refuses_a_brew_from_another_repository :: proc(t: ^testing.T) {
 	testing.expect(t, server_api_serve_one(other, 2000), "the waiting request must be served")
 
 	response, _ := server_api_receive(conn)
-	defer server_response_destroy(&response)
+	defer destroy_struct(&response)
 	testing.expect(t, !response.ok, "another repository's Brew must be refused")
 	testing.expect(t, strings.contains(response.error, "another repository"), response.error)
 }

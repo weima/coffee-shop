@@ -4,6 +4,7 @@ import "core:flags"
 
 Command_Kind :: enum {
 	Help,
+	Server,
 	Brew,
 	Status,
 	Cancel,
@@ -28,6 +29,11 @@ Brew_Arguments :: struct {
 
 Brew_ID_Arguments :: struct {
 	brew_id: string `args:"pos=0,required" usage:"Brew identifier."`,
+}
+
+Server_Arguments :: struct {
+	state_root: string `args:"required" usage:"Coffee Shop state directory."`,
+	repository: string `args:"required" usage:"Beans Git repository path."`,
 }
 
 Worker_Arguments :: struct {
@@ -64,6 +70,12 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 			return Command{kind = .Help}, "invalid brew arguments"
 		}
 		return Command{kind = .Brew, repo = options.repo, recipe = options.recipe}, ""
+	case "__server":
+		options: Server_Arguments
+		if flags.parse(&options, args[1:], .Unix) != nil {
+			return Command{kind = .Help}, "invalid server arguments"
+		}
+		return Command{kind = .Server, state_root = options.state_root, repo = options.repository}, ""
 	case "__worker":
 		options: Worker_Arguments
 		if flags.parse(&options, args[1:], .Unix) != nil {

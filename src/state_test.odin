@@ -31,7 +31,7 @@ test_state_round_trips_and_records_transitions :: proc(t: ^testing.T) {
 	defer remove_test_state_directory(directory)
 
 	register := make_test_register(t)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	testing.expect_value(t, create_state(directory, &register).kind, State_Error_Kind.None)
 
 	err := transition_shot(directory, &register, "shot-a", SHOT_RUNNING, "Worker started")
@@ -42,7 +42,7 @@ test_state_round_trips_and_records_transitions :: proc(t: ^testing.T) {
 	testing.expect_value(t, err.kind, State_Error_Kind.None)
 
 	reloaded, read_err := read_state(directory)
-	defer destroy_register(&reloaded)
+	defer destroy_struct(&reloaded)
 	testing.expect_value(t, read_err.kind, State_Error_Kind.None)
 	testing.expect_value(t, reloaded.event_sequence, 3)
 	testing.expect_value(t, reloaded.shots[0].status, SHOT_COMPLETED)
@@ -55,7 +55,7 @@ test_state_rejects_invalid_transition_without_mutation :: proc(t: ^testing.T) {
 	defer remove_test_state_directory(directory)
 
 	register := make_test_register(t)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	testing.expect_value(t, create_state(directory, &register).kind, State_Error_Kind.None)
 
 	err := transition_shot(directory, &register, "shot-a", SHOT_COMPLETED, "skip running")
@@ -63,7 +63,7 @@ test_state_rejects_invalid_transition_without_mutation :: proc(t: ^testing.T) {
 	testing.expect_value(t, register.shots[0].status, SHOT_QUEUED)
 
 	reloaded, read_err := read_state(directory)
-	defer destroy_register(&reloaded)
+	defer destroy_struct(&reloaded)
 	testing.expect_value(t, read_err.kind, State_Error_Kind.None)
 	testing.expect_value(t, reloaded.event_sequence, 0)
 	testing.expect_value(t, reloaded.shots[0].status, SHOT_QUEUED)
@@ -75,7 +75,7 @@ test_cancel_request_is_not_a_terminal_transition :: proc(t: ^testing.T) {
 	defer remove_test_state_directory(directory)
 
 	register := make_test_register(t)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	_ = create_state(directory, &register)
 	_ = transition_shot(directory, &register, "shot-a", SHOT_RUNNING, "Worker started")
 
@@ -100,7 +100,7 @@ test_pending_cancel_can_become_interrupted_when_exit_is_unknown :: proc(t: ^test
 	defer remove_test_state_directory(directory)
 
 	register := make_test_register(t)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	_ = create_state(directory, &register)
 	_ = transition_shot(directory, &register, "shot-a", SHOT_RUNNING, "Worker started")
 	_ = request_shot_cancel(directory, &register, "shot-a", "user requested cancellation")
@@ -108,7 +108,7 @@ test_pending_cancel_can_become_interrupted_when_exit_is_unknown :: proc(t: ^test
 	err := transition_shot(directory, &register, "shot-a", SHOT_INTERRUPTED, "Worker exit could not be confirmed")
 	testing.expect_value(t, err.kind, State_Error_Kind.None)
 	reloaded, read_err := read_state(directory)
-	defer destroy_register(&reloaded)
+	defer destroy_struct(&reloaded)
 	testing.expect_value(t, read_err.kind, State_Error_Kind.None)
 	testing.expect_value(t, reloaded.shots[0].status, SHOT_INTERRUPTED)
 }
@@ -137,7 +137,7 @@ test_corrupt_records_are_reported_without_repair :: proc(t: ^testing.T) {
 	defer remove_test_state_directory(directory)
 
 	register := make_test_register(t)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	_ = create_state(directory, &register)
 
 	receipt_path := state_file_path(directory, RECEIPT_FILE_NAME)
@@ -162,7 +162,7 @@ test_corrupt_register_is_preserved :: proc(t: ^testing.T) {
 	defer remove_test_state_directory(directory)
 
 	register := make_test_register(t)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	_ = create_state(directory, &register)
 
 	register_path := state_file_path(directory, REGISTER_FILE_NAME)
@@ -185,7 +185,7 @@ test_create_state_does_not_overwrite_existing_brew :: proc(t: ^testing.T) {
 	defer remove_test_state_directory(directory)
 
 	register := make_test_register(t)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	testing.expect_value(t, create_state(directory, &register).kind, State_Error_Kind.None)
 	original_status := register.shots[0].status
 	register.shots[0].status = SHOT_RUNNING
@@ -200,7 +200,7 @@ test_receipt_and_register_conflicts_are_unknown :: proc(t: ^testing.T) {
 	defer remove_test_state_directory(directory)
 
 	register := make_test_register(t)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	_ = create_state(directory, &register)
 	_ = transition_shot(directory, &register, "shot-a", SHOT_RUNNING, "Worker started")
 
@@ -219,7 +219,7 @@ test_receipt_and_register_conflicts_are_unknown :: proc(t: ^testing.T) {
 
 make_test_register :: proc(t: ^testing.T) -> Register {
 	recipe, recipe_err := parse_recipe(`{"order":"Test state transitions","shots":[{"id":"shot-a","prompt":"Update state safely"},{"id":"shot-b","prompt":"Check a second independent Shot"}]}`)
-	defer destroy_recipe(&recipe)
+	defer destroy_struct(&recipe)
 	testing.expect_value(t, recipe_err, "")
 
 	register, err := register_from_recipe("brew-test", "/tmp/beans", recipe)

@@ -291,9 +291,9 @@ Both were recorded `completed`, and the Oreo's decisions list said nothing. Only
 - Root `workers.md` and `standards.md` are instructed once in each Worker prompt when present; `AGENTS.md` remains Pi-managed.
 - Evidence run for this implementation: `TZ=UTC just test` (129 tests passed on three consecutive runs), `just check`, and `git diff --check` pass. The seven-Shot cancellation gate is now a test: five Workers run and two queue, and cancellation settles in about 4 seconds with a modelled 4-second exit delay. Cancellation was slow because the supervisor waited for each Worker in turn; it now waits once on a shared deadline. Two concurrency defects found while running the suite in parallel are fixed: a Worker's exit could be recorded before its result was read, and concurrent processes could read the Register and Receipt mid-write. Processes now take `state.lock` (shared for reads, exclusive for writes), which passed 12 of 12 e2e-subset runs where the earlier build failed about one run in ten. Still not covered: file size/UTF-8/empty/missing cases, schema/parser equivalence beyond `review_model`, all repository slug variants, change expectation, recovery of incomplete outcomes, policy-file variants/base-commit stability, and every collect outcome. Real-Pi/Herdr gates for model settings, preamble delivery, the real incomplete-response scenario, and the real seven-Shot cancellation were not run. No Blend code was added.
 
-### 8. Coordinate Brew state through one server per resource — in progress (stages 1–3 of 5 done: Brew token, election and server record, socket API)
+### 8. Coordinate Brew state through one server per resource — in progress (stages 1–4 of 5 done: Brew token, election and server record, socket API, commands and Workers through the server)
 
-**Stage 3 as built.** `src/server_api.odin`: one request and one response per connection, each a JSON line on `server.sock` in the server's directory. Two operations: `snapshot` returns the Register; `transition` changes one Shot through `transition_shot`. Every request must name a Brew of the server's repository and carry that Brew's token. A socket path longer than the Unix limit is refused at open; the server directory name therefore must stay short, and a long `CS_STATE_DIR` can exceed the limit. Stage 4 routes commands and Workers through this API and retires `state.lock`; stage 5 adds the serving loop, startup replay, and idle exit.
+**Stage 3 as built.** `src/server_api.odin`: one request and one response per connection, each a JSON line on `server.sock` in the server's directory. Two operations: `snapshot` returns the Register; `transition` changes one Shot through `transition_shot`. Every request must name a Brew of the server's repository and carry that Brew's token. A socket path longer than the Unix limit is refused at open; the server directory name therefore must stay short, and a long `CS_STATE_DIR` can exceed the limit. **Stage 4 as built.** `brew`, `status`, `cancel`, `collect` and Workers reach Brew state only through the repository's server. A client that cannot reach it starts it (`__server`), retries up to six times with a half-second pause, then aborts with the cause. There is no fallback to files. `state.lock` is removed; the server is the only writer after launch. `brew` creates a Brew's files before its first Worker exists. Commands read only the repository path and Brew token from `register.json`, to find their server. The server exits after 30 seconds with no active Brew. Stage 5 adds startup replay of the Receipt and the kill-mid-write and simultaneous-start gates.
 
 **Decision.** Workers keep writing their result file, and the supervisor keeps its 100 ms poll. A push from the Worker would save at most about 100 ms per Shot, and it would add a second result path. Revisit only if measurements show the poll matters.
 
@@ -324,7 +324,7 @@ Both were recorded `completed`, and the Oreo's decisions list said nothing. Only
 - Server generation: a counter in `server.json`, incremented on each start under `server.lock`. It counts restarts for diagnosis only; no Worker or client relies on it.
 - A request carrying another Brew's token, or aimed at a server for a different repository, is rejected.
 - Election and liveness: a server is alive while it holds `server.lock`. Commands test liveness by trying that lock without waiting; the heartbeat in `server.json` is for display and diagnosis only.
-- `state.lock` stays until stage 4. Retiring it earlier would bring back the write race, because nothing else would serialize writes yet.
+- `state.lock` is retired in stage 4. The server serializes all writes after launch, so no lock is needed between processes.
 
 **Lifecycle.**
 
@@ -332,7 +332,7 @@ Both were recorded `completed`, and the Oreo's decisions list said nothing. Only
 - Start: a command or Worker that finds no live server (heartbeat stale or process gone) starts one. Only one start wins: the new server takes an exclusive `flock` on `server.lock` before writing `server.json`.
 - Startup recovery: before serving, the server replays Receipt events that are ahead of the Register, so a crash between the two writes is repaired.
 - Idle exit: the server exits after a timeout (default 30 seconds) with no non-terminal Brew on its repository. The next command restarts it. There is no global daemon.
-- Fallback: when a server cannot be started, commands read the files under `state.lock`, as they do now.
+- No fallback. Every reader and writer of Brew state goes through the server. If the server cannot be reached, the client waits and retries a fixed number of times (starting the server if none is running), then aborts with an error that names the cause, such as a socket path that is too long or a directory that cannot be written. Commands never read or write `register.json` directly.
 - A Brew uses exactly one server, for its repository. Cross-repository Brews are out of scope.
 
 **Gate.**

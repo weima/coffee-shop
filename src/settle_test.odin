@@ -23,7 +23,7 @@ test_observe_records_a_finished_workers_result :: proc(t: ^testing.T) {
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_RUNNING, "Worker started")
 	write_test_result(brew_dir, "shot-a", true)
 
@@ -35,7 +35,7 @@ test_observe_records_a_finished_workers_result :: proc(t: ^testing.T) {
 @(test)
 test_v2_worker_without_completion_marker_is_incomplete :: proc(t: ^testing.T) {
 	root := make_fixture_root(t); defer remove_fixture_root(root)
-	brew_dir, register := make_brew_fixture(t, root); defer destroy_register(&register)
+	brew_dir, register := make_brew_fixture(t, root); defer destroy_struct(&register)
 	register.completion_marker_required = true
 	_ = save_register_metadata(brew_dir, register)
 	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_RUNNING, "Worker started")
@@ -52,7 +52,7 @@ test_observe_marks_a_vanished_worker_interrupted_never_completed :: proc(t: ^tes
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	write_test_started(brew_dir, "shot-a", DEAD_IDENTITY)
 
 	testing.expect_value(t, settle_brew(brew_dir, &register, "unused", .Observe).kind, State_Error_Kind.None)
@@ -73,7 +73,7 @@ test_observe_keeps_a_result_written_as_the_worker_exits :: proc(t: ^testing.T) {
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	race_brew_dir = brew_dir
 	write_test_started(brew_dir, "shot-a", DEAD_IDENTITY)
 
@@ -88,7 +88,7 @@ test_observe_leaves_live_workers_and_queued_shots_alone :: proc(t: ^testing.T) {
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	write_test_started(brew_dir, "shot-a", current_identity_or_dead())
 
 	testing.expect_value(t, settle_brew(brew_dir, &register, "unused", .Observe).kind, State_Error_Kind.None)
@@ -101,7 +101,7 @@ test_cancel_stops_a_live_worker_and_cancels_queued_shots :: proc(t: ^testing.T) 
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 
 	child, start_err := os.process_start(os.Process_Desc{command = []string{"sleep", "30"}})
 	testing.expect_value(t, start_err, os.Error(nil))
@@ -120,7 +120,7 @@ test_cancel_stops_a_live_worker_and_cancels_queued_shots :: proc(t: ^testing.T) 
 	testing.expect_value(t, register.shots[1].status, SHOT_CANCELLED)
 
 	reloaded, read_err := read_state(brew_dir)
-	defer destroy_register(&reloaded)
+	defer destroy_struct(&reloaded)
 	testing.expect_value(t, read_err.kind, State_Error_Kind.None)
 	testing.expect_value(t, reloaded.shots[0].status, SHOT_CANCELLED)
 }
@@ -130,7 +130,7 @@ test_cancel_marks_a_worker_interrupted_when_its_exit_cannot_be_confirmed :: proc
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	write_test_started(brew_dir, "shot-a", current_identity_or_dead()) // never exits
 	herdr := fmt.tprintf("%s/herdr", root)
 	_ = os.write_entire_file(herdr, "#!/bin/sh\nexit 0\n", os.Permissions{.Read_User, .Write_User, .Execute_User})
@@ -144,7 +144,7 @@ test_cancel_brew_hands_off_to_a_live_supervisor_and_is_repeatable :: proc(t: ^te
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	testing.expect(t, write_supervisor(brew_dir))
 
 	for _ in 0 ..< 2 {
@@ -155,7 +155,7 @@ test_cancel_brew_hands_off_to_a_live_supervisor_and_is_repeatable :: proc(t: ^te
 	}
 	testing.expect(t, cancel_requested(brew_dir))
 	reloaded, _ := read_state(brew_dir)
-	defer destroy_register(&reloaded)
+	defer destroy_struct(&reloaded)
 	testing.expect_value(t, reloaded.event_sequence, 0)
 }
 
@@ -164,7 +164,7 @@ test_cancel_brew_settles_an_orphaned_brew_itself :: proc(t: ^testing.T) {
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 
 	output, err := cancel_brew(root, "unused", "brew-test")
 	defer delete(output)
@@ -182,13 +182,13 @@ test_settle_orphaned_brew_records_results_before_collect :: proc(t: ^testing.T) 
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_RUNNING, "Worker started")
 	write_test_result(brew_dir, "shot-a", true)
 
 	testing.expect_value(t, settle_orphaned_brew(root, "unused", "brew-test"), "")
 	reloaded, _ := read_state(brew_dir)
-	defer destroy_register(&reloaded)
+	defer destroy_struct(&reloaded)
 	testing.expect_value(t, reloaded.shots[0].status, SHOT_COMPLETED)
 	testing.expect_value(t, reloaded.shots[1].status, SHOT_QUEUED)
 }
@@ -255,7 +255,7 @@ test_observe_does_not_declare_a_worker_dead_when_liveness_is_unknown :: proc(t: 
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	// The Worker started, left no result, and its /proc entry cannot be read.
 	write_test_started(brew_dir, "shot-a", DEAD_IDENTITY)
 
@@ -275,7 +275,7 @@ test_cancel_never_confirms_an_exit_it_cannot_see :: proc(t: ^testing.T) {
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	write_test_started(brew_dir, "shot-a", current_identity_or_dead())
 	herdr := fmt.tprintf("%s/herdr", root)
 	_ = os.write_entire_file(herdr, "#!/bin/sh\nexit 0\n", os.Permissions{.Read_User, .Write_User, .Execute_User})
@@ -295,7 +295,7 @@ test_supervisor_liveness_distinguishes_missing_unreadable_and_running :: proc(t:
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	path := supervisor_path(brew_dir)
 	defer delete(path)
 
@@ -317,7 +317,7 @@ test_cancel_does_not_take_over_a_supervisor_it_cannot_confirm_is_gone :: proc(t:
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	path := supervisor_path(brew_dir)
 	defer delete(path)
 	_ = os.write_entire_file(path, "not json", os.Permissions{.Read_User, .Write_User})
@@ -328,13 +328,13 @@ test_cancel_does_not_take_over_a_supervisor_it_cannot_confirm_is_gone :: proc(t:
 	testing.expect(t, strings.contains(output, "Cancellation requested"), output)
 	// Settling here could race a supervisor that is still running, so nothing changed.
 	reloaded, _ := read_state(brew_dir)
-	defer destroy_register(&reloaded)
+	defer destroy_struct(&reloaded)
 	testing.expect_value(t, reloaded.shots[0].status, SHOT_QUEUED)
 	testing.expect_value(t, reloaded.event_sequence, 0)
 
 	// Collect likewise leaves an orphan-looking Brew alone.
 	testing.expect_value(t, settle_orphaned_brew(root, "unused", "brew-test"), "")
 	again, _ := read_state(brew_dir)
-	defer destroy_register(&again)
+	defer destroy_struct(&again)
 	testing.expect_value(t, again.event_sequence, 0)
 }
