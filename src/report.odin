@@ -1,0 +1,226 @@
+package main
+
+import "core:encoding/json"
+import "core:fmt"
+import "core:os"
+import "core:strings"
+
+// A Brew is as finished as its least finished Shot. Terminal Brews report the
+// worst outcome so a failure is never hidden behind completed Shots.
+brew_status :: proc(register: Register) -> string {
+	any_queued, any_failed, any_interrupted, any_cancelled := false, false, false, false
+	any_running := false
+	for shot in register.shots {
+		switch shot.status {
+		case SHOT_QUEUED: any_queued = true
+		case SHOT_RUNNING: any_running = true
+		case SHOT_FAILED: any_failed = true
+		case SHOT_INTERRUPTED: any_interrupted = true
+		case SHOT_CANCELLED: any_cancelled = true
+		}
+	}
+	switch {
+	case any_running: return SHOT_RUNNING
+	case any_queued:
+		// Queued Shots next to finished ones are waiting for a free slot.
+		for shot in register.shots {
+			if shot.status != SHOT_QUEUED {
+				return SHOT_RUNNING
+			}
+		}
+		return SHOT_QUEUED
+	case any_failed: return SHOT_FAILED
+	case any_interrupted: return SHOT_INTERRUPTED
+	case any_cancelled: return SHOT_CANCELLED
+	}
+	return SHOT_COMPLETED
+}
+
+run_status :: proc(brew_id: string) -> int {
+	state_root, err := default_state_root()
+	if err != "" {
+		write_error(err)
+		return 2
+	}
+	defer delete(state_root)
+	output, status_err := render_status(state_root, brew_id)
+	if status_err != "" {
+		write_error(status_err)
+		return 1
+	}
+	defer delete(output)
+	fmt.print(output)
+	return 0
+}
+
+run_collect :: proc(brew_id: string) -> int {
+	state_root, err := default_state_root()
+	if err != "" {
+		write_error(err)
+		return 2
+	}
+	defer delete(state_root)
+	output, complete, collect_err := render_collect(state_root, brew_id)
+	if collect_err != "" {
+		write_error(collect_err)
+		return 1
+	}
+	defer delete(output)
+	fmt.print(output)
+	if !complete {
+		write_error("Brew is not fully completed; see the Shot outcomes above")
+		return 1
+	}
+	return 0
+}
+
+render_status :: proc(state_root, brew_id: string) -> (output: string, err: string) {
+	register, brew_dir, load_err := load_brew(state_root, brew_id)
+	if load_err != "" {
+		return "", load_err
+	}
+	defer destroy_register(&register)
+	defer delete(brew_dir)
+
+	builder := strings.builder_make()
+	fmt.sbprintfln(&builder, "Brew %s: %s", register.brew_id, brew_status(register))
+	for shot in register.shots {
+		suffix := ""
+		if shot.cancel_requested && shot.status == SHOT_RUNNING {
+			suffix = " (cancel requested)"
+		}
+		fmt.sbprintfln(&builder, "  %s  %s%s", shot.id, shot.status, suffix)
+	}
+	return strings.to_string(builder), ""
+}
+
+render_collect :: proc(state_root, brew_id: string) -> (output: string, complete: bool, err: string) {
+	register, brew_dir, load_err := load_brew(state_root, brew_id)
+	if load_err != "" {
+		return "", false, load_err
+	}
+	defer destroy_register(&register)
+	defer delete(brew_dir)
+
+	details := last_details(brew_dir, register)
+	defer delete_details(details)
+
+	builder := strings.builder_make()
+	complete = true
+	fmt.sbprintfln(&builder, "# Brew %s: %s", register.brew_id, brew_status(register))
+	fmt.sbprintfln(&builder, "Order: %s", register.order)
+	fmt.sbprintfln(&builder, "Beans: %s", register.beans_path)
+	for shot, index in register.shots {
+		fmt.sbprintfln(&builder, "\n## Shot %s: %s", shot.id, shot.status)
+		if shot.status != SHOT_COMPLETED {
+			complete = false
+			if details[index] != "" {
+				fmt.sbprintfln(&builder, "Detail: %s", details[index])
+			}
+		}
+		if shot.station_path == "" {
+			continue
+		}
+		fmt.sbprintfln(&builder, "Station: %s", shot.station_path)
+		fmt.sbprintfln(&builder, "Branch: coffee-shop-%s-%s", register.brew_id, shot.id)
+		if shot.status == SHOT_QUEUED {
+			continue
+		}
+		changes := station_changes(shot.station_path)
+		fmt.sbprintfln(&builder, "Changes:\n%s", changes)
+		delete(changes)
+		report := read_shot_report(brew_dir, shot.id)
+		if report != "" {
+			fmt.sbprintfln(&builder, "Report:\n%s", report)
+		}
+		delete(report)
+	}
+	return strings.to_string(builder), complete, ""
+}
+
+// Brew IDs become path segments, so apply the same grammar as Shot IDs before
+// touching the filesystem.
+load_brew :: proc(state_root, brew_id: string) -> (register: Register, brew_dir: string, err: string) {
+	if !valid_shot_id(brew_id) {
+		return Register{}, "", "Brew ID is invalid"
+	}
+	brew_dir = state_file_path(state_root, brew_id)
+	if !os.exists(brew_dir) {
+		delete(brew_dir)
+		return Register{}, "", fmt.tprintf("no Brew named %s", brew_id)
+	}
+	state_err: State_Error
+	register, state_err = read_state(brew_dir)
+	if state_err.kind != .None {
+		delete(brew_dir)
+		return Register{}, "", fmt.tprintf("Brew state is unknown: %s", state_error_message(state_err))
+	}
+	return register, brew_dir, ""
+}
+
+// The Register keeps only current status; the reason for a failure is in the
+// Receipt. Returns the latest event detail per Shot, aligned with register.shots.
+last_details :: proc(brew_dir: string, register: Register) -> []string {
+	details := make([]string, len(register.shots))
+	path := state_file_path(brew_dir, RECEIPT_FILE_NAME)
+	defer delete(path)
+	data, read_err := os.read_entire_file(path, context.allocator)
+	defer delete(data)
+	if read_err != nil {
+		return details
+	}
+	remaining := string(data)
+	for line in strings.split_lines_iterator(&remaining) {
+		event: State_Event
+		if json.unmarshal_string(line, &event, .JSON) != nil {
+			destroy_state_event(&event)
+			continue
+		}
+		if index := find_shot(register, event.shot_id); index >= 0 {
+			delete(details[index])
+			details[index] = strings.clone(event.detail)
+		}
+		destroy_state_event(&event)
+	}
+	return details
+}
+
+delete_details :: proc(details: []string) {
+	for detail in details {
+		delete(detail)
+	}
+	delete(details)
+}
+
+read_shot_report :: proc(brew_dir, shot_id: string) -> string {
+	reports_dir := state_file_path(brew_dir, "reports")
+	defer delete(reports_dir)
+	name := strings.concatenate({shot_id, ".md"})
+	defer delete(name)
+	path := state_file_path(reports_dir, name)
+	defer delete(path)
+	data, err := os.read_entire_file(path, context.allocator)
+	if err != nil {
+		delete(data)
+		return ""
+	}
+	return strings.trim_space(string(data)) == "" ? "" : string(data)
+}
+
+// Lists uncommitted changes in a Station. A missing or unreadable Station is
+// reported as such rather than as "no changes".
+station_changes :: proc(station_path: string) -> string {
+	state, stdout, stderr, err := os.process_exec(os.Process_Desc{
+		command = []string{"git", "-C", station_path, "status", "--short"},
+	}, context.allocator)
+	defer delete(stderr)
+	if err != nil || !state.success {
+		delete(stdout)
+		return strings.clone("(could not read Station changes)")
+	}
+	if strings.trim_space(string(stdout)) == "" {
+		delete(stdout)
+		return strings.clone("(none)")
+	}
+	return string(stdout)
+}

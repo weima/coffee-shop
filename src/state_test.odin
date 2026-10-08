@@ -225,3 +225,27 @@ remove_test_state_directory :: proc(directory: string) {
 	_ = os.remove(directory)
 	delete(directory)
 }
+
+@(test)
+test_unreadable_register_is_an_io_error_not_corruption :: proc(t: ^testing.T) {
+	directory := make_test_state_directory(t)
+	defer remove_test_state_directory(directory)
+	// A directory where register.json should be makes the read fail for a reason
+	// other than missing or malformed content.
+	register_path := state_file_path(directory, REGISTER_FILE_NAME)
+	defer delete(register_path)
+	testing.expect_value(t, os.make_directory(register_path), os.Error(nil))
+	defer os.remove(register_path)
+
+	_, err := read_state(directory)
+	testing.expect_value(t, err.kind, State_Error_Kind.IO_Error)
+}
+
+@(test)
+test_missing_register_is_reported_as_missing_state :: proc(t: ^testing.T) {
+	directory := make_test_state_directory(t)
+	defer remove_test_state_directory(directory)
+
+	_, err := read_state(directory)
+	testing.expect_value(t, err.kind, State_Error_Kind.Corrupt_Register)
+}

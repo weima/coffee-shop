@@ -55,6 +55,8 @@ Recipes are strict JSON objects with a non-empty `order` and a non-empty `shots`
 
 Store each Brew under `~/.local/state/coffee-shop/<brew-id>/`. `register.json` contains its current state; `receipt.ndjson` is its append-only event history. This state remains outside the Beans repository.
 
+The Receipt event is appended before the Register is rewritten. If a write is interrupted, or the two files disagree, Coffee Shop reports the Brew's state as unknown, names the failing line when it can, and leaves both files untouched. It never repairs state automatically. To recover, inspect `receipt.ndjson` and `register.json` by hand; the Receipt is the more detailed record. A file that cannot be read for another reason, such as permissions, is reported as an I/O error rather than as corruption.
+
 ## Shot lifecycle
 
 | State | Meaning |

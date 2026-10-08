@@ -1,6 +1,7 @@
 package main
 
 import "core:encoding/json"
+import "core:fmt"
 import "core:os"
 import "core:strings"
 
@@ -52,10 +53,20 @@ is_git_repository :: proc(
 	if run_err != nil {
 		return false, "could not run git to validate Beans repository"
 	}
-	return state.success &&
-		state.exit_code == 0 &&
-		strings.trim_space(transmute(string)stdout) == "true",
-		""
+	if state.success && state.exit_code == 0 {
+		return strings.trim_space(transmute(string)stdout) == "true", ""
+	}
+
+	// Git also fails for reasons other than "not a repository" (missing path,
+	// permissions, unsafe ownership). Keep its message so the cause is visible.
+	reason := strings.trim_space(transmute(string)stderr)
+	if strings.contains(reason, "not a git repository") {
+		return false, ""
+	}
+	if reason == "" {
+		reason = "Git exited unsuccessfully"
+	}
+	return false, fmt.tprintf("Git could not inspect the Beans path: %s", reason)
 }
 
 parse_recipe :: proc(

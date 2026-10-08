@@ -204,7 +204,12 @@ read_state :: proc(directory: string, allocator := context.allocator) -> (regist
 	register_data, io_err := os.read_entire_file(register_path, allocator)
 	if io_err != nil {
 		delete(register_data, allocator)
-		return Register{}, State_Error{kind = .Corrupt_Register}
+		// A missing file means incomplete state; any other failure is an I/O
+		// problem and must not be mistaken for corrupt content.
+		if io_err == os.General_Error.Not_Exist {
+			return Register{}, State_Error{kind = .Corrupt_Register}
+		}
+		return Register{}, State_Error{kind = .IO_Error}
 	}
 	defer delete(register_data, allocator)
 
@@ -217,7 +222,10 @@ read_state :: proc(directory: string, allocator := context.allocator) -> (regist
 	if receipt_io_err != nil {
 		destroy_register(&register, allocator)
 		delete(receipt_data, allocator)
-		return Register{}, State_Error{kind = .Corrupt_Receipt}
+		if receipt_io_err == os.General_Error.Not_Exist {
+			return Register{}, State_Error{kind = .Corrupt_Receipt}
+		}
+		return Register{}, State_Error{kind = .IO_Error}
 	}
 	defer delete(receipt_data, allocator)
 

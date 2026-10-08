@@ -100,6 +100,13 @@ run_brew_with :: proc(repo, recipe_path, state_root, executable, herdr: string) 
 	if os.make_directory_all(results_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
 		return brew_id, "could not create the Worker results directory"
 	}
+	// Create shared directories before any Worker starts; two Workers creating
+	// reports/ at the same time can make one of them fail.
+	reports_dir := state_file_path(brew_dir, "reports")
+	defer delete(reports_dir)
+	if os.make_directory_all(reports_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
+		return brew_id, "could not create the reports directory"
+	}
 	workers_dir := state_file_path(brew_dir, "workers")
 	defer delete(workers_dir)
 	if os.make_directory_all(workers_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
@@ -468,10 +475,10 @@ run_worker_with :: proc(state_root, brew_id, shot_id, pi: string) -> int {
 		} else {
 			result.detail = fmt.aprintf("Pi exited with code %d", process_state.exit_code)
 		}
-		if !write_station_output(register.shots[index].station_path, stdout, stderr) {
+		if !write_shot_output(brew_dir, shot_id, stdout, stderr) {
 			result.success = false
 			delete(result.detail)
-			result.detail = strings.clone("Pi output could not be written to the Station")
+			result.detail = strings.clone("Pi output could not be written to the Brew state")
 		}
 		if len(stdout) > 0 {
 			fmt.print(transmute(string)stdout)
@@ -494,13 +501,24 @@ run_worker_with :: proc(state_root, brew_id, shot_id, pi: string) -> int {
 	return code
 }
 
-write_station_output :: proc(station_path: string, stdout, stderr: []byte) -> bool {
-	report_path := state_file_path(station_path, "coffee-shop-report.md")
+// Reports live in the Brew's state directory, not the Station, so they never
+// show up as uncommitted changes in the Worker's worktree.
+write_shot_output :: proc(brew_dir, shot_id: string, stdout, stderr: []byte) -> bool {
+	reports_dir := state_file_path(brew_dir, "reports")
+	defer delete(reports_dir)
+	if !os.is_dir(reports_dir) {
+		return false
+	}
+	report_name := strings.concatenate({shot_id, ".md"})
+	defer delete(report_name)
+	report_path := state_file_path(reports_dir, report_name)
 	defer delete(report_path)
 	if os.write_entire_file(report_path, stdout, os.Permissions{.Read_User, .Write_User}) != nil {
 		return false
 	}
-	stderr_path := state_file_path(station_path, "coffee-shop-stderr.log")
+	stderr_name := strings.concatenate({shot_id, ".stderr.log"})
+	defer delete(stderr_name)
+	stderr_path := state_file_path(reports_dir, stderr_name)
 	defer delete(stderr_path)
 	return os.write_entire_file(stderr_path, stderr, os.Permissions{.Read_User, .Write_User}) == nil
 }
@@ -599,7 +617,7 @@ state_error_message :: proc(err: State_Error) -> string {
 	case .Already_Exists: return "Brew state already exists"
 	case .Invalid_Register: return "Register is invalid"
 	case .Out_Of_Memory: return "not enough memory to update Brew state"
-	case .IO_Error: return "could not write Brew state"
+	case .IO_Error: return "could not read or write Brew state"
 	case .None: return ""
 	}
 	return "unknown state error"

@@ -1,5 +1,6 @@
 package main
 
+import "core:strings"
 import "core:testing"
 
 @(test)
@@ -40,6 +41,14 @@ test_validates_git_repository_path :: proc(t: ^testing.T) {
 	valid, err = is_git_repository("/tmp")
 	testing.expect_value(t, err, "")
 	testing.expect(t, !valid)
+}
+
+@(test)
+test_git_failure_reports_the_reason_instead_of_a_plain_invalid_path :: proc(t: ^testing.T) {
+	valid, err := is_git_repository("/nonexistent/coffee-shop-beans")
+	testing.expect(t, !valid)
+	testing.expect(t, strings.contains(err, "Git could not inspect the Beans path"), err)
+	testing.expect(t, strings.contains(err, "/nonexistent/coffee-shop-beans"), err)
 }
 
 @(test)
