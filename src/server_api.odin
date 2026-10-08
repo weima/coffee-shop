@@ -2,6 +2,7 @@ package main
 
 import "core:c"
 import "core:encoding/json"
+import "core:log"
 import "core:os"
 import "core:strings"
 import "core:sys/posix"
@@ -114,6 +115,7 @@ server_api_serve_one :: proc(api: Server_Api, timeout_ms: c.int) -> bool {
 }
 
 server_api_handle :: proc(api: Server_Api, request: Server_Request) -> Server_Response {
+	log.debugf("handle op=%s brew=%s shot=%s to=%s", request.op, request.brew_id, request.shot_id, request.to_state)
 	if !valid_shot_id(request.brew_id) {
 		return Server_Response{error = strings.clone("Brew ID is invalid")}
 	}

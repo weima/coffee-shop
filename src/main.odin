@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:os"
 
 main :: proc() {
+	context.logger = setup_logging()
 	exit_code := run_cli(os.args[1:])
 	if exit_code != 0 {
 		os.exit(exit_code)

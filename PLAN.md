@@ -360,6 +360,41 @@ Gates still not exercised for real: item 6 with a live Pi failure, and the model
 - `status` works with the server absent.
 - The full suite passes three times in a row without a flake.
 
+## Roadmap: v0.3.0
+
+**Goal.** Coffee Shop acts as a human manager: a developer delegates several tasks at once, each Brew produces its own reviewable commit, and five tasks run side by side. That needs two things. It must stay fast enough that the machine does not stall with five Workers running, and it must stay cheap enough that a day of running does not run up a model bill. Both need measurements before anything is tuned, so profiling comes first.
+
+### 1. Profile the code with Spall
+
+- Use `core:prof/spall` (Odin's Spall trace format) to span: CLI commands, Brew dispatch, server request handling, Register and Receipt writes, the Worker loop, Pi JSON parsing, settle, Filter checks, Git worktree creation, and Herdr calls.
+- Off by default with no cost when off. A `CS_SPALL_FILE` environment variable names the trace file, as `CS_LOG_LEVEL` does for logs.
+- **Gate.** A trace of a five-Shot Brew opens in the Spall viewer, and the top spans are recorded in this section with their share of wall time.
+
+### 2. Profile the resource use
+
+- Sample each process of a Brew (supervisor, server, Workers, Pi children): CPU time, resident memory, open file descriptors, and child process count, from `/proc`.
+- Show them with `status --usage`, with per-Brew totals.
+- **Gate.** Five concurrent Shots run on this machine with a recorded peak CPU and memory budget, and the default concurrency is chosen from those numbers, not guessed.
+
+### 3. Account for tokens and cost
+
+- Confirm which usage fields Pi 1.1.0 reports in its JSON events before relying on them.
+- Record per Shot: model, input, output and cache tokens, and estimated cost. Keep these in the Register and Receipt, and show running totals in `status` and in the Oreo.
+- Optional Recipe budget, in tokens or estimated cost. A Brew launches no new Shot once it is reached. Whether running Shots finish or are cancelled is an open question.
+- **Gate.** For a real Brew, the recorded tokens match the provider's usage for the same run, within a stated tolerance.
+
+### 4. Five tasks at once, one commit each
+
+- A Scale limit that spans every Brew on the machine, not just one Brew, so five tasks cannot exceed the budget from item 2 together.
+- Each task's changes become their own commit, using the Blend operation from `docs/architecture.md`.
+- **Gate.** Five Brews for five tasks run together. Each produces one commit on its own branch, and none of them interferes with another.
+
+### Open questions
+
+- Where the machine-wide limit is kept, since Brews on different repositories have separate servers.
+- Whether a budget stops running Shots or only stops new ones.
+- Whether Blend is part of v0.3, since per-task commits depend on it.
+
 ## Scope guardrails
 
 The first release targets one machine, Pi, and Herdr. Keep task decomposition with the Barista and integration decisions with the developer. Do not add remote workers, other agent harnesses, tmux or zmx backends, a daemon or watcher (except the per-repository server in item 8, which exits when idle), Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.
