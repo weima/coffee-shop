@@ -112,7 +112,7 @@ cancel_brew :: proc(state_root, herdr, brew_id: string) -> (output: string, err:
 		destroy_register(&register)
 		return "", "could not record the cancellation request"
 	}
-	if supervisor_alive(brew_dir) {
+	if !supervisor_gone(brew_dir) {
 		destroy_register(&register)
 		return fmt.aprintf("Cancellation requested for Brew %s; its supervisor will stop the Workers.\n", brew_id), ""
 	}
@@ -133,7 +133,7 @@ settle_orphaned_brew :: proc(state_root, herdr, brew_id: string) -> string {
 	}
 	defer destroy_register(&register)
 	defer delete(brew_dir)
-	if all_terminal(register) || supervisor_alive(brew_dir) {
+	if all_terminal(register) || !supervisor_gone(brew_dir) {
 		return ""
 	}
 	if err := settle_brew(brew_dir, &register, herdr, .Observe); err.kind != .None {
@@ -159,7 +159,7 @@ render_status :: proc(state_root, brew_id: string) -> (output: string, err: stri
 		}
 		fmt.sbprintfln(&builder, "  %s  %s%s", shot.id, shot.status, suffix)
 	}
-	if !all_terminal(register) && !supervisor_alive(brew_dir) {
+	if !all_terminal(register) && supervisor_gone(brew_dir) {
 		fmt.sbprintln(&builder, "Supervisor is not running; `collect` or `cancel` will settle unfinished Shots.")
 	}
 	return strings.to_string(builder), ""

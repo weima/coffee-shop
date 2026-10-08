@@ -621,7 +621,11 @@ worker_started_path :: proc(directory, shot_id: string) -> string {
 write_worker_started :: proc(directory, shot_id: string) -> bool {
 	path := worker_started_path(directory, shot_id)
 	defer delete(path)
-	return write_identity_file(path, current_identity())
+	identity, ok := current_identity()
+	if !ok {
+		return false
+	}
+	return write_identity_file(path, identity)
 }
 
 state_error_message :: proc(err: State_Error) -> string {

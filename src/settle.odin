@@ -51,21 +51,43 @@ supervisor_path :: proc(directory: string) -> string {
 write_supervisor :: proc(directory: string) -> bool {
 	path := supervisor_path(directory)
 	defer delete(path)
-	return write_identity_file(path, current_identity())
+	identity, ok := current_identity()
+	if !ok {
+		return false
+	}
+	return write_identity_file(path, identity)
 }
 
-// A Brew whose supervisor is missing or dead has no process left to record
-// Worker outcomes.
-supervisor_alive :: proc(directory: string) -> bool {
+// A missing supervisor file means a Brew with no supervisor to record Worker
+// outcomes (a Brew from before the file existed, or one that crashed early), so
+// that is Gone. A file that cannot be understood, or a /proc entry that cannot
+// be read, is Unknown: it must not be taken as proof that the supervisor died.
+supervisor_liveness :: proc(directory: string) -> Liveness {
 	path := supervisor_path(directory)
 	defer delete(path)
 	identity, ok := read_identity_file(path)
-	return ok && identity_alive(identity)
+	if !ok {
+		if !os.exists(path) {
+			return .Gone
+		}
+		return .Unknown
+	}
+	return identity_liveness(identity)
 }
 
-settle_brew :: proc(directory: string, register: ^Register, herdr: string, mode: Settle_Mode, grace := CANCEL_GRACE) -> State_Error {
+// True only on evidence that the supervisor is gone. Only then may another
+// process take over its job of writing Brew state.
+supervisor_gone :: proc(directory: string) -> bool {
+	return supervisor_liveness(directory) == .Gone
+}
+
+// `liveness` decides whether a Worker's process is still there; tests substitute
+// a stand-in to simulate a /proc entry that cannot be read.
+Liveness_Proc :: proc(identity: Process_Identity) -> Liveness
+
+settle_brew :: proc(directory: string, register: ^Register, herdr: string, mode: Settle_Mode, grace := CANCEL_GRACE, liveness: Liveness_Proc = identity_liveness) -> State_Error {
 	for index in 0 ..< len(register.shots) {
-		if err := settle_shot(directory, register, index, herdr, mode, grace); err.kind != .None {
+		if err := settle_shot(directory, register, index, herdr, mode, grace, liveness); err.kind != .None {
 			return err
 		}
 	}
@@ -75,7 +97,7 @@ settle_brew :: proc(directory: string, register: ^Register, herdr: string, mode:
 // Moves one Shot toward a terminal state using only evidence: the Worker's
 // result file and its process identity. A Shot is never marked completed
 // without a recorded successful result.
-settle_shot :: proc(directory: string, register: ^Register, index: int, herdr: string, mode: Settle_Mode, grace: time.Duration) -> State_Error {
+settle_shot :: proc(directory: string, register: ^Register, index: int, herdr: string, mode: Settle_Mode, grace: time.Duration, liveness: Liveness_Proc) -> State_Error {
 	shot := &register.shots[index]
 	if is_terminal(shot.status) {
 		return State_Error{}
@@ -106,7 +128,9 @@ settle_shot :: proc(directory: string, register: ^Register, index: int, herdr: s
 	}
 
 	identity, has_identity := read_identity_file(started_path)
-	if has_identity && !identity_alive(identity) {
+	// Record an exit only on evidence of one. A Worker whose liveness is unknown is
+	// left running, never marked interrupted on a guess.
+	if has_identity && liveness(identity) == .Gone {
 		if shot.cancel_requested {
 			return transition_shot(directory, register, shot.id, SHOT_CANCELLED, "Worker exited after cancellation was requested")
 		}
@@ -127,7 +151,7 @@ settle_shot :: proc(directory: string, register: ^Register, index: int, herdr: s
 	close_shot_tab(herdr, shot^)
 	deadline := time.tick_now()
 	for time.tick_diff(deadline, time.tick_now()) < grace {
-		if !identity_alive(identity) || os.exists(result_path) {
+		if liveness(identity) == .Gone || os.exists(result_path) {
 			return transition_shot(directory, register, shot.id, SHOT_CANCELLED, "Worker exited after cancellation was requested")
 		}
 		time.sleep(50 * time.Millisecond)
