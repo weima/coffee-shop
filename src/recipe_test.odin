@@ -1,6 +1,8 @@
 package main
 
+import "core:encoding/json"
 import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:testing"
 
@@ -14,6 +16,36 @@ test_parse_valid_recipe :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(recipe.shots), 2)
 	testing.expect_value(t, recipe.shots[0].id, "cli-test")
 	testing.expect_value(t, recipe.shots[1].prompt, "Implement the parser")
+}
+
+@(test)
+test_recipe_schema_is_valid_json_and_declares_2020_12 :: proc(t: ^testing.T) {
+	data, err := os.read_entire_file("recipe.schema.json", context.allocator)
+	defer delete(data)
+	testing.expect_value(t, err, os.Error(nil))
+	value, parse_err := json.parse_string(transmute(string)data, .JSON, false, context.allocator)
+	defer json.destroy_value(value)
+	testing.expect_value(t, parse_err, json.Error.None)
+	testing.expect(t, strings.contains(transmute(string)data, "https://json-schema.org/draft/2020-12/schema"))
+}
+
+@(test)
+test_recipe_schema_review_model_pattern_agrees_with_parser :: proc(t: ^testing.T) {
+	data, _ := os.read_entire_file("recipe.schema.json", context.allocator)
+	defer delete(data)
+	value, _ := json.parse_string(transmute(string)data, .JSON, false, context.allocator)
+	defer json.destroy_value(value)
+	root, _ := value.(json.Object)
+	properties, _ := root["properties"].(json.Object)
+	review_model, _ := properties["review_model"].(json.Object)
+	pattern, _ := review_model["pattern"].(json.String)
+	// Same rule as valid_model: no ASCII control or space, no quotes or backslash, no leading slash.
+	testing.expect_value(t, pattern, `^(|[^/\u0000-\u0020'"\\][^\u0000-\u0020'"\\]*)$`)
+
+	recipe, err := parse_recipe(`{"order":"o","review_model":"openai/gpt-4o","shots":[{"id":"a","prompt":"p"}]}`)
+	defer destroy_recipe(&recipe)
+	testing.expect_value(t, err, "")
+	testing.expect_value(t, recipe.review_model, "openai/gpt-4o")
 }
 
 @(test)
@@ -31,6 +63,40 @@ test_load_recipe_rejects_missing_file :: proc(t: ^testing.T) {
 	_, err := load_recipe("testdata/missing-recipe.json")
 
 	testing.expect(t, err != "")
+}
+
+@(test)
+test_recipe_text_files_resolve_relative_to_recipe_and_are_loaded :: proc(t: ^testing.T) {
+	root, _ := os.make_directory_temp("", "coffee-shop-recipe-*", context.allocator)
+	defer os.remove_all(root); defer delete(root)
+	_ = os.make_directory_all(fmt.tprintf("%s/prompts", root))
+	_ = os.write_entire_file(fmt.tprintf("%s/order.md", root), "order from file", os.Permissions{.Read_User, .Write_User})
+	_ = os.write_entire_file(fmt.tprintf("%s/preamble.md", root), "shared rules", os.Permissions{.Read_User, .Write_User})
+	_ = os.write_entire_file(fmt.tprintf("%s/prompts/a.md", root), "task from file", os.Permissions{.Read_User, .Write_User})
+	path := fmt.tprintf("%s/recipe.json", root)
+	_ = os.write_entire_file(path, `{"order_file":"order.md","preamble_file":"preamble.md","shots":[{"id":"a","prompt_file":"prompts/a.md"}]}`, os.Permissions{.Read_User, .Write_User})
+	recipe, err := load_recipe(path)
+	defer destroy_recipe(&recipe)
+	testing.expect_value(t, err, "")
+	testing.expect_value(t, recipe.order, "order from file")
+	testing.expect_value(t, recipe.preamble, "shared rules")
+	testing.expect_value(t, recipe.shots[0].prompt, "task from file")
+}
+
+@(test)
+test_recipe_rejects_unknown_fields_and_file_escape :: proc(t: ^testing.T) {
+	reject_recipe(t, `{"order":"o","thinkng":"high","shots":[{"id":"a","prompt":"p"}]}`)
+	root, _ := os.make_directory_temp("", "coffee-shop-recipe-*", context.allocator)
+	defer os.remove_all(root); defer delete(root)
+	path := fmt.tprintf("%s/recipe.json", root)
+	_ = os.write_entire_file(path, `{"order_file":"../outside","shots":[{"id":"a","prompt":"p"}]}`, os.Permissions{.Read_User, .Write_User})
+	_, err := load_recipe(path)
+	testing.expect(t, err != "")
+	_ = os.write_entire_file(fmt.tprintf("%s/external.md", root), "outside", os.Permissions{.Read_User, .Write_User})
+	_ = os.symlink(fmt.tprintf("%s/external.md", root), fmt.tprintf("%s/link.md", root))
+	_ = os.write_entire_file(path, `{"order":"o","shots":[{"id":"a","prompt_file":"link.md"}]}`, os.Permissions{.Read_User, .Write_User})
+	_, symlink_err := load_recipe(path)
+	testing.expect(t, symlink_err != "")
 }
 
 @(test)
@@ -71,9 +137,63 @@ test_recipe_rejects_duplicate_shot_ids :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_recipe_model_thinking_and_workers_settings :: proc(t: ^testing.T) {
+	recipe, err := parse_recipe(`{"order":"work","model":"openai/gpt-4o","thinking":"high","workers":5,"shots":[{"id":"a","prompt":"p","model":"anthropic/claude","thinking":"low","expect_changes":true}]}`)
+	defer destroy_recipe(&recipe)
+	testing.expect_value(t, err, "")
+	testing.expect_value(t, recipe.workers, 5)
+	testing.expect_value(t, recipe.shots[0].model, "anthropic/claude")
+	testing.expect_value(t, recipe.shots[0].thinking, "low")
+	testing.expect(t, recipe.shots[0].expect_changes)
+}
+
+@(test)
+test_recipe_rejects_bad_settings :: proc(t: ^testing.T) {
+	reject_recipe(t, `{"order":"o","thinking":"sometimes","shots":[{"id":"a","prompt":"p"}]}`)
+	reject_recipe(t, `{"order":"o","model":"bad model","shots":[{"id":"a","prompt":"p"}]}`)
+	reject_recipe(t, `{"order":"o","workers":6,"shots":[{"id":"a","prompt":"p"}]}`)
+}
+
+@(test)
 test_recipe_rejects_unsafe_shot_ids :: proc(t: ^testing.T) {
 	reject_recipe(t, `{"order":"work","shots":[{"id":"../escape","prompt":"work"}]}`)
 	reject_recipe(t, `{"order":"work","shots":[{"id":"-option","prompt":"work"}]}`)
+}
+
+@(test)
+test_recipe_rejects_oversized_inline_order :: proc(t: ^testing.T) {
+	long := strings.repeat("a", RECIPE_TEXT_MAX_BYTES + 1, context.temp_allocator)
+	data, _ := strings.concatenate({`{"order":"`, long, `","shots":[{"id":"a","prompt":"p"}]}`}, context.temp_allocator)
+	expect_recipe_error(t, data, "inline order is over the 131071-byte limit; use order_file for longer text")
+
+	limit := strings.repeat("a", RECIPE_TEXT_MAX_BYTES, context.temp_allocator)
+	at_limit, _ := strings.concatenate({`{"order":"`, limit, `","shots":[{"id":"a","prompt":"p"}]}`}, context.temp_allocator)
+	expect_recipe_error(t, at_limit, "")
+}
+
+@(test)
+test_recipe_rejects_oversized_inline_preamble :: proc(t: ^testing.T) {
+	long := strings.repeat("a", RECIPE_TEXT_MAX_BYTES + 1, context.temp_allocator)
+	data, _ := strings.concatenate({`{"order":"o","preamble":"`, long, `","shots":[{"id":"a","prompt":"p"}]}`}, context.temp_allocator)
+	expect_recipe_error(t, data, "inline preamble is over the 131071-byte limit; use preamble_file for longer text")
+}
+
+@(test)
+test_recipe_requires_exactly_one_order_form :: proc(t: ^testing.T) {
+	expect_recipe_error(t, `{"order":"o","order_file":"o.md","shots":[{"id":"a","prompt":"p"}]}`, "recipe must have exactly one of order or order_file")
+	expect_recipe_error(t, `{"shots":[{"id":"a","prompt":"p"}]}`, "recipe must have exactly one of order or order_file")
+	expect_recipe_error(t, `{"order":"   ","shots":[{"id":"a","prompt":"p"}]}`, "recipe must have exactly one of order or order_file")
+}
+
+@(test)
+test_recipe_rejects_preamble_with_both_input_forms :: proc(t: ^testing.T) {
+	expect_recipe_error(t, `{"order":"o","preamble":"p","preamble_file":"p.md","shots":[{"id":"a","prompt":"p"}]}`, "recipe preamble must use one input form")
+}
+
+expect_recipe_error :: proc(t: ^testing.T, data, expected: string, loc := #caller_location) {
+	recipe, err := parse_recipe(data)
+	defer destroy_recipe(&recipe)
+	testing.expect_value(t, err, expected, loc)
 }
 
 reject_recipe :: proc(t: ^testing.T, data: string) {

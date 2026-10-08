@@ -112,6 +112,7 @@ run_brew_with :: proc(repo_path, recipe_path, state_root, executable, herdr: str
 	if state_error = create_state(brew_dir, &register); state_error.kind != .None {
 		return brew_id, state_error_message(state_error)
 	}
+	if snapshot_err := snapshot_recipe_inputs(brew_dir, recipe); snapshot_err != "" { return brew_id, snapshot_err }
 
 	stations_dir := state_file_path(brew_dir, "stations")
 	defer delete(stations_dir)
@@ -138,7 +139,9 @@ run_brew_with :: proc(repo_path, recipe_path, state_root, executable, herdr: str
 
 	for shot, i in recipe.shots {
 		station_path := state_file_path(stations_dir, shot.id)
-		branch := fmt.tprintf("coffee-shop-%s-%s", brew_id, shot.id)
+		repo_slug := repository_slug(repo)
+		branch := fmt.tprintf("cs-%s-%s-%s", repo_slug, brew_id, shot.id)
+		delete(repo_slug)
 		git_err := create_git_worktree(repo, branch, station_path)
 		if git_err != "" {
 			delete(station_path)
@@ -175,7 +178,9 @@ run_brew_with :: proc(repo_path, recipe_path, state_root, executable, herdr: str
 		return brew_id, ""
 	}
 
-	workspace, herdr_err := herdr_create_workspace(herdr, register.shots[first_station].station_path, brew_id)
+	register.repository_name = repository_name(repo)
+	if name_err := save_register_metadata(brew_dir, register); name_err.kind != .None { return brew_id, state_error_message(name_err) }
+	workspace, herdr_err := herdr_create_workspace(herdr, register.shots[first_station].station_path, register.repository_name, brew_id)
 	if herdr_err != "" {
 		for shot in register.shots {
 			if shot.status == SHOT_QUEUED {
@@ -238,6 +243,50 @@ run_brew_with :: proc(repo_path, recipe_path, state_root, executable, herdr: str
 	return brew_id, ""
 }
 
+snapshot_recipe_inputs :: proc(brew_dir: string, recipe: Recipe) -> string {
+	directory := state_file_path(brew_dir, "inputs")
+	defer delete(directory)
+	if !ensure_directory(directory) { return "could not create Recipe input snapshots" }
+	if recipe.order_file != "" {
+		path := state_file_path(directory, "order.txt"); defer delete(path)
+		if os.write_entire_file(path, transmute([]byte)recipe.order, private_file_permissions()) != nil { return "could not snapshot order" }
+	}
+	if recipe.preamble_file != "" {
+		path := state_file_path(directory, "preamble.txt"); defer delete(path)
+		if os.write_entire_file(path, transmute([]byte)recipe.preamble, private_file_permissions()) != nil { return "could not snapshot preamble" }
+	}
+	for shot in recipe.shots {
+		if shot.prompt_file == "" { continue }
+		filename := fmt.aprintf("%s-prompt.txt", shot.id); defer delete(filename)
+		path := state_file_path(directory, filename); defer delete(path)
+		if os.write_entire_file(path, transmute([]byte)shot.prompt, private_file_permissions()) != nil { return fmt.tprintf("could not snapshot prompt for %s", shot.id) }
+	}
+	return ""
+}
+
+repository_name :: proc(repo: string) -> string {
+	end := len(repo)
+	for end > 1 && repo[end-1] == '/' { end -= 1 }
+	start := end
+	for start > 0 && repo[start-1] != '/' { start -= 1 }
+	base := repo[start:end]
+	bytes: [dynamic]u8
+	defer delete(bytes)
+	for c in base {
+		if len(bytes) >= 32 { break }
+		switch c {
+		case 'a'..='z', 'A'..='Z', '0'..='9', '-', '_': append(&bytes, u8(c))
+		case: append(&bytes, '-');
+		}
+	}
+	name := strings.trim(string(bytes[:]), "-")
+	return name == "" ? strings.clone("repository") : strings.clone(name)
+}
+
+repository_slug :: proc(repo: string) -> string {
+	return repository_name(repo)
+}
+
 // Stations are created from HEAD, so record exactly which commit that is.
 git_head_commit :: proc(repo: string, allocator := context.allocator) -> (commit: string, err: string) {
 	state, stdout, stderr, run_err := os.process_exec(os.Process_Desc{
@@ -280,8 +329,8 @@ create_git_worktree :: proc(repo, branch, path: string, allocator := context.all
 	return ""
 }
 
-herdr_create_workspace :: proc(herdr, cwd, brew_id: string, allocator := context.allocator) -> (response: Herdr_Response, err: string) {
-	label := fmt.tprintf("Coffee Shop %s", brew_id)
+herdr_create_workspace :: proc(herdr, cwd, repository_name, brew_id: string, allocator := context.allocator) -> (response: Herdr_Response, err: string) {
+	label := fmt.tprintf("%s · %s", repository_name, brew_id)
 	stdout, stderr, run_err := run_herdr(herdr, []string{"workspace", "create", "--cwd", cwd, "--label", label, "--no-focus"}, allocator)
 	defer delete(stdout, allocator)
 	defer delete(stderr, allocator)
@@ -390,7 +439,7 @@ dispatch_workers :: proc(directory: string, register: ^Register, executable, sta
 			}
 		}
 		for index in 0 ..< len(register.shots) {
-			if active >= SCALE {
+			if active >= workers_limit(register^) {
 				break
 			}
 			shot := &register.shots[index]
@@ -404,7 +453,7 @@ dispatch_workers :: proc(directory: string, register: ^Register, executable, sta
 				continue
 			}
 
-			command, _ := worker_command(executable, state_root, register.brew_id, shot.id)
+			command, _ := worker_command(executable, state_root, register.brew_id, shot.id, register.brew_token)
 			launch_err := herdr_run_worker(herdr, shot.herdr_pane_id, command)
 			delete(command)
 			if launch_err != "" {
@@ -468,12 +517,14 @@ herdr_run_worker :: proc(herdr, pane_id, command: string) -> string {
 
 // The command text holds only Coffee Shop's own paths and validated IDs, never
 // task text. Paths are single-quoted for the Herdr pane's shell.
-worker_command :: proc(executable, state_root, brew_id, shot_id: string) -> (command: string, err: string) {
+worker_command :: proc(executable, state_root, brew_id, shot_id, token: string) -> (command: string, err: string) {
 	quoted_executable := shell_quote(executable)
 	defer delete(quoted_executable)
 	quoted_state_root := shell_quote(state_root)
 	defer delete(quoted_state_root)
-	command = fmt.aprintf("%s __worker --state-root %s --brew-id %s --shot-id %s", quoted_executable, quoted_state_root, brew_id, shot_id)
+	quoted_token := shell_quote(token)
+	defer delete(quoted_token)
+	command = fmt.aprintf("%s __worker --state-root %s --brew-id %s --shot-id %s --token %s", quoted_executable, quoted_state_root, brew_id, shot_id, quoted_token)
 	return command, ""
 }
 
@@ -483,7 +534,7 @@ shell_quote :: proc(value: string) -> string {
 }
 
 run_pi_json_with_activity :: proc(
-	pi, working_dir, prompt, brew_dir, brew_id, shot_id: string,
+	pi, working_dir, prompt, preamble, brew_dir, brew_id, shot_id, model, thinking: string,
 	parser: ^Pi_Event_State,
 	sender: ^Activity_Sender,
 	allocator := context.allocator,
@@ -508,12 +559,19 @@ run_pi_json_with_activity :: proc(
 		return result
 	}
 	defer os.close(stdout_read)
+	command: [dynamic]string
+	append(&command, pi, "--mode", "json", "--print", "--no-session")
+	if model != "" { append(&command, "--model", model) }
+	if thinking != "" { append(&command, "--thinking", thinking) }
+	if preamble != "" { append(&command, "--append-system-prompt", preamble) }
+	append(&command, "--", prompt)
 	process, start_err := os.process_start(os.Process_Desc{
 		working_dir = working_dir,
-		command = []string{pi, "--mode", "json", "--print", "--no-session", "--", prompt},
+		command = command[:],
 		stdout = stdout_write,
 		stderr = stderr_file,
 	})
+	delete(command)
 	_ = os.close(stdout_write)
 	_ = os.close(stderr_file)
 	if start_err != nil {
@@ -612,8 +670,25 @@ pi_run_result_destroy :: proc(result: ^Pi_Run_Result, allocator := context.alloc
 	result^ = Pi_Run_Result{}
 }
 
-run_worker :: proc(state_root, brew_id, shot_id: string) -> int {
+run_worker :: proc(state_root, brew_id, shot_id, token: string) -> int {
+	// A Worker must carry its Brew's token before it may record that it started.
+	if !worker_token_matches(state_root, brew_id, token) {
+		write_error("Worker token does not match its Brew")
+		return 2
+	}
 	return run_worker_with(state_root, brew_id, shot_id, "pi")
+}
+
+// Unreadable state is left to the Worker's own error path, which records it.
+worker_token_matches :: proc(state_root, brew_id, token: string) -> bool {
+	brew_dir := state_file_path(state_root, brew_id)
+	defer delete(brew_dir)
+	register, err := read_state(brew_dir)
+	if err.kind != .None {
+		return true
+	}
+	defer destroy_register(&register)
+	return register.brew_token == "" || register.brew_token == token
 }
 
 run_worker_with :: proc(state_root, brew_id, shot_id, pi: string) -> int {
@@ -664,7 +739,14 @@ run_worker_with :: proc(state_root, brew_id, shot_id, pi: string) -> int {
 		return 1
 	}
 
-	prompt := fmt.aprintf("Order: %s\n\nShot: %s", register.order, register.shots[index].prompt)
+	shot := register.shots[index]
+	guidance := ""
+	workers_path := state_file_path(shot.station_path, "workers.md"); defer delete(workers_path)
+	standards_path := state_file_path(shot.station_path, "standards.md"); defer delete(standards_path)
+	if os.exists(workers_path) { guidance = "Read the repository-root workers.md first and follow it.\n" }
+	if os.exists(standards_path) { guidance = fmt.aprintf("%sRead the repository-root standards.md first and follow it.\n", guidance) }
+	prompt := fmt.aprintf("Order: %s\n\nShot: %s\n\n%sFinish with exactly one final line: CS-DONE only when complete and verified, or CS-BLOCKED: <reason> if blocked. Do not ask for confirmation; no automatic follow-up will be sent.", register.order, shot.prompt, guidance)
+	delete(guidance)
 	defer delete(prompt)
 	activity_path := activity_socket_path(brew_dir)
 	defer delete(activity_path)
@@ -685,7 +767,8 @@ run_worker_with :: proc(state_root, brew_id, shot_id, pi: string) -> int {
 	parser: Pi_Event_State
 	defer pi_event_state_destroy(&parser)
 	run_result := run_pi_json_with_activity(
-		pi, register.shots[index].station_path, prompt, brew_dir, brew_id, shot_id,
+		pi, register.shots[index].station_path, prompt, register.preamble, brew_dir, brew_id, shot_id,
+		register.shots[index].model, register.shots[index].thinking,
 		&parser, &sender,
 	)
 	defer pi_run_result_destroy(&run_result)
@@ -704,11 +787,24 @@ run_worker_with :: proc(state_root, brew_id, shot_id, pi: string) -> int {
 			result.detail = fmt.aprintf("Pi exited with code %d", run_result.process_state.exit_code)
 		}
 		report := transmute([]byte)parser.final_report
+		clean_report_owned := ""
+		if register.completion_marker_required && result.success {
+			marker, clean_report := completion_marker(transmute(string)report)
+			delete(result.detail)
+			result.detail = marker
+			clean_report_owned = clean_report
+			report = transmute([]byte)clean_report_owned
+		}
+		if shot.expect_changes && !station_has_changes(shot.station_path) {
+			delete(result.detail)
+			result.detail = strings.clone("CS-BLOCKED: expected changes but Station is unchanged")
+		}
 		if !write_shot_output(brew_dir, shot_id, report, run_result.stderr) {
 			result.success = false
 			delete(result.detail)
 			result.detail = strings.clone("Pi output could not be written to the Brew state")
 		}
+		delete(clean_report_owned)
 		if parser.final_report != "" {
 			fmt.print(parser.final_report)
 			if parser.final_report[len(parser.final_report)-1] != '\n' {
@@ -731,6 +827,28 @@ run_worker_with :: proc(state_root, brew_id, shot_id, pi: string) -> int {
 	}
 	destroy_worker_result(&result)
 	return code
+}
+
+station_has_changes :: proc(station: string) -> bool {
+	state, stdout, stderr, err := os.process_exec(os.Process_Desc{command = []string{"git", "-C", station, "status", "--short"}}, context.temp_allocator)
+	defer delete(stdout, context.temp_allocator); defer delete(stderr, context.temp_allocator)
+	return err == nil && state.success && state.exit_code == 0 && strings.trim_space(transmute(string)stdout) != ""
+}
+
+completion_marker :: proc(report: string) -> (marker, clean_report: string) {
+	trimmed := strings.trim_suffix(report, "\n")
+	line_start := 0
+	for i := len(trimmed)-1; i >= 0; i -= 1 {
+		if trimmed[i] == '\n' { line_start = i+1; break }
+	}
+	last := trimmed[line_start:]
+	clean_report = line_start > 0 ? strings.clone(trimmed[:line_start-1]) : strings.clone("")
+	if last == "CS-DONE" { return strings.clone("CS-DONE"), clean_report }
+	if strings.has_prefix(last, "CS-BLOCKED:") {
+		return fmt.aprintf("CS-BLOCKED: %s", strings.trim_space(last[len("CS-BLOCKED:"): ])), clean_report
+	}
+	delete(clean_report)
+	return strings.clone("missing CS-DONE completion marker"), strings.clone(report)
 }
 
 // Reports live in the Brew's state directory, not the Station, so they never

@@ -132,7 +132,7 @@ Pass child-process arguments as an argument vector. Distinguish a launch error f
 
 ## Roadmap: v0.2.0
 
-These items came from dogfooding v0.1 on the [Odin in Practice](https://github.com/weima/odin-in-practice) book, whose repository keeps the record of that exercise. Each item states its implementation state and evidence. Item 1 is implemented; the remaining items are proposals.
+These items came from dogfooding v0.1 on the [Odin in Practice](https://github.com/weima/odin-in-practice) book. Items 2–7 are implemented in this Station; acceptance gates not run are explicitly marked pending below. Blend remains a separate proposal and is out of scope.
 
 ### 1. Show that a Worker is alive — implemented
 
@@ -150,7 +150,7 @@ These items came from dogfooding v0.1 on the [Odin in Practice](https://github.c
 
 **Verification.** `TZ=UTC just test` passed all 115 tests; `just check` and `just build` pass. Real-Pi Brew `brew-20261008T163704Z-2395480` showed live activity in `status` while its Shot was running and then collected the final report successfully; the Station had no changes. A fake-Pi end-to-end test verifies tool activity is visible before Pi exits.
 
-### 2. Choose the model and thinking level per task, and publish a Recipe schema
+### 2. Choose the model and thinking level per task, and publish a Recipe schema — implemented; gate partial
 
 **Problem.** Every Shot uses Pi's default model and thinking level, so a quick edit and a deep analysis cost the same, and there is no machine-readable description of the Recipe.
 
@@ -167,7 +167,7 @@ These items came from dogfooding v0.1 on the [Odin in Practice](https://github.c
 
 **Gate.** Tests cover: a Shot-level setting reaching Pi's argument vector, a default inherited and then overridden, invalid thinking levels and malformed model values rejected before any Station is created, the review settings, and schema/parser agreement. A real Brew confirms a Shot actually starts with the requested model and thinking level.
 
-### 3. Name the repository in the workspace
+### 3. Name the repository in the workspace — implemented; gate partial (real Herdr pending)
 
 **Problem.** Everything Coffee Shop names carries "Coffee Shop" and nothing says which repository the work is on. Herdr shows `Coffee Shop brew-20261008T054914Z-1834813` whether the Beans is the Odin book or Coffee Shop itself, so with several Brews open you cannot tell them apart. The same is true of the Git branches (`coffee-shop-<brew-id>-<shot-id>`) and of a plain listing of the state directory.
 
@@ -187,7 +187,7 @@ These items came from dogfooding v0.1 on the [Odin in Practice](https://github.c
 
 **Gate.** Tests cover name derivation from a relative path, from a linked worktree, from a name with unsafe characters or excessive length, and from an old Register with no name. A real Brew shows the repository name in the Herdr sidebar and in `status` and `collect`.
 
-### 4. Allow up to five Workers at once
+### 4. Allow up to five Workers at once — implemented; gate partial
 
 **Problem.** v0.1 fixes the Scale at two active Workers. A Recipe with more Shots queues the rest, so wall-clock time is roughly the number of Shots divided by two. The first Odin book Brew had six independent Shots and needed three rounds.
 
@@ -204,7 +204,7 @@ These items came from dogfooding v0.1 on the [Odin in Practice](https://github.c
 
 **Gate.** An end-to-end test with seven Shots proves that exactly five Workers run at once and two wait, then cancels and checks all seven end cancelled; the existing cancel and recovery tests pass at the new limit. A real Brew confirms five Workers run side by side without exhausting Herdr tabs or the machine.
 
-### 5. Read prompts from files and share common instructions
+### 5. Read prompts from files and share common instructions — implemented; gate partial (real Pi pending)
 
 **Problem.** Today a prompt, and the order, must be an inline JSON string. A realistic prompt is several paragraphs, so the author escapes every quote and newline by hand or generates the Recipe with a script. The first Odin book Brew did the latter: six Shots, about 35 KB of JSON. Worse, a ~3 KB block of shared rules was pasted into every Shot. Repeating shared text in every Shot is not acceptable: it is hard to review, easy to let drift between Shots, and it costs tokens six times. It needs a real solution, not a convention.
 
@@ -235,7 +235,7 @@ These items came from dogfooding v0.1 on the [Odin in Practice](https://github.c
 
 **Gate.** Tests cover: a prompt, an order and a preamble each read from a file next to the Recipe; resolution relative to the Recipe's directory rather than the working directory; rejection of a missing, empty, non-UTF-8, over-cap and escaping path, and of both or neither of an inline value and a file; a preamble written once reaching every Worker exactly once; and a Brew that still collects after the source files are deleted. No Station is created when validation fails. A real Brew confirms Pi receives the preamble.
 
-### 6. A Shot is completed only when it says it is
+### 6. A Shot is completed only when it says it is — implemented; gate partial (real Pi pending)
 
 **Problem.** Coffee Shop records a Shot as `completed` whenever Pi exits with code 0. Pi in `--print` mode exits 0 whenever its turn ends, and a turn can end without the work being done. Two real Shots in the Odin book Brew did this:
 
@@ -261,7 +261,7 @@ Both were recorded `completed`, and the Oreo's decisions list said nothing. Only
 
 **Gate.** Tests with a fake Pi cover: a final message ending in `CS-DONE` is `completed`; a message ending in a question, a progress note, or nothing is `incomplete`; `CS-BLOCKED: reason` is `incomplete` with the reason shown; the marker is stripped from the report; `expect_changes` with and without changes; the transition matrix; Brew status and `collect`'s exit code with an `incomplete` Shot; and recovery of an `incomplete` Shot after the supervisor is killed. A real Brew reproduces the `ownership-traps` situation and shows it flagged instead of completed.
 
-### 7. Per-repository Worker rules
+### 7. Per-repository Worker rules — implemented; gate partial (real Worker reading pending)
 
 **Problem.** Rules for working in a repository belong to that repository, but while dogfooding the Odin book the Worker rules lived in Coffee Shop's own repo, at an absolute path every prompt had to quote. Coffee Shop gives a Barista no place to put them, and nothing tells Workers to look. The Filter has the matching gap: the book had no `standards.md`, so its review reported "standards.md is missing in the Beans repository; no review was performed".
 
@@ -281,6 +281,68 @@ Both were recorded `completed`, and the Oreo's decisions list said nothing. Only
 
 **Gate.** Tests cover: a Station with both files, one, and neither; the instruction reaching every Worker's prompt exactly once; the rules coming from the base commit and not from later edits to the Beans; and the Oreo's wording when a file is absent. A real Brew confirms a Worker reads `workers.md` without being told in its prompt.
 
+### v0.2.0 implementation decisions and evidence
+
+- Model inheritance uses Recipe-level `model`/`thinking` defaults with Shot-level overrides; the Filter has independent `review_model`/`review_thinking`. Models are plain argv tokens and are not preflighted against `pi --list-models`. `recipe.schema.json` describes the strict JSON surface.
+- Repository naming uses the sanitized final component of the resolved Beans path. Brew IDs stay time-sortable and unchanged; Recipes cannot override the repository name; Shot tab labels stay `Shot <id>`. Old Registers without a repository name retain a derived display name and their legacy branch display.
+- Scale defaults to two; `workers` opts into 1–5. Five is the hard cap.
+- `order_file`, `prompt_file`, and `preamble_file` are Recipe-directory-relative and reject traversal/absolute paths. Their text is validated before Station creation and retained in Brew state; the preamble is delivered through Pi 1.1.0 `--append-system-prompt <text>`. Pi's 1.1.0 help confirms text/file support and `@file` support; Coffee Shop does not rely on `@file`, instead passing bounded text as argv.
+- Workers finish with `CS-DONE` or `CS-BLOCKED: <reason>`. Missing/blocked markers produce `incomplete`; no automatic follow-up is sent. v0.1 Registers do not require markers.
+- Root `workers.md` and `standards.md` are instructed once in each Worker prompt when present; `AGENTS.md` remains Pi-managed.
+- Evidence run for this implementation: `TZ=UTC just test` (129 tests passed on three consecutive runs), `just check`, and `git diff --check` pass. The seven-Shot cancellation gate is now a test: five Workers run and two queue, and cancellation settles in about 4 seconds with a modelled 4-second exit delay. Cancellation was slow because the supervisor waited for each Worker in turn; it now waits once on a shared deadline. Two concurrency defects found while running the suite in parallel are fixed: a Worker's exit could be recorded before its result was read, and concurrent processes could read the Register and Receipt mid-write. Processes now take `state.lock` (shared for reads, exclusive for writes), which passed 12 of 12 e2e-subset runs where the earlier build failed about one run in ten. Still not covered: file size/UTF-8/empty/missing cases, schema/parser equivalence beyond `review_model`, all repository slug variants, change expectation, recovery of incomplete outcomes, policy-file variants/base-commit stability, and every collect outcome. Real-Pi/Herdr gates for model settings, preamble delivery, the real incomplete-response scenario, and the real seven-Shot cancellation were not run. No Blend code was added.
+
+### 8. Coordinate Brew state through one server per resource — in progress (stages 1–2 of 5 done: Brew token, election and server record)
+
+**Decision.** Workers keep writing their result file, and the supervisor keeps its 100 ms poll. A push from the Worker would save at most about 100 ms per Shot, and it would add a second result path. Revisit only if measurements show the poll matters.
+
+**Problem.** The supervisor, Workers, and the `status`, `cancel` and `collect` commands all read and write `register.json` and `receipt.ndjson`. Writes are serialized by `state.lock`. That is correct, but every process must follow the locking protocol, and a reader has no consistent snapshot unless it takes the lock. Different repositories, such as GAC and MFE, need separate coordination, so each repository needs its own server.
+
+**Goal.** One server per resource (a Beans repository) serializes all writes to the Brews on that repository and answers reads over its Unix socket. The files stay the source of truth. Servers for different repositories run independently.
+
+**Layout.**
+
+```
+~/.coffee-shop/
+  brew-<id>/                 one per Brew, unchanged
+    register.json            Register, including the Brew token
+    receipt.ndjson           Receipt
+    state.lock               retired in stage 4, when the server becomes the only writer
+  servers/<name>-<hash>/     one per resource
+    server.json              pid, start time, generation, last heartbeat, socket path, repository path
+    server.lock              election lock for this resource
+    server.sock              Unix socket
+```
+
+`<hash>` is derived from the absolute repository path, so two repositories with the same name do not collide. There is no global index file: a command finds its server from its repository path.
+
+**Identity.**
+
+- Brew token: `<brew-id>-<guid>`, a random GUID appended to the Brew ID, written to `register.json` when the Brew is created and unchanged for the Brew's life. Workers receive it at launch, together with their server's socket path. It lets a server and its Workers recognise each other within one Brew. It is not a security measure; the socket is user-only.
+- Server id: `<name>-<hash>`, the name of the server's directory. It is derived from the repository's absolute path, so it is the same on every start, and it survives a deleted `server.json`. A restarted server keeps its id. Workers are launched with the server id and socket path, and both are unchanged by a restart, so Workers from before the restart still reach the server.
+- Server generation: a counter in `server.json`, incremented on each start under `server.lock`. It counts restarts for diagnosis only; no Worker or client relies on it.
+- A request carrying another Brew's token, or aimed at a server for a different repository, is rejected.
+- Election and liveness: a server is alive while it holds `server.lock`. Commands test liveness by trying that lock without waiting; the heartbeat in `server.json` is for display and diagnosis only.
+- `state.lock` stays until stage 4. Retiring it earlier would bring back the write race, because nothing else would serialize writes yet.
+
+**Lifecycle.**
+
+- Heartbeat: the server rewrites `server.json` about once a second.
+- Start: a command or Worker that finds no live server (heartbeat stale or process gone) starts one. Only one start wins: the new server takes an exclusive `flock` on `server.lock` before writing `server.json`.
+- Startup recovery: before serving, the server replays Receipt events that are ahead of the Register, so a crash between the two writes is repaired.
+- Idle exit: the server exits after a timeout (default 30 seconds) with no non-terminal Brew on its repository. The next command restarts it. There is no global daemon.
+- Fallback: when a server cannot be started, commands read the files under `state.lock`, as they do now.
+- A Brew uses exactly one server, for its repository. Cross-repository Brews are out of scope.
+
+**Gate.**
+
+- Killing the server mid-write, then running any command, restarts it, and the Register matches the Receipt after replay.
+- Two simultaneous starts for one repository yield exactly one server. A different repository gets its own server.
+- A request carrying another Brew's token is rejected.
+- A Worker keeps working across a server restart without any change to its launch parameters.
+- A server with no active Brew exits within the timeout, and the next command restarts it.
+- `status` works with the server absent.
+- The full suite passes three times in a row without a flake.
+
 ## Scope guardrails
 
-The first release targets one machine, Pi, and Herdr. Keep task decomposition with the Barista and integration decisions with the developer. Do not add remote workers, other agent harnesses, tmux or zmx backends, a daemon or watcher, Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.
+The first release targets one machine, Pi, and Herdr. Keep task decomposition with the Barista and integration decisions with the developer. Do not add remote workers, other agent harnesses, tmux or zmx backends, a daemon or watcher (except the per-repository server in item 8, which exits when idle), Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.

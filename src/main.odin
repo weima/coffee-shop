@@ -44,7 +44,7 @@ run_cli :: proc(args: []string) -> int {
 		return run_collect(command.brew_id)
 	}
 	if command.kind == .Worker {
-		return run_worker(command.state_root, command.brew_id, command.shot_id)
+		return run_worker(command.state_root, command.brew_id, command.shot_id, command.token)
 	}
 
 	write_error("command not implemented yet")

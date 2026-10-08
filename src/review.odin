@@ -11,7 +11,7 @@ Review_Result :: struct {
 	detail:    string,
 }
 
-review_station :: proc(station_path, base_ref, pi: string, max_diff_bytes := 60000, allocator := context.allocator) -> Review_Result {
+review_station :: proc(station_path, base_ref, pi: string, max_diff_bytes := 60000, allocator := context.allocator, model := "", thinking := "") -> Review_Result {
 	if !os.exists(fmt.tprintf("%s/standards.md", station_path)) {
 		return review_result(false, "", "standards.md is missing in the Beans repository; no review was performed", allocator)
 	}
@@ -54,8 +54,13 @@ review_station :: proc(station_path, base_ref, pi: string, max_diff_bytes := 600
 	prompt := review_prompt(transmute(string)diff_bytes, transmute(string)files_bytes, truncated, allocator)
 	defer delete(prompt, allocator)
 
-	command := [9]string{pi, "--print", "--no-session", "--no-extensions", "--no-mcp", "--tools", "read,grep,find,ls", "--", prompt}
+	command: [dynamic]string
+	append(&command, pi, "--print", "--no-session", "--no-extensions", "--no-mcp", "--tools", "read,grep,find,ls")
+	if model != "" { append(&command, "--model", model) }
+	if thinking != "" { append(&command, "--thinking", thinking) }
+	append(&command, "--", prompt)
 	state, stdout, stderr, run_err := os.process_exec(os.Process_Desc{working_dir = station_path, command = command[:]}, allocator)
+	delete(command)
 	defer delete(stdout, allocator)
 	defer delete(stderr, allocator)
 	if run_err != nil {

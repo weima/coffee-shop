@@ -18,6 +18,7 @@ Command :: struct {
 	brew_id: string,
 	shot_id: string,
 	state_root: string,
+	token: string,
 }
 
 Brew_Arguments :: struct {
@@ -33,6 +34,7 @@ Worker_Arguments :: struct {
 	state_root: string `args:"required" usage:"Coffee Shop state directory."`,
 	brew_id: string `args:"required" usage:"Brew identifier."`,
 	shot_id: string `args:"required" usage:"Shot identifier."`,
+	token: string `args:"required" usage:"Brew token from the Register."`,
 }
 
 USAGE :: `Coffee Shop - local Pi Workers for isolated repository changes
@@ -67,7 +69,7 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 		if flags.parse(&options, args[1:], .Unix) != nil {
 			return Command{kind = .Help}, "invalid Worker arguments"
 		}
-		return Command{kind = .Worker, brew_id = options.brew_id, shot_id = options.shot_id, state_root = options.state_root}, ""
+		return Command{kind = .Worker, brew_id = options.brew_id, shot_id = options.shot_id, state_root = options.state_root, token = options.token}, ""
 	case "status", "cancel", "collect":
 		options: Brew_ID_Arguments
 		if flags.parse(&options, args[1:], .Unix) != nil {

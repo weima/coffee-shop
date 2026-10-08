@@ -68,7 +68,7 @@ run_filter :: proc(register: Register, shot: Register_Shot, pi: string) -> (evid
 	if register.base_commit == "" {
 		evidence.review_detail = strings.clone("the Beans base commit was not recorded; no review was performed")
 	} else {
-		review := review_station(shot.station_path, register.base_commit, pi)
+		review := review_station(shot.station_path, register.base_commit, pi, 60000, context.allocator, register.review_model, register.review_thinking)
 		evidence.review_performed = review.performed
 		evidence.review_findings = review.findings
 		evidence.review_detail = review.detail

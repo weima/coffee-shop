@@ -53,7 +53,7 @@ test_status_lists_each_shot_and_pending_cancellation :: proc(t: ^testing.T) {
 	output, err := render_status(root, "brew-test")
 	defer delete(output)
 	testing.expect_value(t, err, "")
-	testing.expect_value(t, output, "Brew brew-test: running\n  shot-a  running (cancel requested)\n  shot-b  queued\nSupervisor is not running; `collect` or `cancel` will settle unfinished Shots.\n")
+	testing.expect_value(t, output, "Brew brew-test (beans): running\nWorkers: 1 of 2 running, 1 queued\n  shot-a  running (cancel requested)\n  shot-b  queued\nSupervisor is not running; `collect` or `cancel` will settle unfinished Shots.\n")
 }
 
 @(test)

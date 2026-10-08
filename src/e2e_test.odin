@@ -31,7 +31,12 @@ case "$1 $2" in
   echo '{}' ;;
 "tab close")
   pid=$(cat "$d/pid-p${3#t}" 2>/dev/null)
-  [ -n "$pid" ] && kill -s TERM -- "-$pid" 2>/dev/null
+  if [ -n "$pid" ] && [ -n "$FAKE_HERDR_CLOSE_DELAY" ]; then
+    # The tab closes at once, but its Worker exits only after the delay.
+    (sleep "$FAKE_HERDR_CLOSE_DELAY"; kill -s TERM -- "-$pid" 2>/dev/null) >/dev/null 2>&1 &
+  elif [ -n "$pid" ]; then
+    kill -s TERM -- "-$pid" 2>/dev/null
+  fi
   echo '{}' ;;
 *) echo '{}' ;;
 esac
@@ -44,6 +49,7 @@ for last; do :; done
 case " $* " in
 *" --no-extensions "*) echo "No findings"; exit 0 ;;
 esac
+printf '%s' "$last" > prompt.record
 printf '%s\n' '{"type":"turn_start"}'
 printf '%s\n' '{"type":"tool_execution_start","toolName":"read","args":{}}'
 sleep "${FAKE_PI_SLEEP:-0}"
@@ -53,7 +59,7 @@ esac
 name=$(printf '%s' "$last" | sed -n 's/.*Shot: write \([a-z]*\).*/\1/p')
 echo "created $name" > "out-$name.txt"
 printf '{"type":"agent_end","messages":[{"role":"assistant",'\
-'"content":[{"type":"text","text":"report for %s"}]}]}\n' "$name"
+'"content":[{"type":"text","text":"report for %s\\nCS-DONE"}]}]}\n' "$name"
 `
 
 E2E :: struct {
@@ -80,7 +86,7 @@ test_e2e_multi_shot_brew_status_collect_and_isolation :: proc(t: ^testing.T) {
 	defer delete(worker_logs)
 	debug_output := fmt.aprintf("Status:\n%s\nWorker logs:\n%s", status, worker_logs)
 	defer delete(debug_output)
-	testing.expect(t, strings.contains(status, fmt.tprintf("Brew %s: failed", brew_id)), debug_output)
+	testing.expect(t, strings.contains(status, fmt.tprintf("Brew %s (repo): failed", brew_id)), debug_output)
 	for line in ([]string{"alpha  completed", "beta  completed", "gamma  failed"}) {
 		testing.expect(t, strings.contains(status, line), status)
 	}
@@ -120,6 +126,10 @@ test_e2e_multi_shot_brew_status_collect_and_isolation :: proc(t: ^testing.T) {
 	testing.expect(t, os.exists(fmt.tprintf("%s/alpha/out-alpha.txt", stations)))
 	testing.expect(t, !os.exists(fmt.tprintf("%s/beta/out-alpha.txt", stations)))
 	testing.expect(t, !os.exists(fmt.tprintf("%s/out-alpha.txt", e2e.repo)))
+	prompt, _ := os.read_entire_file(fmt.tprintf("%s/alpha/prompt.record", stations), context.temp_allocator)
+	defer delete(prompt, context.temp_allocator)
+	testing.expect(t, strings.contains(transmute(string)prompt, "Read the repository-root workers.md first"), transmute(string)prompt)
+	testing.expect(t, strings.contains(transmute(string)prompt, "Read the repository-root standards.md first"), transmute(string)prompt)
 	_, beans_changes, _ := e2e_exec([]string{"git", "-C", e2e.repo, "status", "--short"}, nil)
 	testing.expect_value(t, strings.trim_space(beans_changes), "")
 }
@@ -224,7 +234,7 @@ test_e2e_cancel_stops_running_workers_cancels_queued_shots_and_is_repeatable :: 
 		testing.expect(t, false, "the supervisor did not exit after cancel")
 	}
 	_, status, _ := e2e_run(e2e, "status", brew_id)
-	testing.expect(t, strings.contains(status, fmt.tprintf("Brew %s: cancelled", brew_id)), status)
+	testing.expect(t, strings.contains(status, fmt.tprintf("Brew %s (repo): cancelled", brew_id)), status)
 	for line in ([]string{"alpha  cancelled", "beta  cancelled", "gamma  cancelled"}) {
 		testing.expect(t, strings.contains(status, line), status)
 	}
@@ -245,6 +255,85 @@ test_e2e_cancel_stops_running_workers_cancels_queued_shots_and_is_repeatable :: 
 	testing.expect(t, strings.contains(string(receipt), "Brew cancelled before the Worker started"), string(receipt))
 
 	// Cancelling again changes nothing.
+	sequence := register.event_sequence
+	repeat_code, again, _ := e2e_run(e2e, "cancel", brew_id)
+	testing.expect_value(t, repeat_code, 0)
+	testing.expect(t, strings.contains(again, "already finished: cancelled"), again)
+	after, _ := read_state(fmt.tprintf("%s/%s", e2e.state, brew_id))
+	defer destroy_register(&after)
+	testing.expect_value(t, after.event_sequence, sequence)
+}
+
+// Five Workers run and two Shots queue. Cancelling must settle the whole Brew within
+// the grace period, not once per running Worker.
+@(test)
+test_e2e_cancel_of_a_full_brew_settles_within_the_grace_period :: proc(t: ^testing.T) {
+	e2e := e2e_setup(t, "60")
+	defer remove_fixture_root(e2e.root)
+	// Each Worker exits 4 s after its tab closes, as a real Pi takes time to shut down.
+	slow_exit := make([]string, len(e2e.env) + 1, context.temp_allocator)
+	copy(slow_exit, e2e.env)
+	slow_exit[len(e2e.env)] = "FAKE_HERDR_CLOSE_DELAY=4"
+	e2e.env = slow_exit
+	recipe := e2e_write(e2e, "recipe.json", `{"order":"e2e order","workers":5,"shots":[{"id":"alpha","prompt":"write alpha"},{"id":"bravo","prompt":"write bravo"},{"id":"charlie","prompt":"write charlie"},{"id":"delta","prompt":"write delta"},{"id":"echo","prompt":"write echo"},{"id":"foxtrot","prompt":"write foxtrot"},{"id":"golf","prompt":"write golf"}]}`)
+
+	devnull, _ := os.open("/dev/null", {.Write})
+	defer os.close(devnull)
+	supervisor, start_err := os.process_start(os.Process_Desc{
+		command = []string{e2e.binary, "brew", "--repo", e2e.repo, "--recipe", recipe},
+		env = e2e.env,
+		stdout = devnull,
+		stderr = devnull,
+	})
+	testing.expect_value(t, start_err, os.Error(nil))
+	defer {
+		_ = os.process_kill(supervisor) // a no-op once it has exited; never leave it behind
+		_, _ = os.process_wait(supervisor)
+	}
+
+	brew_id := ""
+	for _ in 0 ..< 80 {
+		brew_id = e2e_first_brew(e2e)
+		if brew_id != "" {
+			_, status, _ := e2e_run(e2e, "status", brew_id)
+			if strings.contains(status, "Workers: 5 of 5 running, 2 queued") {
+				break
+			}
+		}
+		time.sleep(250 * time.Millisecond)
+	}
+	_, running, _ := e2e_run(e2e, "status", brew_id)
+	testing.expect(t, strings.contains(running, "Workers: 5 of 5 running, 2 queued"), running)
+	for line in ([]string{"alpha  running", "echo  running", "foxtrot  queued", "golf  queued"}) {
+		testing.expect(t, strings.contains(running, line), running)
+	}
+
+	cancel_started := time.tick_now()
+	code, requested, _ := e2e_run(e2e, "cancel", brew_id)
+	testing.expect_value(t, code, 0)
+	testing.expect(t, strings.contains(requested, "Cancellation requested"), requested)
+
+	wait_err: os.Error
+	_, wait_err = os.process_wait(supervisor, 15 * time.Second)
+	cancel_took := time.tick_since(cancel_started)
+	testing.expect(t, wait_err == nil, "the supervisor did not exit within 15 s of cancel")
+	testing.expect(t, cancel_took < 15 * time.Second, fmt.tprintf("cancel took %v", cancel_took))
+
+	_, status, _ := e2e_run(e2e, "status", brew_id)
+	testing.expect(t, strings.contains(status, fmt.tprintf("Brew %s (repo): cancelled", brew_id)), status)
+	for line in ([]string{"alpha  cancelled", "bravo  cancelled", "charlie  cancelled", "delta  cancelled", "echo  cancelled", "foxtrot  cancelled", "golf  cancelled"}) {
+		testing.expect(t, strings.contains(status, line), status)
+	}
+	for shot_id in ([]string{"alpha", "bravo", "charlie", "delta", "echo"}) {
+		identity, ok := read_identity_file(fmt.tprintf("%s/%s/workers/%s.started", e2e.state, brew_id, shot_id))
+		testing.expect(t, ok, shot_id)
+		testing.expect(t, !identity_alive(identity), fmt.tprintf("Worker %s is still running", shot_id))
+	}
+
+	// Cancelling again changes nothing.
+	register, state_err := read_state(fmt.tprintf("%s/%s", e2e.state, brew_id))
+	defer destroy_register(&register)
+	testing.expect_value(t, state_err.kind, State_Error_Kind.None)
 	sequence := register.event_sequence
 	repeat_code, again, _ := e2e_run(e2e, "cancel", brew_id)
 	testing.expect_value(t, repeat_code, 0)
@@ -327,6 +416,21 @@ test_e2e_status_receives_activity_before_pi_exits :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_e2e_worker_with_the_wrong_token_is_refused :: proc(t: ^testing.T) {
+	e2e := e2e_setup(t, "0")
+	defer remove_fixture_root(e2e.root)
+	recipe := e2e_write(e2e, "recipe.json", `{"order":"token","shots":[{"id":"alpha","prompt":"write alpha"}]}`)
+	code, brew_out, _ := e2e_run(e2e, "brew", "--repo", e2e.repo, "--recipe", recipe)
+	testing.expect_value(t, code, 0)
+	brew_id := strings.trim_space(brew_out)
+
+	// A Worker that does not carry this Brew's token must not run as one of its Shots.
+	worker_code, _, stderr := e2e_run(e2e, "__worker", "--state-root", e2e.state, "--brew-id", brew_id, "--shot-id", "alpha", "--token", "not-the-token")
+	testing.expect_value(t, worker_code, 2)
+	testing.expect(t, strings.contains(stderr, "token does not match"), stderr)
+}
+
+@(test)
 test_e2e_brew_exits_non_zero_when_no_shot_could_be_launched :: proc(t: ^testing.T) {
 	e2e := e2e_setup(t, "0")
 	defer remove_fixture_root(e2e.root)
@@ -355,6 +459,7 @@ e2e_setup :: proc(t: ^testing.T, pi_sleep: string) -> E2E {
 	make_fixture_repo(t, repo)
 	rw := os.Permissions{.Read_User, .Write_User}
 	_ = os.write_entire_file(fmt.tprintf("%s/standards.md", repo), "# Standards\n", rw)
+	_ = os.write_entire_file(fmt.tprintf("%s/workers.md", repo), "# Worker rules\n", rw)
 	_ = os.write_entire_file(fmt.tprintf("%s/Makefile", repo), "test:\n\techo suite ok\n", rw)
 	for args in ([][]string{{"git", "-C", repo, "add", "."}, {"git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base"}}) {
 		_, _, _ = e2e_exec(args, nil)

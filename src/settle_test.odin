@@ -33,6 +33,21 @@ test_observe_records_a_finished_workers_result :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_v2_worker_without_completion_marker_is_incomplete :: proc(t: ^testing.T) {
+	root := make_fixture_root(t); defer remove_fixture_root(root)
+	brew_dir, register := make_brew_fixture(t, root); defer destroy_register(&register)
+	register.completion_marker_required = true
+	_ = save_register_metadata(brew_dir, register)
+	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_RUNNING, "Worker started")
+	path := worker_result_path(brew_dir, "shot-a"); defer delete(path)
+	_ = write_worker_result(path, Worker_Result{brew_id="brew-test", shot_id="shot-a", started=true, success=true, detail="missing CS-DONE completion marker"})
+	_ = settle_brew(brew_dir, &register, "unused", .Observe)
+	testing.expect_value(t, register.shots[0].status, SHOT_INCOMPLETE)
+	_ = transition_shot(brew_dir, &register, "shot-b", SHOT_CANCELLED, "test terminal state")
+	testing.expect_value(t, brew_status(register), SHOT_INCOMPLETE)
+}
+
+@(test)
 test_observe_marks_a_vanished_worker_interrupted_never_completed :: proc(t: ^testing.T) {
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
@@ -42,6 +57,30 @@ test_observe_marks_a_vanished_worker_interrupted_never_completed :: proc(t: ^tes
 
 	testing.expect_value(t, settle_brew(brew_dir, &register, "unused", .Observe).kind, State_Error_Kind.None)
 	testing.expect_value(t, register.shots[0].status, SHOT_INTERRUPTED)
+}
+
+race_brew_dir: string
+
+// A Worker writes its result before it exits. This callback does the same
+// between the Brew's result check and its liveness check.
+finishing_worker_liveness :: proc(identity: Process_Identity) -> Liveness {
+	write_test_result(race_brew_dir, "shot-a", true)
+	return .Gone
+}
+
+@(test)
+test_observe_keeps_a_result_written_as_the_worker_exits :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	brew_dir, register := make_brew_fixture(t, root)
+	defer destroy_register(&register)
+	race_brew_dir = brew_dir
+	write_test_started(brew_dir, "shot-a", DEAD_IDENTITY)
+
+	err := settle_brew(brew_dir, &register, "unused", .Observe, liveness = finishing_worker_liveness)
+	testing.expect_value(t, err.kind, State_Error_Kind.None)
+	// The result is evidence of completion; it must not be recorded as interrupted.
+	testing.expect_value(t, register.shots[0].status, SHOT_COMPLETED)
 }
 
 @(test)
@@ -130,7 +169,7 @@ test_cancel_brew_settles_an_orphaned_brew_itself :: proc(t: ^testing.T) {
 	output, err := cancel_brew(root, "unused", "brew-test")
 	defer delete(output)
 	testing.expect_value(t, err, "")
-	testing.expect(t, strings.contains(output, "Brew brew-test: cancelled"), output)
+	testing.expect(t, strings.contains(output, "Brew brew-test (beans): cancelled"), output)
 
 	again, again_err := cancel_brew(root, "unused", "brew-test")
 	defer delete(again)
