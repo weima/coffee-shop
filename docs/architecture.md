@@ -49,7 +49,15 @@ flowchart TD
 
 ## Recipe contract
 
-Recipes are strict JSON objects with a non-empty `order` and a non-empty `shots` array. Every Shot has a non-empty `prompt` and a unique `id` of 1–64 ASCII letters, digits, hyphens, or underscores; the first character must be a letter or digit. Prompts are preserved as supplied. This ID rule makes Shot names safe path segments and safe arguments to Coffee Shop's internal Worker command.
+Recipes are strict JSON objects with a non-empty `order`, a non-empty `shots` array, and an optional `share` array of unique repository-relative paths. Every Shot has a non-empty `prompt` and a unique `id` of 1–64 ASCII letters, digits, hyphens, or underscores; the first character must be a letter or digit. Prompts are preserved as supplied. This ID rule makes Shot names safe path segments and safe arguments to Coffee Shop's internal Worker command.
+
+## Shared paths
+
+A Station is a fresh checkout, so gitignored dependency directories (`node_modules`, `vendor/bundle`, `.venv`) are absent from it, and installing them per Station would waste space and time. The Recipe's `share` list names Beans paths to symlink into every Station instead. Each path must be relative, free of `..`, outside `.git`, present in the Beans, and gitignored there; otherwise `brew` fails before it creates any state. The check also guarantees a shared path never collides with a tracked file.
+
+A `.gitignore` entry such as `node_modules/` matches only directories, so a symlink to one would appear as an untracked change. Coffee Shop therefore adds an anchored entry (`/node_modules`, no trailing slash) to the repository's shared `info/exclude` file once per path. The entry is redundant for the Beans' real directory and is not duplicated by later Brews. The shared list is recorded in the Register.
+
+The link is read-through, so a Worker that installs packages modifies the Beans' real copy. Coffee Shop does not prevent this; the Barista should tell Workers not to install dependencies.
 
 ## Local state
 
@@ -75,6 +83,15 @@ Allowed transitions are `queued` → `running`, `failed`, or `cancelled`, and `r
 `cancel <brew-id>` records a cancellation request and is safe to repeat. While the supervisor is alive it does the work: queued Shots become `cancelled`, and each running Worker has its Herdr tab closed, which ends Pi. A Shot becomes `cancelled` once its Worker process is confirmed gone, or `interrupted` if that cannot be confirmed within ten seconds.
 
 The supervisor records its process identity (PID plus kernel start time, so a reused PID is not mistaken for it) in `supervisor.json`; each Worker does the same in `workers/<shot>.started`. If the supervisor has died, `status` says so, and `collect` or `cancel` take over its job using only evidence: a Worker's result file is recorded as completed or failed, and a Worker that vanished without a result becomes `interrupted`. A live Worker is left alone unless the Brew is being cancelled. A Shot is never marked `completed` without a recorded successful result.
+
+## Filter and Oreo
+
+`collect` runs the Filter once for each `completed` Shot and saves its evidence in `<brew>/filter/<shot>.json`; later collections show the saved evidence without re-running Pi or the tests. Delete that file to run the Filter again for a Shot.
+
+- **Review.** A one-shot `pi --print --no-session --no-extensions --no-mcp --tools read,grep,find,ls` reviews `git diff <base commit>` plus the untracked file list against the Station's `standards.md`. The tool allowlist is what keeps it read-only. The Brew records the Beans HEAD commit as the base when it starts. If `standards.md` is missing, the base commit is unknown, there are no changes, or Pi fails, the Oreo says the review was not performed; it never shows a failed review as clean.
+- **Checks.** Test commands are discovered, never invented, from the Station's own manifests: `package.json` scripts (`test`, `test:unit`, `test:e2e`, `e2e`, `test:playwright`, using the package manager its lockfile or `packageManager` field names), `Makefile` `test`/`e2e`/`test-e2e` targets, `go.mod`, and `Cargo.toml`. If more than one candidate exists for a kind, none is run and the Oreo reports the ambiguity. A Playwright configuration without an e2e script, or no recognized test configuration, is reported rather than guessed at.
+- **Limits.** Checks run inside the Station, a fresh checkout: dependencies the repository does not commit (for example `node_modules`) are absent, and a command may write build output there. Failures from either cause are reported as failures. Output is kept to its tail, and there is no timeout.
+- **Decisions.** The Oreo ends with "Decisions for the developer": any Shot that did not complete, a review that reported findings or could not run, a failing check, and every ambiguity or gap above.
 
 ## Data flow
 

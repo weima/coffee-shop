@@ -7,6 +7,9 @@ import "core:strings"
 
 Recipe :: struct {
 	order: string,
+	// Paths in the Beans repository to link into every Station instead of
+	// copying, such as node_modules. Optional.
+	share: [dynamic]string,
 	shots: [dynamic]Shot,
 }
 
@@ -94,6 +97,19 @@ parse_recipe :: proc(
 		return Recipe{}, "recipe must contain at least one shot"
 	}
 
+	for path, index in recipe.share {
+		if !valid_share_path(path) {
+			destroy_recipe(&recipe, allocator)
+			return Recipe{}, "share paths must be relative paths inside the repository"
+		}
+		for previous in recipe.share[:index] {
+			if previous == path {
+				destroy_recipe(&recipe, allocator)
+				return Recipe{}, "share paths must be unique"
+			}
+		}
+	}
+
 	for shot, i in recipe.shots {
 		if !valid_shot_id(shot.id) {
 			destroy_recipe(&recipe, allocator)
@@ -124,6 +140,10 @@ destroy_recipe :: proc(recipe: ^Recipe, allocator := context.allocator) {
 		delete(shot.prompt, allocator)
 	}
 	delete(recipe.shots)
+	for path in recipe.share {
+		delete(path, allocator)
+	}
+	delete(recipe.share)
 	delete(recipe.order, allocator)
 	recipe^ = Recipe{}
 }
@@ -156,5 +176,23 @@ valid_shot_id :: proc(id: string) -> bool {
 		}
 	}
 
+	return true
+}
+
+// A share path is linked into every Station, so it must stay inside the
+// repository: relative, made of plain segments, and never inside .git.
+valid_share_path :: proc(path: string) -> bool {
+	if path == "" || strings.contains_rune(path, '\\') || strings.has_prefix(path, "/") {
+		return false
+	}
+	segments := strings.split(path, "/", context.temp_allocator)
+	for segment, index in segments {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+		if index == 0 && segment == ".git" {
+			return false
+		}
+	}
 	return true
 }

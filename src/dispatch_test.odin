@@ -133,3 +133,26 @@ test_state_root_rejects_relative_override_and_missing_home :: proc(t: ^testing.T
 	_, err = resolve_state_root("", "")
 	testing.expect_value(t, err, "set CS_STATE_DIR: could not locate the home directory")
 }
+
+@(test)
+test_brew_records_the_beans_base_commit :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	repo := fmt.tprintf("%s/repo", root)
+	make_fixture_repo(t, repo)
+	recipe_path := fmt.tprintf("%s/recipe.json", root)
+	_ = os.write_entire_file(recipe_path, `{"order":"o","shots":[{"id":"a","prompt":"pa"}]}`, os.Permissions{.Read_User, .Write_User})
+	state_root := fmt.tprintf("%s/state", root)
+
+	brew_id, err := run_brew_with(repo, recipe_path, state_root, "/nonexistent", "/nonexistent/herdr")
+	defer delete(brew_id)
+	testing.expect_value(t, err, "")
+
+	_, stdout, _, _ := os.process_exec(os.Process_Desc{command = []string{"git", "-C", repo, "rev-parse", "HEAD"}}, context.allocator)
+	defer delete(stdout)
+	register, state_err := read_state(fmt.tprintf("%s/%s", state_root, brew_id))
+	defer destroy_register(&register)
+	testing.expect_value(t, state_err.kind, State_Error_Kind.None)
+	testing.expect_value(t, len(register.base_commit), 40)
+	testing.expect_value(t, register.base_commit, strings.trim_space(string(stdout)))
+}

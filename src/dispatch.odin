@@ -56,7 +56,13 @@ run_brew :: proc(repo, recipe_path: string) -> (brew_id: string, err: string) {
 	return run_brew_with(repo, recipe_path, state_root, process_info.executable_path, "herdr")
 }
 
-run_brew_with :: proc(repo, recipe_path, state_root, executable, herdr: string) -> (brew_id: string, err: string) {
+run_brew_with :: proc(repo_path, recipe_path, state_root, executable, herdr: string) -> (brew_id: string, err: string) {
+	// Symlinks and later commands run from other directories, so use an absolute path.
+	repo, abs_err := filepath.abs(repo_path)
+	if abs_err != nil {
+		return "", "could not resolve the Beans path"
+	}
+	defer delete(repo)
 	valid, repo_err := is_git_repository(repo)
 	if repo_err != "" {
 		return "", repo_err
@@ -70,6 +76,12 @@ run_brew_with :: proc(repo, recipe_path, state_root, executable, herdr: string) 
 		return "", recipe_err
 	}
 	defer destroy_recipe(&recipe)
+	if share_err := validate_shared_paths(repo, recipe.share[:]); share_err != "" {
+		return "", share_err
+	}
+	if exclude_err := exclude_shared_paths(repo, recipe.share[:]); exclude_err != "" {
+		return "", exclude_err
+	}
 
 	brew_id = next_brew_id(state_root, time.now())
 	brew_dir := state_file_path(state_root, brew_id)
@@ -79,6 +91,11 @@ run_brew_with :: proc(repo, recipe_path, state_root, executable, herdr: string) 
 		return brew_id, "could not allocate Brew state"
 	}
 	defer destroy_register(&register)
+	base_commit, base_err := git_head_commit(repo)
+	if base_err != "" {
+		return brew_id, base_err
+	}
+	register.base_commit = base_commit
 	if state_error = create_state(brew_dir, &register); state_error.kind != .None {
 		return brew_id, state_error_message(state_error)
 	}
@@ -123,6 +140,12 @@ run_brew_with :: proc(repo, recipe_path, state_root, executable, herdr: string) 
 			return brew_id, "could not save Station path"
 		}
 		register.shots[i].station_path = station_copy
+		if link_err := link_shared_paths(repo, station_copy, register.share[:]); link_err != "" {
+			if state_error = transition_shot(brew_dir, &register, shot.id, SHOT_FAILED, link_err); state_error.kind != .None {
+				return brew_id, state_error_message(state_error)
+			}
+			continue
+		}
 		if state_error := save_register_metadata(brew_dir, register); state_error.kind != .None {
 			return brew_id, state_error_message(state_error)
 		}
@@ -200,6 +223,26 @@ run_brew_with :: proc(repo, recipe_path, state_root, executable, herdr: string) 
 		return brew_id, state_error_message(state_error)
 	}
 	return brew_id, ""
+}
+
+// Stations are created from HEAD, so record exactly which commit that is.
+git_head_commit :: proc(repo: string, allocator := context.allocator) -> (commit: string, err: string) {
+	state, stdout, stderr, run_err := os.process_exec(os.Process_Desc{
+		command = []string{"git", "-C", repo, "rev-parse", "--verify", "HEAD"},
+	}, allocator)
+	defer delete(stdout, allocator)
+	defer delete(stderr, allocator)
+	if run_err != nil {
+		return "", "could not run Git to read the Beans HEAD commit"
+	}
+	if !state.success || state.exit_code != 0 {
+		return "", "the Beans repository has no HEAD commit"
+	}
+	cloned, clone_err := strings.clone(strings.trim_space(string(stdout)), allocator)
+	if clone_err != nil {
+		return "", "could not allocate the Beans base commit"
+	}
+	return cloned, ""
 }
 
 create_git_worktree :: proc(repo, branch, path: string, allocator := context.allocator) -> string {

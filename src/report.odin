@@ -165,10 +165,23 @@ render_status :: proc(state_root, brew_id: string) -> (output: string, err: stri
 	return strings.to_string(builder), ""
 }
 
+Collect_Result :: struct {
+	output:   string,
+	complete: bool,
+}
+
 render_collect :: proc(state_root, brew_id: string) -> (output: string, complete: bool, err: string) {
+	result, collect_err := render_collect_with_pi(state_root, brew_id, "pi")
+	return result.output, result.complete, collect_err
+}
+
+// Builds the Oreo: every Shot's outcome, Worker report and Filter evidence, then
+// the decisions that need a human. Filter evidence is created once per completed
+// Shot and reused by later collections.
+render_collect_with_pi :: proc(state_root, brew_id, pi: string) -> (result: Collect_Result, err: string) {
 	register, brew_dir, load_err := load_brew(state_root, brew_id)
 	if load_err != "" {
-		return "", false, load_err
+		return Collect_Result{}, load_err
 	}
 	defer destroy_register(&register)
 	defer delete(brew_dir)
@@ -176,18 +189,27 @@ render_collect :: proc(state_root, brew_id: string) -> (output: string, complete
 	details := last_details(brew_dir, register)
 	defer delete_details(details)
 
+	decisions: [dynamic]string
+	defer {
+		for decision in decisions {
+			delete(decision)
+		}
+		delete(decisions)
+	}
+
 	builder := strings.builder_make()
-	complete = true
+	result.complete = true
 	fmt.sbprintfln(&builder, "# Brew %s: %s", register.brew_id, brew_status(register))
 	fmt.sbprintfln(&builder, "Order: %s", register.order)
 	fmt.sbprintfln(&builder, "Beans: %s", register.beans_path)
 	for shot, index in register.shots {
 		fmt.sbprintfln(&builder, "\n## Shot %s: %s", shot.id, shot.status)
 		if shot.status != SHOT_COMPLETED {
-			complete = false
+			result.complete = false
 			if details[index] != "" {
 				fmt.sbprintfln(&builder, "Detail: %s", details[index])
 			}
+			append(&decisions, fmt.aprintf("Shot %s is %s%s", shot.id, shot.status, detail_suffix(details[index])))
 		}
 		if shot.station_path == "" {
 			continue
@@ -205,8 +227,33 @@ render_collect :: proc(state_root, brew_id: string) -> (output: string, complete
 			fmt.sbprintfln(&builder, "Report:\n%s", report)
 		}
 		delete(report)
+
+		if shot.status == SHOT_COMPLETED {
+			evidence, filter_err := load_or_run_filter(brew_dir, register, index, pi)
+			if filter_err != "" {
+				delete(builder.buf)
+				return Collect_Result{}, filter_err
+			}
+			render_filter_evidence(&builder, &decisions, shot.id, evidence)
+			destroy_filter_evidence(&evidence)
+		}
 	}
-	return strings.to_string(builder), complete, ""
+
+	if len(decisions) > 0 {
+		fmt.sbprintln(&builder, "\n## Decisions for the developer")
+		for decision in decisions {
+			fmt.sbprintfln(&builder, "- %s", decision)
+		}
+	}
+	result.output = strings.to_string(builder)
+	return result, ""
+}
+
+detail_suffix :: proc(detail: string) -> string {
+	if detail == "" {
+		return ""
+	}
+	return fmt.tprintf(" (%s)", detail)
 }
 
 // Brew IDs become path segments, so apply the same grammar as Shot IDs before

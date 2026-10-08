@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:strings"
 import "core:testing"
 
@@ -79,4 +80,32 @@ reject_recipe :: proc(t: ^testing.T, data: string) {
 	recipe, err := parse_recipe(data)
 	defer destroy_recipe(&recipe)
 	testing.expect(t, err != "")
+}
+
+@(test)
+test_recipe_accepts_an_optional_share_list :: proc(t: ^testing.T) {
+	recipe, err := parse_recipe(`{"order":"o","share":["node_modules","packages/web/node_modules","vendor/bundle"],"shots":[{"id":"a","prompt":"p"}]}`)
+	defer destroy_recipe(&recipe)
+	testing.expect_value(t, err, "")
+	testing.expect_value(t, len(recipe.share), 3)
+	testing.expect_value(t, recipe.share[1], "packages/web/node_modules")
+
+	plain, plain_err := parse_recipe(`{"order":"o","shots":[{"id":"a","prompt":"p"}]}`)
+	defer destroy_recipe(&plain)
+	testing.expect_value(t, plain_err, "")
+	testing.expect_value(t, len(plain.share), 0)
+}
+
+@(test)
+test_recipe_rejects_unsafe_share_paths :: proc(t: ^testing.T) {
+	for path in ([]string{`/etc`, `../outside`, `a/../b`, `a//b`, `./node_modules`, `node_modules/`, `.git`, `.git/hooks`, ``, `a\\b`}) {
+		// Concatenate: Odin's fmt treats `{` in a format string as a directive.
+		data, _ := strings.concatenate({`{"order":"o","share":["`, path, `"],"shots":[{"id":"a","prompt":"p"}]}`}, context.temp_allocator)
+		recipe, err := parse_recipe(data)
+		destroy_recipe(&recipe)
+		testing.expect(t, err == "share paths must be relative paths inside the repository", fmt.tprintf("path %q gave: %s", path, err))
+	}
+	dup, dup_err := parse_recipe(`{"order":"o","share":["node_modules","node_modules"],"shots":[{"id":"a","prompt":"p"}]}`)
+	destroy_recipe(&dup)
+	testing.expect_value(t, dup_err, "share paths must be unique")
 }

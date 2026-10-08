@@ -51,6 +51,11 @@ Register :: struct {
 	schema_version: int,
 	brew_id: string,
 	beans_path: string,
+	// Beans HEAD when the Brew started; Stations branch from it and the Filter
+	// reviews changes against it. Empty in Registers written before it existed.
+	base_commit: string,
+	// Paths in the Beans repository linked into every Station (the Recipe's share list).
+	share: [dynamic]string,
 	herdr_workspace_id: string,
 	order: string,
 	event_sequence: int,
@@ -101,6 +106,20 @@ register_from_recipe :: proc(
 	if alloc_err != nil {
 		destroy_register(&register, allocator)
 		return Register{}, State_Error{kind = .Out_Of_Memory}
+	}
+
+	for path in recipe.share {
+		path_copy, path_err := strings.clone(path, allocator)
+		if path_err != nil {
+			destroy_register(&register, allocator)
+			return Register{}, State_Error{kind = .Out_Of_Memory}
+		}
+		_, append_err := append(&register.share, path_copy)
+		if append_err != nil {
+			delete(path_copy, allocator)
+			destroy_register(&register, allocator)
+			return Register{}, State_Error{kind = .Out_Of_Memory}
+		}
 	}
 
 	for shot in recipe.shots {
@@ -162,6 +181,13 @@ destroy_register :: proc(register: ^Register, allocator := context.allocator) {
 	delete(register.shots)
 	delete(register.brew_id, allocator)
 	delete(register.beans_path, allocator)
+	for path in register.share {
+		delete(path, allocator)
+	}
+	delete(register.share)
+	if len(register.base_commit) > 0 {
+		delete(register.base_commit, allocator)
+	}
 	if len(register.herdr_workspace_id) > 0 {
 		delete(register.herdr_workspace_id, allocator)
 	}
@@ -532,6 +558,11 @@ valid_initial_register :: proc(register: Register) -> bool {
 valid_register :: proc(register: Register) -> bool {
 	if register.schema_version != STATE_SCHEMA_VERSION || register.event_sequence < 0 || !valid_shot_id(register.brew_id) || strings.trim_space(register.beans_path) == "" || strings.trim_space(register.order) == "" || len(register.shots) == 0 {
 		return false
+	}
+	for path in register.share {
+		if !valid_share_path(path) {
+			return false
+		}
 	}
 	for shot, i in register.shots {
 		if !valid_shot_id(shot.id) || strings.trim_space(shot.prompt) == "" || !valid_shot_status(shot.status) {

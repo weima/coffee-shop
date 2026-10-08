@@ -4,7 +4,7 @@
 
 Coffee Shop is being built as a small Odin command-line tool for dispatching parallel Pi workers. The active Pi session acts as the **Barista**: it turns a developer's **Order** into a **Recipe**, then asks Coffee Shop to run the work.
 
-> **Status:** implementation in progress. The Odin CLI provides help and validates arguments, JSON Recipes, and Beans Git repositories. Worker dispatch, persistence, and collection are still planned.
+> **Status:** implementation in progress. The Odin CLI validates arguments, JSON Recipes, and Beans Git repositories, dispatches Workers, persists Brew state, and collects results.
 
 ## How it is intended to work
 
@@ -29,7 +29,7 @@ See [the architecture](docs/architecture.md) for the diagram and boundaries. See
 
 ## Recipe format
 
-A Recipe is strict JSON. Shot IDs are unique, safe path segments (1–64 ASCII letters, digits, `_` or `-`, starting with a letter or digit).
+A Recipe is strict JSON with a non-empty `order` and a non-empty `shots` array. Each Shot has a non-empty `prompt` and a unique `id`: 1–64 ASCII letters, digits, `_` or `-`, starting with a letter or digit.
 
 ```json
 {
@@ -40,7 +40,35 @@ A Recipe is strict JSON. Shot IDs are unique, safe path segments (1–64 ASCII l
 }
 ```
 
-The intended invocation is `coffee-shop brew --repo <beans-path> --recipe <recipe.json>`; Worker dispatch is not implemented yet.
+### Sharing installed dependencies
+
+Each Station is a fresh checkout, so gitignored directories such as `node_modules` are missing from it. Rather than reinstalling them in every Station, list them in an optional `share` array. Coffee Shop links each listed path from the Beans repository into every Station.
+
+```json
+{ "order": "...", "share": ["node_modules", "packages/web/node_modules"], "shots": [ ... ] }
+```
+
+- Paths are relative to the Beans repository, must exist there, and must be gitignored. `brew` stops before creating anything if one is not.
+- The link is read-through: a Worker that installs or upgrades packages changes the Beans' real copy, so tell Workers not to install dependencies.
+- It works for any repository-local directory, for example `node_modules`, `vendor/bundle`, `.bundle` or `.venv`. Ecosystems that keep packages in a global cache outside the repository, such as NuGet's `~/.nuget/packages`, need nothing shared.
+- When a Station lacks one of those common directories that the Beans has, the Filter adds a note suggesting `share` instead of leaving you with a confusing test failure.
+
+## Usage
+
+```sh
+coffee-shop brew --repo <path> --recipe <recipe.json>
+coffee-shop status <brew-id>
+coffee-shop cancel <brew-id>
+coffee-shop collect <brew-id>
+```
+
+- `brew` creates and runs the Brew, blocks until every Shot is terminal, then prints the Brew ID (`brew-<UTC start time>-<pid>`).
+- At most two Workers run at once.
+- `status` prints the Brew and each Shot's status.
+- `cancel` requests cancellation; repeating it is safe.
+- `collect` prints each Shot's outcome, Worker report and Station changes, then runs the Filter once per completed Shot: a read-only Pi review against the repository's `standards.md` and the repository's own test commands. The saved evidence is reused on later collections. It ends with the decisions that need a human, and exits non-zero unless every Shot completed. See [the architecture](docs/architecture.md#filter-and-oreo).
+- Brew state is stored under `$CS_STATE_DIR/<brew-id>` when `CS_STATE_DIR` is set, or `~/.coffee-shop/<brew-id>` otherwise. `CS_STATE_DIR` must be an absolute path.
+- Stations and Brew state are never deleted automatically; `collect` preserves them.
 
 ## Development
 

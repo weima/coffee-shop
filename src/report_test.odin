@@ -84,3 +84,27 @@ test_collect_includes_report_changes_and_failure_detail_and_flags_incomplete :: 
 	testing.expect(t, strings.contains(output, "All done"))
 	testing.expect(t, strings.contains(output, "## Shot shot-b: failed\nDetail: Herdr tab launch failed"))
 }
+
+@(test)
+test_collect_reports_missing_station_changes_for_completed_shot :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	register := make_test_register(t)
+	defer destroy_register(&register)
+	brew_dir := fmt.tprintf("%s/brew-test", root)
+	_ = create_state(brew_dir, &register)
+	register.shots[0].station_path = strings.clone(fmt.tprintf("%s/missing-station", root))
+	_ = save_register_metadata(brew_dir, register)
+	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_RUNNING, "Worker started")
+	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_COMPLETED, "Pi exited with code 0")
+	_ = transition_shot(brew_dir, &register, "shot-b", SHOT_RUNNING, "Worker started")
+	_ = transition_shot(brew_dir, &register, "shot-b", SHOT_COMPLETED, "Pi exited with code 0")
+
+	output, complete, err := render_collect(root, "brew-test")
+	defer delete(output)
+	testing.expect_value(t, err, "")
+	testing.expect(t, complete, "a completed Shot keeps the Brew complete")
+	testing.expect(t, strings.contains(output, "## Shot shot-a: completed"), "the completed Shot is reported")
+	testing.expect(t, strings.contains(output, "(could not read Station changes)"), "missing Station changes are reported as unreadable")
+	testing.expect(t, !strings.contains(output, "Changes:\n(none)"), "a missing Station is not reported as having no changes")
+}
