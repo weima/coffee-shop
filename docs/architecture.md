@@ -19,6 +19,10 @@ flowchart TD
     TabN --> WorkerN[Pi Worker<br/>Shot N]
     Worker1 --> Station1[Station A<br/>isolated Git worktree]
     WorkerN --> StationN[Station N<br/>isolated Git worktree]
+    Worker1 --> Activity[Per-Brew Unix-domain stream socket]
+    WorkerN --> Activity
+    Activity --> CLI
+    CLI --> ActivityState[Latest activity per Shot]
     Worker1 --> Results[Worker reports and check evidence]
     WorkerN --> Results
     Results --> Filter[Filter<br/>review and existing tests]
@@ -40,7 +44,8 @@ flowchart TD
 | **Recipe** | An Order and its explicit list of Shots. The Barista owns task decomposition. |
 | **Shot** | One unit of work with one prompt and one Worker. |
 | **Station** | A Git worktree isolated to one Shot. |
-| **Worker** | One Pi CLI process in a Herdr tab, working in its Shot's Station. |
+| **Worker** | One Pi CLI process in a Herdr tab, working in its Shot's Station. Pi's JSON event stream is reduced to bounded activity summaries. |
+| **Activity channel** | A per-Brew Unix-domain stream socket. Workers send bounded newline-delimited summaries best-effort; the supervisor validates Brew/Shot identity and persists the latest one per running Shot. It does not establish liveness. |
 | **Register** | Durable current status for each Brew and Shot. |
 | **Receipt** | Append-only events that explain status changes. |
 | **Scale** | The maximum number of concurrent Workers. |
@@ -78,6 +83,12 @@ The Receipt event is appended before the Register is rewritten. If a write is in
 
 Allowed transitions are `queued` → `running`, `failed`, or `cancelled`, and `running` → `completed`, `failed`, `cancelled`, or `interrupted`. A cancellation request is recorded separately; a running Shot stays `running` until the Worker exit is confirmed, then becomes `cancelled`. Cancelling a Brew marks queued Shots `cancelled` and interrupts active Workers. Brew status is derived from its Shots rather than maintained as a second state machine.
 
+## Worker activity
+
+A Worker runs Pi with `--mode json --print --no-session`. It parses newline-delimited Pi events and sends only short normalized summaries (for example, a tool name or “drafting response”) over the Brew's Unix-domain stream socket. Each newline-delimited event is bounded and includes a timestamp. The Worker does not send prompts, tool arguments, tool output, or response deltas; send and receive failures do not fail a successful Pi run. The Worker still extracts the final assistant text for the report.
+
+The supervisor stamps received events and atomically saves the latest activity under `workers/<shot>.activity.json`. `workers/<shot>.started_at` records the Worker start time. A `status` snapshot shows running time and the age/description of the last activity on the same line as the Shot. Activity older than 12 minutes is marked quiet; this is not a timeout. A missing socket or activity record only removes progress detail. Worker process identity remains the authority for liveness and completion.
+
 ## Cancellation and recovery
 
 `cancel <brew-id>` records a cancellation request and is safe to repeat. While the supervisor is alive it does the work: queued Shots become `cancelled`, and each running Worker has its Herdr tab closed, which ends Pi. A Shot becomes `cancelled` once its Worker process is confirmed gone, or `interrupted` if that cannot be confirmed within ten seconds.
@@ -99,9 +110,9 @@ Liveness has three answers, not two. A process is **gone** only on evidence: its
 
 1. The Barista supplies a JSON Recipe and the path to the Beans.
 2. The CLI validates the repository and Recipe before it starts Workers.
-3. The CLI creates one Station per Shot and one Herdr workspace per Brew. A per-Brew supervisor creates one tab per Shot, runs `pi --print --no-session` from each Station, and keeps at most two Workers active. It schedules queued Shots as slots open and exits when the Brew is terminal.
+3. The CLI creates one Station per Shot and one Herdr workspace per Brew. A per-Brew supervisor creates one tab per Shot, runs `pi --mode json --print --no-session` from each Station, and keeps at most two Workers active. It schedules queued Shots as slots open, receives best-effort activity messages, and exits when the Brew is terminal.
 4. Workers write their result and check evidence to their own Station. The Barista may assign a normal Shot to add tests from `standards.md`; that Worker receives the Taste-Driven Development skill as task guidance, without installing it into the Beans repository.
-5. The CLI updates the Register and Receipt as it observes Worker state. The Scale allows two active Workers; the supervisor continues queued independent Shots after a Worker fails. There is no automatic timeout.
+5. The CLI updates the Register and Receipt as it observes Worker state. The supervisor persists latest activity separately; activity recency never changes liveness. The Scale allows two active Workers; the supervisor continues queued independent Shots after a Worker fails. There is no automatic timeout.
 6. Filter runs a separate one-shot Pi code review against `standards.md`, then discovers and runs the repository's existing unit/component and end-to-end test commands without overriding them.
 7. The Barista collects Worker reports and Filter evidence into the Oreo for human review.
 

@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
+import "core:time"
 
 @(test)
 test_brew_status_reports_the_least_finished_or_worst_outcome :: proc(t: ^testing.T) {
@@ -53,6 +54,35 @@ test_status_lists_each_shot_and_pending_cancellation :: proc(t: ^testing.T) {
 	defer delete(output)
 	testing.expect_value(t, err, "")
 	testing.expect_value(t, output, "Brew brew-test: running\n  shot-a  running (cancel requested)\n  shot-b  queued\nSupervisor is not running; `collect` or `cancel` will settle unfinished Shots.\n")
+}
+
+@(test)
+test_status_shows_runtime_latest_activity_and_quiet_marker :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	register := make_test_register(t)
+	defer destroy_register(&register)
+	brew_dir := fmt.tprintf("%s/brew-test", root)
+	_ = create_state(brew_dir, &register)
+	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_RUNNING, "Worker started")
+	workers_dir := state_file_path(brew_dir, "workers")
+	defer delete(workers_dir)
+	_ = os.make_directory_all(workers_dir, os.Permissions{.Read_User, .Write_User, .Execute_User})
+
+	now_ns := time.now()._nsec
+	_ = write_worker_started_at(brew_dir, "shot-a", now_ns-3_661_000_000_000)
+	message := Activity_Message{
+		brew_id = "brew-test", shot_id = "shot-a", kind = "tool_start",
+		description = "Running tool: read", timestamp_ns = now_ns-780_000_000_000,
+	}
+	_ = write_activity_record(brew_dir, message)
+
+	output, err := render_status(root, "brew-test")
+	defer delete(output)
+	testing.expect_value(t, err, "")
+	testing.expect(t, strings.contains(output, "1h01m elapsed"), output)
+	testing.expect(t, strings.contains(output, "quiet; last activity 13m00s ago"), output)
+	testing.expect(t, strings.contains(output, "Running tool: read"), output)
 }
 
 @(test)

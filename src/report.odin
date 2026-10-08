@@ -4,6 +4,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:time"
 
 // A Brew is as finished as its least finished Shot. Terminal Brews report the
 // worst outcome so a failure is never hidden behind completed Shots.
@@ -152,10 +153,16 @@ render_status :: proc(state_root, brew_id: string) -> (output: string, err: stri
 
 	builder := strings.builder_make()
 	fmt.sbprintfln(&builder, "Brew %s: %s", register.brew_id, brew_status(register))
+	now_ns := time.now()._nsec
 	for shot in register.shots {
 		suffix := ""
 		if shot.cancel_requested && shot.status == SHOT_RUNNING {
 			suffix = " (cancel requested)"
+		}
+		if shot.status == SHOT_RUNNING && render_shot_activity(
+			&builder, brew_dir, shot.id, suffix, now_ns,
+		) {
+			continue
 		}
 		fmt.sbprintfln(&builder, "  %s  %s%s", shot.id, shot.status, suffix)
 	}
@@ -163,6 +170,39 @@ render_status :: proc(state_root, brew_id: string) -> (output: string, err: stri
 		fmt.sbprintln(&builder, "Supervisor is not running; `collect` or `cancel` will settle unfinished Shots.")
 	}
 	return strings.to_string(builder), ""
+}
+
+render_shot_activity :: proc(
+	builder: ^strings.Builder,
+	brew_dir, shot_id, suffix: string,
+	now_ns: i64,
+) -> bool {
+	started_at, has_started := read_worker_started_at(brew_dir, shot_id)
+	activity, has_activity := read_activity_record(brew_dir, shot_id)
+	defer activity_record_destroy(&activity)
+	if !has_started && !has_activity {
+		return false
+	}
+
+	fmt.sbprintf(builder, "  %s  %s%s", shot_id, SHOT_RUNNING, suffix)
+	if has_started {
+		elapsed := activity_duration_label(activity_age_seconds(now_ns, started_at))
+		fmt.sbprintf(builder, "  %s elapsed", elapsed)
+		delete(elapsed)
+	}
+	if has_activity {
+		age := activity_duration_label(activity_age_seconds(now_ns, activity.observed_at_ns))
+		if activity_is_quiet(activity.observed_at_ns, now_ns) {
+			fmt.sbprintf(builder, "  quiet; last activity %s ago: %s", age, activity.description)
+		} else {
+			fmt.sbprintf(builder, "  active %s ago: %s", age, activity.description)
+		}
+		delete(age)
+	} else {
+		fmt.sbprint(builder, "  waiting for Pi activity")
+	}
+	fmt.sbprintln(builder)
+	return true
 }
 
 Collect_Result :: struct {

@@ -26,7 +26,7 @@ case "$1 $2" in
   # Like a real pane: a session of its own, so closing the tab can end the Worker
   # and everything it started.
   pane="$3"; shift 3
-  setsid sh -c "exec $*" >/dev/null 2>&1 &
+  setsid sh -c "exec $*" >"$d/worker-$pane.log" 2>&1 &
   echo $! > "$d/pid-$pane"
   echo '{}' ;;
 "tab close")
@@ -44,13 +44,16 @@ for last; do :; done
 case " $* " in
 *" --no-extensions "*) echo "No findings"; exit 0 ;;
 esac
+printf '%s\n' '{"type":"turn_start"}'
+printf '%s\n' '{"type":"tool_execution_start","toolName":"read","args":{}}'
 sleep "${FAKE_PI_SLEEP:-0}"
 case "$last" in
 *FAIL*) echo "boom" >&2; exit 3 ;;
 esac
 name=$(printf '%s' "$last" | sed -n 's/.*Shot: write \([a-z]*\).*/\1/p')
 echo "created $name" > "out-$name.txt"
-echo "report for $name"
+printf '{"type":"agent_end","messages":[{"role":"assistant",'\
+'"content":[{"type":"text","text":"report for %s"}]}]}\n' "$name"
 `
 
 E2E :: struct {
@@ -73,7 +76,11 @@ test_e2e_multi_shot_brew_status_collect_and_isolation :: proc(t: ^testing.T) {
 	// Each command below is a fresh process: nothing is held in memory between them.
 	status_code, status, _ := e2e_run(e2e, "status", brew_id)
 	testing.expect_value(t, status_code, 0)
-	testing.expect(t, strings.contains(status, fmt.tprintf("Brew %s: failed", brew_id)), status)
+	worker_logs := e2e_worker_logs(e2e)
+	defer delete(worker_logs)
+	debug_output := fmt.aprintf("Status:\n%s\nWorker logs:\n%s", status, worker_logs)
+	defer delete(debug_output)
+	testing.expect(t, strings.contains(status, fmt.tprintf("Brew %s: failed", brew_id)), debug_output)
 	for line in ([]string{"alpha  completed", "beta  completed", "gamma  failed"}) {
 		testing.expect(t, strings.contains(status, line), status)
 	}
@@ -248,6 +255,78 @@ test_e2e_cancel_stops_running_workers_cancels_queued_shots_and_is_repeatable :: 
 }
 
 @(test)
+test_e2e_status_receives_activity_before_pi_exits :: proc(t: ^testing.T) {
+	e2e := e2e_setup(t, "3")
+	defer remove_fixture_root(e2e.root)
+	recipe := e2e_write(e2e, "recipe.json", `{
+		"order":"activity",
+		"shots":[{"id":"alpha","prompt":"write alpha"}]
+	}`)
+	stdout_path := e2e_write(e2e, "brew.stdout", "")
+	stderr_path := e2e_write(e2e, "brew.stderr", "")
+	stdout_file, stdout_err := os.create(stdout_path)
+	testing.expect_value(t, stdout_err, os.Error(nil))
+	if stdout_err != nil {
+		return
+	}
+	stderr_file, stderr_err := os.create(stderr_path)
+	testing.expect_value(t, stderr_err, os.Error(nil))
+	if stderr_err != nil {
+		_ = os.close(stdout_file)
+		return
+	}
+	command := []string{e2e.binary, "brew", "--repo", e2e.repo, "--recipe", recipe}
+	process, start_err := os.process_start(os.Process_Desc{
+		command = command,
+		env = e2e.env,
+		stdout = stdout_file,
+		stderr = stderr_file,
+	})
+	_ = os.close(stdout_file)
+	_ = os.close(stderr_file)
+	testing.expect_value(t, start_err, os.Error(nil))
+	if start_err != nil {
+		return
+	}
+
+	brew_id := ""
+	for attempt in 0 ..< 20 {
+		brew_id = e2e_first_brew(e2e)
+		if brew_id != "" {
+			break
+		}
+		time.sleep(50 * time.Millisecond)
+	}
+	if brew_id == "" {
+		_, wait_err := os.process_wait(process)
+		testing.expect_value(t, wait_err, os.Error(nil))
+		testing.expect(t, false, "Brew state was not created")
+		return
+	}
+
+	progress := ""
+	for attempt in 0 ..< 20 {
+		_, progress, _ = e2e_run(e2e, "status", brew_id)
+		if strings.contains(progress, "Running tool: read") {
+			break
+		}
+		time.sleep(50 * time.Millisecond)
+	}
+	testing.expect(t, strings.contains(progress, "alpha  running"), progress)
+	testing.expect(
+		t,
+		strings.contains(progress, "active") && strings.contains(progress, "Running tool: read"),
+		progress,
+	)
+
+	state, wait_err := os.process_wait(process)
+	testing.expect_value(t, wait_err, os.Error(nil))
+	testing.expect(t, state.success, "Brew should finish after the delayed fake Pi exits")
+	_, final_status, _ := e2e_run(e2e, "status", brew_id)
+	testing.expect(t, strings.contains(final_status, "alpha  completed"), final_status)
+}
+
+@(test)
 test_e2e_brew_exits_non_zero_when_no_shot_could_be_launched :: proc(t: ^testing.T) {
 	e2e := e2e_setup(t, "0")
 	defer remove_fixture_root(e2e.root)
@@ -334,6 +413,26 @@ e2e_first_brew :: proc(e2e: E2E) -> string {
 		return ""
 	}
 	return entries[0].name
+}
+
+e2e_worker_logs :: proc(e2e: E2E) -> string {
+	logs: [dynamic]string
+	logs.allocator = context.temp_allocator
+	for pane in ([]string{"p0", "p1", "p2"}) {
+		path := fmt.tprintf("%s/fake-herdr/worker-%s.log", e2e.root, pane)
+		data, err := os.read_entire_file(path, context.temp_allocator)
+		if err == nil && len(data) > 0 {
+			_, _ = append(&logs, string(data))
+		}
+	}
+	if len(logs) == 0 {
+		return ""
+	}
+	joined, err := strings.join(logs[:], "\n")
+	if err != nil {
+		return ""
+	}
+	return joined
 }
 
 // The part of an Oreo belonging to one Shot, up to the next heading.

@@ -84,7 +84,7 @@ coffee-shop collect <brew-id>
 
 - `brew` creates and runs the Brew, blocks until every Shot is terminal, then prints the Brew ID (`brew-<UTC start time>-<pid>`). It exits 0 even if some Workers failed, because those outcomes belong to `status` and `collect`. It exits 1, still printing the ID, only when no Worker could be started at all (for example, no Herdr server is running).
 - At most two Workers run at once.
-- `status` prints the Brew and each Shot's status.
+- `status` prints the Brew and each Shot's status. Running Shots also show elapsed time and the latest Pi activity; activity older than 12 minutes is marked quiet. Activity is only a progress hint: process identity remains the liveness authority, and quiet Workers are never killed automatically.
 - `cancel` requests cancellation; repeating it is safe.
 - `collect` prints each Shot's outcome, Worker report and Station changes, then runs the Filter once per completed Shot: a read-only Pi review against the repository's `standards.md` and the repository's own test commands. The saved evidence is reused on later collections. It ends with the decisions that need a human, and exits non-zero unless every Shot completed. See [the architecture](docs/architecture.md#filter-and-oreo).
 - Brew state is stored under `$CS_STATE_DIR/<brew-id>` when `CS_STATE_DIR` is set, or `~/.coffee-shop/<brew-id>` otherwise. `CS_STATE_DIR` must be an absolute path.
