@@ -1,6 +1,6 @@
 # Coffee Shop Implementation Plan
 
-Build Coffee Shop as a local Odin CLI that dispatches explicit work to parallel Pi workers. The Barista prepares a Recipe; Coffee Shop creates an isolated Station for each Shot, runs Workers in tmux, records their state, and returns an Oreo for human review. This plan turns [the architecture](docs/architecture.md) into ordered implementation slices. It does not authorize code changes by itself.
+Build Coffee Shop as a local Odin CLI that dispatches explicit work to parallel Pi Workers. The Barista prepares a Recipe; Coffee Shop creates an isolated Station for each Shot, runs Workers in Herdr tabs, records their state, and returns an Oreo for human review. This plan turns [the architecture](docs/architecture.md) into ordered implementation slices. It does not authorize code changes by itself.
 
 ## Delivery path
 
@@ -12,7 +12,7 @@ Implement the slices in order. Each slice has a concrete result and a gate; do n
 | 1. Project and CLI shell | Buildable Odin CLI with help and validation | 0 |
 | 2. Recipe and domain model | Validated Brew and Shot inputs | 1 |
 | 3. Durable state | Register and Receipt with tested transitions | 2 |
-| 4. Station and Worker dispatch | Isolated worktrees and tmux Pi workers | 3 |
+| 4. Station and Worker dispatch | Isolated worktrees and Herdr Pi workers | 3 |
 | 5. Status and recovery | Honest state after process restarts | 4 |
 | 6. Collection and Oreo | Reviewable results with Filter evidence | 5 |
 | 7. End-to-end dogfood | Verified local workflow and accurate docs | 1–6 |
@@ -21,22 +21,21 @@ Implement the slices in order. Each slice has a concrete result and a gate; do n
 
 Record the decisions in [the architecture](docs/architecture.md) or this plan. Prefer the smallest contract that supports the initial single-machine workflow.
 
-- Define the Recipe file format, required fields, and how a Barista supplies its path and the Beans repository path.
-- Define CLI command names, arguments, output, and exit behavior for `brew`, `status`, `cancel`, and `collect`.
-- Choose the Register and Receipt location, record format, retention, and handling of missing, malformed, or partially written records.
-- Define allowed Brew and Shot states and transitions, including how interrupted work is represented.
-- Choose the Scale default and upper bound, and the timeout behavior, if any.
-- Define how the CLI identifies and invokes the Pi executable and tmux; keep executable paths and arguments distinct from task text.
-- Define when a Station may be removed. Until then, retain it for human review.
-- Require a root-level `standards.md` in the Beans repository for code review and test-authoring guidance.
-- Define how Coffee Shop supplies `standards.md` and the Taste-Driven Development skill to a test-authoring Worker without modifying the Beans repository.
-- Define how Filter discovers existing unit/component and end-to-end test commands. It must preserve repository scripts and configuration; ambiguous discovery is reported, not guessed.
+- Recipe input is JSON with an `order` string and `shots` array; each Shot has a stable `id` and `prompt`. The Beans repository path is a separate CLI argument.
+- CLI: `coffee-shop brew --repo <path> --recipe <recipe.json>`; `status`, `cancel`, and `collect` take a Brew ID.
+- Store each Brew under `~/.local/state/coffee-shop/<brew-id>/`, with current state in `register.json` and append-only events in `receipt.ndjson`. Retain records indefinitely in v1; report corrupt or partial records without automatic repair.
+- Shot states are `queued`, `running`, `completed`, `failed`, `cancelled`, and `interrupted`. Queued launch failures become `failed`; active cancellation is a request until Worker exit is confirmed. Derive Brew status from its Shots.
+- Use a fixed Scale of two active Workers and no automatic timeout. `brew` runs a per-Brew supervisor that schedules queued Shots and exits when the Brew is terminal; it is not a daemon.
+- Use `pi --print --no-session`; create one Herdr workspace per Brew and one tab per Shot. Herdr's command string launches a hidden Coffee Shop Worker subcommand with validated IDs only; the Worker subcommand reads task text from state and starts Pi with an argument vector.
+- Keep Stations and state after collection. Coffee Shop never auto-deletes them; users remove reviewed Stations and state manually. No cleanup command in v1.
+- Require a root-level `standards.md` in the Beans repository for code review and test-authoring guidance. Supply the Taste-Driven Development skill to test-authoring Workers without installing it into Beans.
+- Filter uses a separate one-shot Pi reviewer against `standards.md`, then discovers unit/component and end-to-end test commands from existing manifests and test configuration. It preserves scripts and configuration; ambiguous discovery is reported, not guessed.
 
-**Gate:** Every item above has a recorded decision. The decisions preserve the architecture boundaries: one local machine, Pi, tmux, no daemon, no automatic merge, and no publishing.
+**Gate:** The input, CLI, state location and format, lifecycle, cancellation, concurrency, Herdr launch, retention, and Filter contracts above are fixed. Slice 1 is complete on the toolchain recorded in the README; proceed to Recipe validation. Preserve the boundaries: one local machine, Pi, Herdr, no daemon, no automatic merge, and no publishing.
 
 ## Slice 1 — Establish the Odin CLI shell
 
-- Confirm the Odin compiler and local Pi/tmux prerequisites needed for development and document the supported environment.
+- Confirm the Odin compiler and local Pi/Herdr prerequisites needed for development and document the supported environment.
 - Create the smallest buildable Odin program and CLI entry point.
 - Add command parsing, `--help`, concise diagnostics, and non-zero exit codes for invalid input.
 - Keep command handling thin; defer worktree, process, and persistence logic to later slices.
@@ -64,17 +63,19 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 ## Slice 4 — Create Stations and dispatch Workers
 
 - Create one Git worktree per Shot, with no shared Station between Workers in a Brew.
-- Start one tmux session and Pi process per Shot, passing the executable and argument vector separately from task text.
-- Enforce the Scale and record each Station path, tmux session identity, launch result, and process outcome.
+- Create one Herdr workspace per Brew and one tab per Shot; start each Pi Worker in its Station.
+- Add an internal Worker subcommand that accepts validated Brew/Shot IDs, loads task data from state, and starts Pi with an argument vector. Keep prompts out of Herdr's command string.
+- Keep a per-Brew supervisor active only for the lifetime of `brew`; maintain at most two Workers and start queued Shots as slots open. Continue queued independent Shots after a failure; cancelling the Brew cancels queued Shots and interrupts active Workers.
+- Record each Station path, Herdr workspace/tab identity, launch result, and process outcome.
 - On partial launch failure, record which Shots started and leave their Stations available for inspection.
 - A Recipe may assign a normal Shot to add unit/component or end-to-end tests from the target repository's `standards.md`. Supply the Taste-Driven Development skill as Worker guidance without installing it into the target repository; do not create a special test-authoring component.
 - Keep shell command construction out of the task-data path.
 
-**Gate:** A local test with a temporary Git repository and fake Pi executable proves two Shots use distinct worktrees and sessions. Tests cover missing executables, tmux launch failure, and non-zero Worker exit without contacting GitHub or an AI service.
+**Gate:** A local test with a temporary Git repository and fake Pi executable proves two Shots use distinct worktrees and Herdr tabs. Tests cover missing executables, Herdr launch failure, and non-zero Worker exit without contacting GitHub or an AI service.
 
 ## Slice 5 — Report status and recover
 
-- Implement `status` using Register/Receipt records plus available tmux/process evidence.
+- Implement `status` using Register/Receipt records plus available Herdr/process evidence.
 - On restart, reconcile persisted state with observable Worker state; mark uncertain work interrupted or unknown, never completed without evidence.
 - Implement the cancellation behavior selected in Slice 0 and record its outcome.
 - Ensure status and cancellation can be repeated without duplicating or hiding events.
@@ -84,9 +85,9 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 ## Slice 6 — Collect results and prepare the Oreo
 
 - Implement `collect` to gather each Shot's report and Filter evidence.
-- Review selected changes against the Beans repository's root `standards.md`.
-- Discover and run the repository's existing unit/component and end-to-end test commands without changing scripts, configuration, or test selection. For MFEs, use Playwright only for browser behavior that unit/component tests cannot prove, following the repository's conventions.
-- Report missing standards, ambiguous test commands, unavailable setup, and test failures explicitly; do not guess, override commands, or hide failures.
+- Run a separate one-shot, read-only Pi review of the selected changes against the Beans repository's root `standards.md`.
+- Discover unit/component and end-to-end test commands from the repository's existing manifests and test configuration, then run them unchanged. For MFEs, use Playwright only for browser behavior that unit/component tests cannot prove, following the repository's conventions.
+- Report review findings, missing standards, ambiguous test commands, unavailable setup, and test failures explicitly. Filter does not fix code, override commands, or hide findings.
 - Build the Oreo from Worker reports and Filter evidence. Identify any decisions needed from the developer. Do not merge, publish, or remove unreviewed Stations.
 - Make collection repeatable without losing or duplicating evidence.
 
@@ -114,4 +115,4 @@ Pass child-process arguments as an argument vector. Distinguish a launch error f
 
 ## Scope guardrails
 
-The first release targets one machine, Pi, and tmux. Keep task decomposition with the Barista and integration decisions with the developer. Do not add remote workers, other agent harnesses, a daemon or watcher, Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.
+The first release targets one machine, Pi, and Herdr. Keep task decomposition with the Barista and integration decisions with the developer. Do not add remote workers, other agent harnesses, tmux or zmx backends, a daemon or watcher, Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.
