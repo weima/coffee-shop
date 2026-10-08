@@ -219,7 +219,7 @@ These items came from dogfooding v0.1 (see [the Odin book dogfood](docs/dogfood-
 
 **How `order` and the preamble differ.** Every Worker already receives `Order: <order>` as shared context, so the order is shared today. But the order is also printed in `status`, the Register and every Oreo, so it should stay a short statement of intent that a person reads. The preamble is for long standing rules (coding standards, forbidden actions, how to report) that Workers need and a reader of the Oreo does not. With `order_file`, a long order should be shown in the Oreo as its first paragraph plus a pointer to the full text, not inlined.
 
-**Reading from a common location.** A Shot can already do this by hand today: put the shared rules in one file at a stable path and have each prompt begin "read that file first and follow it". It needs no code, and the Odin book Brew now does exactly that (`docs/dogfood/odin-book-worker-rules.md`). It is the right interim answer, and its weaknesses are why the feature is still worth building: nothing guarantees a Worker actually reads the file, the file can change underneath a running Brew, and the rules arrive as ordinary prompt text rather than as standing instructions. Having Coffee Shop deliver one shared snapshot itself removes all three.
+**Reading from a common location.** A Shot can already do this by hand today: put the shared rules in one file at a stable path and have each prompt begin "read that file first and follow it". It needs no code, and the Odin book Brew now does exactly that (the book repository's own `workers.md`). It is the right interim answer, and its weaknesses are why the feature is still worth building: nothing guarantees a Worker actually reads the file, the file can change underneath a running Brew, and the rules arrive as ordinary prompt text rather than as standing instructions. Having Coffee Shop deliver one shared snapshot itself removes all three.
 
 **Delivering long text to Pi.** Today the order and prompt travel as one command-line argument, and Linux caps a single argument at 131,071 bytes (measured on this machine: 131,071 bytes is accepted, 131,072 fails with `Argument list too long`). Pi's help shows two options that could avoid the cap: `--append-system-prompt <text or file>` for the shared preamble, and `@file` arguments for message text. The proposal is to deliver the preamble that way, which also means identical shared text per Shot; whether providers then cache the shared prefix is something to measure, not assume. All of this must be verified against Pi `1.1.0` before it is relied on.
 
@@ -260,6 +260,26 @@ Both were recorded `completed`, and the Oreo's decisions list said nothing. Only
 - Delivery: the instruction could ride in the same channel as the shared preamble of item 5 (a system-prompt addition) instead of being appended to the prompt text. Decide with item 5.
 
 **Gate.** Tests with a fake Pi cover: a final message ending in `CS-DONE` is `completed`; a message ending in a question, a progress note, or nothing is `incomplete`; `CS-BLOCKED: reason` is `incomplete` with the reason shown; the marker is stripped from the report; `expect_changes` with and without changes; the transition matrix; Brew status and `collect`'s exit code with an `incomplete` Shot; and recovery of an `incomplete` Shot after the supervisor is killed. A real Brew reproduces the `ownership-traps` situation and shows it flagged instead of completed.
+
+### 7. Per-repository Worker rules
+
+**Problem.** Rules for working in a repository belong to that repository, but while dogfooding the Odin book the Worker rules lived in Coffee Shop's own repo, at an absolute path every prompt had to quote. Coffee Shop gives a Barista no place to put them, and nothing tells Workers to look. The Filter has the matching gap: the book had no `standards.md`, so its review reported "standards.md is missing in the Beans repository; no review was performed".
+
+**Goal.** Each repository owns two plain files at its root, and Coffee Shop makes Workers read them without the Barista having to remember.
+
+- **`standards.md`** (exists in v0.1): what a correct change is. The Filter's review checks against it, and Workers read it.
+- **`workers.md`** (new): how an automated Worker must behave in this repository: its scope and the files it must not touch, the commands that verify its work, and the report to give.
+- **Automatic delivery.** When a Station contains `workers.md` or `standards.md`, Coffee Shop adds an instruction to every Worker prompt to read them first. The files come from the Station, which is the Beans' base commit, so the rules a Brew ran under are reproducible and a later edit cannot change them.
+- **Why not `AGENTS.md`.** Pi already loads `AGENTS.md` from the Station, so it reaches Workers today. But it also governs interactive sessions in the repository, and Worker-only rules such as "never ask for confirmation, nobody will answer" are wrong for a person who is in the loop.
+- **Three layers, each with one owner.** The repository owns `standards.md` and `workers.md`. The Brew owns the order, the prompts and the shared preamble of item 5, which describe this piece of work. Coffee Shop owns behaviour that is true for every Worker everywhere (the completion marker of item 6, and "you are not interactive"), so a repository need not repeat it. Until item 6 exists, a repository's `workers.md` carries those two rules itself, as the book's does.
+
+**Open questions.**
+
+- Whether the file is `workers.md` or lives in a `.coffee-shop/` directory.
+- What the Oreo says when neither file exists. Today it only reports a missing `standards.md` when the review cannot run.
+- Whether a Recipe can name extra files for one Brew, which is item 5's preamble by another route.
+
+**Gate.** Tests cover: a Station with both files, one, and neither; the instruction reaching every Worker's prompt exactly once; the rules coming from the base commit and not from later edits to the Beans; and the Oreo's wording when a file is absent. A real Brew confirms a Worker reads `workers.md` without being told in its prompt.
 
 ## Scope guardrails
 
