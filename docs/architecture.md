@@ -7,7 +7,7 @@ Coffee Shop is a local Odin dispatcher. The active Pi session decides how to div
 ```mermaid
 flowchart TD
     Dev[Developer] -->|Order and review| Barista[Active Pi session<br/>Barista]
-    Barista -->|Recipe: order plus Shots| CLI[Coffee Shop CLI<br/>Odin]
+    Barista -->|Recipe: order plus Shots| CLI[Coffee Shop brew command and supervisor<br/>Odin]
     Beans[Target repository<br/>and task context] --> CLI
     CLI --> Register[Register<br/>current Brew and Shot status]
     CLI --> Receipt[Receipt<br/>append-only event history]
@@ -15,14 +15,20 @@ flowchart TD
     CLI --> HERDR[Herdr workspace<br/>one per Brew]
     HERDR --> Tab1[Shot A tab]
     HERDR --> TabN[Shot N tab]
-    Tab1 --> Worker1[Pi Worker<br/>Shot A]
-    TabN --> WorkerN[Pi Worker<br/>Shot N]
+    Tab1 --> Worker1[Worker A<br/>Pi event adapter]
+    TabN --> WorkerN[Worker N<br/>Pi event adapter]
     Worker1 --> Station1[Station A<br/>isolated Git worktree]
     WorkerN --> StationN[Station N<br/>isolated Git worktree]
-    Worker1 --> Activity[Per-Brew Unix-domain stream socket]
-    WorkerN --> Activity
-    Activity --> CLI
-    CLI --> ActivityState[Latest activity per Shot]
+    Worker1 --> Pi1[Pi CLI<br/>JSON mode]
+    WorkerN --> PiN[Pi CLI<br/>JSON mode]
+    Pi1 -->|newline-delimited JSON events| Worker1
+    PiN -->|newline-delimited JSON events| WorkerN
+    Worker1 -->|bounded normalized events| Activity[Per-Brew Unix-domain stream socket]
+    WorkerN -->|bounded normalized events| Activity
+    Activity -->|validate Brew and running Shot| CLI
+    CLI -->|atomically persist| ActivityState[Latest activity<br/>per running Shot]
+    Status[Coffee Shop status command] -->|read snapshot| Register
+    Status -->|read snapshot| ActivityState
     Worker1 --> Results[Worker reports and check evidence]
     WorkerN --> Results
     Results --> Filter[Filter<br/>review and existing tests]
