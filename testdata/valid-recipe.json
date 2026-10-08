@@ -1,0 +1,9 @@
+{
+  "order": "Add a command parser test",
+  "shots": [
+    {
+      "id": "parser-test",
+      "prompt": "Write a failing test for the parser behavior."
+    }
+  ]
+}

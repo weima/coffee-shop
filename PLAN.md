@@ -10,7 +10,7 @@ Implement the slices in order. Each slice has a concrete result and a gate; do n
 | --- | --- | --- |
 | 0. Lock contracts | Decisions for CLI, Recipe, state, concurrency, and lifecycle | Architecture review |
 | 1. Project and CLI shell | Buildable Odin CLI with help and validation | 0 |
-| 2. Recipe and domain model | Validated Brew and Shot inputs | 1 |
+| 2. Recipe and input validation | Validated Recipe/Shot inputs and Beans repository | 1 |
 | 3. Durable state | Register and Receipt with tested transitions | 2 |
 | 4. Station and Worker dispatch | Isolated worktrees and Herdr Pi workers | 3 |
 | 5. Status and recovery | Honest state after process restarts | 4 |
@@ -21,7 +21,7 @@ Implement the slices in order. Each slice has a concrete result and a gate; do n
 
 Record the decisions in [the architecture](docs/architecture.md) or this plan. Prefer the smallest contract that supports the initial single-machine workflow.
 
-- Recipe input is JSON with an `order` string and `shots` array; each Shot has a stable `id` and `prompt`. The Beans repository path is a separate CLI argument.
+- Recipe input is strict JSON with a non-empty `order` and `shots` array. Each Shot has a non-empty `prompt` and a unique 1–64 character ASCII `id` matching `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. The Beans repository path is a separate CLI argument.
 - CLI: `coffee-shop brew --repo <path> --recipe <recipe.json>`; `status`, `cancel`, and `collect` take a Brew ID.
 - Store each Brew under `~/.local/state/coffee-shop/<brew-id>/`, with current state in `register.json` and append-only events in `receipt.ndjson`. Retain records indefinitely in v1; report corrupt or partial records without automatic repair.
 - Shot states are `queued`, `running`, `completed`, `failed`, `cancelled`, and `interrupted`. Queued launch failures become `failed`; active cancellation is a request until Worker exit is confirmed. Derive Brew status from its Shots.
@@ -45,7 +45,7 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 ## Slice 2 — Validate Recipes and model work
 
 - Implement the Recipe format and validation from Slice 0.
-- Represent a Brew and its ordered Shots, including the identifiers and paths needed by later slices.
+- Keep the validated Recipe as ordered Shot specifications; add Brew identity and Station paths in the later persistence and worktree slices.
 - Validate that the Beans path is a Git repository, Shot identifiers are unique, and required task text is present.
 - Reject unsupported or ambiguous input before changing repository or state.
 

@@ -47,6 +47,10 @@ flowchart TD
 | **Filter** | Uses a separate one-shot Pi reviewer to check selected changes against the Beans repository's root `standards.md`, then discovers and runs unit/component and end-to-end test commands from existing manifests and test configuration. It reports evidence without fixing code or changing test setup. |
 | **Oreo** | The final review packet with the outcome, evidence, and any decision for the developer. |
 
+## Recipe contract
+
+Recipes are strict JSON objects with a non-empty `order` and a non-empty `shots` array. Every Shot has a non-empty `prompt` and a unique `id` of 1–64 ASCII letters, digits, hyphens, or underscores; the first character must be a letter or digit. Prompts are preserved as supplied. This ID rule makes Shot names safe path segments and safe arguments to Coffee Shop's internal Worker command.
+
 ## Local state
 
 Store each Brew under `~/.local/state/coffee-shop/<brew-id>/`. `register.json` contains its current state; `receipt.ndjson` is its append-only event history. This state remains outside the Beans repository.

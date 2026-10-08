@@ -4,7 +4,7 @@
 
 Coffee Shop is being built as a small Odin command-line tool for dispatching parallel Pi workers. The active Pi session acts as the **Barista**: it turns a developer's **Order** into a **Recipe**, then asks Coffee Shop to run the work.
 
-> **Status:** implementation started. The Odin CLI currently provides help and validates command arguments; Worker dispatch, persistence, and collection are still planned.
+> **Status:** implementation in progress. The Odin CLI provides help and validates arguments, JSON Recipes, and Beans Git repositories. Worker dispatch, persistence, and collection are still planned.
 
 ## How it is intended to work
 
@@ -26,6 +26,21 @@ See [the architecture](docs/architecture.md) for the diagram and boundaries. See
 | One isolated Git worktree per Shot | Persistent second mates or remote workers |
 | Durable run status and collected worker results | An always-on watcher, Relay, or automatic merge |
 | Human review before integration | Automatic PR creation or publishing |
+
+## Recipe format
+
+A Recipe is strict JSON. Shot IDs are unique, safe path segments (1–64 ASCII letters, digits, `_` or `-`, starting with a letter or digit).
+
+```json
+{
+  "order": "Improve the command-line help",
+  "shots": [
+    { "id": "help-copy", "prompt": "Review and improve the help text." }
+  ]
+}
+```
+
+The intended invocation is `coffee-shop brew --repo <beans-path> --recipe <recipe.json>`; Worker dispatch is not implemented yet.
 
 ## Development
 
