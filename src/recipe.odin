@@ -16,7 +16,13 @@ Shot :: struct {
 
 MAX_SHOT_ID_LENGTH :: 64
 
-load_recipe :: proc(path: string, allocator := context.allocator) -> (recipe: Recipe, err: string) {
+load_recipe :: proc(
+	path: string,
+	allocator := context.allocator,
+) -> (
+	recipe: Recipe,
+	err: string,
+) {
 	data, read_err := os.read_entire_file(path, allocator)
 	if read_err != nil {
 		delete(data, allocator)
@@ -27,20 +33,38 @@ load_recipe :: proc(path: string, allocator := context.allocator) -> (recipe: Re
 	return parse_recipe(transmute(string)data, allocator)
 }
 
-is_git_repository :: proc(path: string, allocator := context.allocator) -> (valid: bool, err: string) {
-	state, stdout, stderr, run_err := os.process_exec(os.Process_Desc{
-		command = []string{"git", "-C", path, "rev-parse", "--is-inside-work-tree"},
-	}, allocator)
+is_git_repository :: proc(
+	path: string,
+	allocator := context.allocator,
+) -> (
+	valid: bool,
+	err: string,
+) {
+	state, stdout, stderr, run_err := os.process_exec(
+		os.Process_Desc {
+			command = []string{"git", "-C", path, "rev-parse", "--is-inside-work-tree"},
+		},
+		allocator,
+	)
 	defer delete(stdout, allocator)
 	defer delete(stderr, allocator)
 
 	if run_err != nil {
 		return false, "could not run git to validate Beans repository"
 	}
-	return state.success && state.exit_code == 0 && strings.trim_space(transmute(string)stdout) == "true", ""
+	return state.success &&
+		state.exit_code == 0 &&
+		strings.trim_space(transmute(string)stdout) == "true",
+		""
 }
 
-parse_recipe :: proc(data: string, allocator := context.allocator) -> (recipe: Recipe, err: string) {
+parse_recipe :: proc(
+	data: string,
+	allocator := context.allocator,
+) -> (
+	recipe: Recipe,
+	err: string,
+) {
 	previous_allocator := context.allocator
 	context.allocator = allocator
 	defer context.allocator = previous_allocator
@@ -97,19 +121,26 @@ destroy_recipe :: proc(recipe: ^Recipe, allocator := context.allocator) {
 // letter or digit; later characters may also be '-' or '_'. A direct check is
 // clearer here than compiling a regex for this small, fixed rule.
 valid_shot_id :: proc(id: string) -> bool {
+	// 1. Strict length bounds check
 	if len(id) == 0 || len(id) > MAX_SHOT_ID_LENGTH {
 		return false
 	}
 
-	for c, index in id {
-		is_alphanumeric := 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9'
-		// Keep punctuation out of the first character; only later positions
-		// may contain '-' or '_'.
-		if index == 0 {
-			if !is_alphanumeric {
-				return false
-			}
-		} else if !is_alphanumeric && c != '-' && c != '_' {
+	// 2. Validate the first character (must be ASCII letter or digit)
+	// Accessing id[0] returns a single u8 byte
+	switch id[0] {
+	case 'a' ..= 'z', 'A' ..= 'Z', '0' ..= '9':
+	// Valid first character
+	case:
+		return false
+	}
+
+	// 3. Validate remaining characters (treating string safely as bytes)
+	for i := 1; i < len(id); i += 1 {
+		switch id[i] {
+		case 'a' ..= 'z', 'A' ..= 'Z', '0' ..= '9', '-', '_':
+		// Valid character sequence
+		case:
 			return false
 		}
 	}

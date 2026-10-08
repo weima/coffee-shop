@@ -43,12 +43,15 @@ Register_Shot :: struct {
 	status: string,
 	cancel_requested: bool,
 	station_path: string,
+	herdr_tab_id: string,
+	herdr_pane_id: string,
 }
 
 Register :: struct {
 	schema_version: int,
 	brew_id: string,
 	beans_path: string,
+	herdr_workspace_id: string,
 	order: string,
 	event_sequence: int,
 	shots: [dynamic]Register_Shot,
@@ -149,10 +152,19 @@ destroy_register :: proc(register: ^Register, allocator := context.allocator) {
 		if len(shot.station_path) > 0 {
 			delete(shot.station_path, allocator)
 		}
+		if len(shot.herdr_tab_id) > 0 {
+			delete(shot.herdr_tab_id, allocator)
+		}
+		if len(shot.herdr_pane_id) > 0 {
+			delete(shot.herdr_pane_id, allocator)
+		}
 	}
 	delete(register.shots)
 	delete(register.brew_id, allocator)
 	delete(register.beans_path, allocator)
+	if len(register.herdr_workspace_id) > 0 {
+		delete(register.herdr_workspace_id, allocator)
+	}
 	delete(register.order, allocator)
 	register^ = Register{}
 }
@@ -399,6 +411,15 @@ apply_event :: proc(register: Register, expected: []Replay_Shot, event: State_Ev
 		return false
 	}
 	return true
+}
+
+save_register_metadata :: proc(directory: string, register: Register) -> State_Error {
+	if err := verify_current_state(directory, register); err.kind != .None {
+		return err
+	}
+	path := state_file_path(directory, REGISTER_FILE_NAME)
+	defer delete(path)
+	return write_register_atomic(path, register)
 }
 
 verify_current_state :: proc(directory: string, register: Register) -> State_Error {

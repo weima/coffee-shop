@@ -8,6 +8,7 @@ Command_Kind :: enum {
 	Status,
 	Cancel,
 	Collect,
+	Worker,
 }
 
 Command :: struct {
@@ -15,6 +16,7 @@ Command :: struct {
 	repo:    string,
 	recipe:  string,
 	brew_id: string,
+	shot_id: string,
 }
 
 Brew_Arguments :: struct {
@@ -24,6 +26,11 @@ Brew_Arguments :: struct {
 
 Brew_ID_Arguments :: struct {
 	brew_id: string `args:"pos=0,required" usage:"Brew identifier."`,
+}
+
+Worker_Arguments :: struct {
+	brew_id: string `args:"required" usage:"Brew identifier."`,
+	shot_id: string `args:"required" usage:"Shot identifier."`,
 }
 
 USAGE :: `Coffee Shop - local Pi Workers for isolated repository changes
@@ -53,6 +60,12 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 			return Command{kind = .Help}, "invalid brew arguments"
 		}
 		return Command{kind = .Brew, repo = options.repo, recipe = options.recipe}, ""
+	case "__worker":
+		options: Worker_Arguments
+		if flags.parse(&options, args[1:], .Unix) != nil {
+			return Command{kind = .Help}, "invalid Worker arguments"
+		}
+		return Command{kind = .Worker, brew_id = options.brew_id, shot_id = options.shot_id}, ""
 	case "status", "cancel", "collect":
 		options: Brew_ID_Arguments
 		if flags.parse(&options, args[1:], .Unix) != nil {

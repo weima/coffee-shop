@@ -23,22 +23,16 @@ run_cli :: proc(args: []string) -> int {
 	}
 
 	if command.kind == .Brew {
-		recipe, recipe_err := load_recipe(command.recipe)
-		if recipe_err != "" {
-			write_error(recipe_err)
-			return 2
+		brew_id, err := run_brew(command.repo, command.recipe)
+		if err != "" {
+			write_error(err)
+			return 1
 		}
-		defer destroy_recipe(&recipe)
-
-		valid, repo_err := is_git_repository(command.repo)
-		if repo_err != "" {
-			write_error(repo_err)
-			return 2
-		}
-		if !valid {
-			write_error("Beans path is not a Git repository")
-			return 2
-		}
+		fmt.println(brew_id)
+		return 0
+	}
+	if command.kind == .Worker {
+		return run_worker(command.brew_id, command.shot_id)
 	}
 
 	write_error("command not implemented yet")
