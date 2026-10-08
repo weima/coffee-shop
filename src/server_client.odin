@@ -1,6 +1,7 @@
 package main
 
 import "core:encoding/json"
+import "core:log"
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
@@ -154,8 +155,9 @@ brew_identity :: proc(brew_dir: string) -> (repository, token: string, ok: bool)
 // running, and retries after a pause. A transport failure is retried; a refusal
 // from the server is returned as is. After SERVER_ATTEMPTS the caller aborts.
 server_request :: proc(state_root, repository: string, request: Server_Request) -> (response: Server_Response, transport_err: string) {
+	log.debugf("request op=%s brew=%s repository=%s", request.op, request.brew_id, repository)
 	cause := ""
-	for _ in 0 ..< SERVER_ATTEMPTS {
+	for attempt in 0 ..< SERVER_ATTEMPTS {
 		socket, directory, setup_err := server_paths(state_root, repository)
 		if setup_err != "" {
 			return {}, setup_err
@@ -164,6 +166,7 @@ server_request :: proc(state_root, repository: string, request: Server_Request) 
 			reply, call_err := server_api_call(socket, request)
 			delete(socket)
 			delete(directory)
+			log.debugf("request attempt=%d op=%s brew=%s ok=%v refusal=%q", attempt, request.op, request.brew_id, call_err == "" && reply.ok, reply.error)
 			if call_err == "" {
 				return reply, ""
 			}
@@ -205,6 +208,7 @@ server_paths :: proc(state_root, repository: string) -> (socket, directory, err:
 }
 
 server_spawn :: proc(executable, state_root, repository: string) -> bool {
+	log.debugf("spawn server repository=%s", repository)
 	// The shell starts the server in the background and exits at once, so waiting
 	// on it frees the handle without waiting for the server itself.
 	process, spawn_err := os.process_start(os.Process_Desc{

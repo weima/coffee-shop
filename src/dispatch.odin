@@ -3,6 +3,7 @@ package main
 import "core:bufio"
 import "core:encoding/json"
 import "core:fmt"
+import "core:log"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
@@ -70,6 +71,7 @@ run_brew :: proc(repo, recipe_path: string) -> (brew_id: string, err: string) {
 }
 
 run_brew_with :: proc(repo_path, recipe_path, state_root, executable, herdr: string) -> (brew_id: string, err: string) {
+	log.debugf("brew start repository=%s state=%s", repo_path, state_root)
 	// Symlinks and later commands run from other directories, so use an absolute path.
 	repo, abs_err := filepath.abs(repo_path)
 	if abs_err != nil {
@@ -715,11 +717,7 @@ run_worker_with :: proc(state_root, brew_id, shot_id, token, pi: string) -> int 
 	}
 
 	shot := register.shots[index]
-	guidance := ""
-	workers_path := state_file_path(shot.station_path, "workers.md"); defer delete(workers_path)
-	standards_path := state_file_path(shot.station_path, "standards.md"); defer delete(standards_path)
-	if os.exists(workers_path) { guidance = "Read the repository-root workers.md first and follow it.\n" }
-	if os.exists(standards_path) { guidance = fmt.aprintf("%sRead the repository-root standards.md first and follow it.\n", guidance) }
+	guidance := worker_guidance(shot.station_path)
 	prompt := fmt.aprintf("Order: %s\n\nShot: %s\n\n%sFinish with exactly one final line: CS-DONE only when complete and verified, or CS-BLOCKED: <reason> if blocked. Do not ask for confirmation; no automatic follow-up will be sent.", register.order, shot.prompt, guidance)
 	delete(guidance)
 	defer delete(prompt)
@@ -1007,4 +1005,21 @@ resolve_state_root :: proc(override, home: string, allocator := context.allocato
 		return "", "could not allocate the Coffee Shop state path"
 	}
 	return joined, ""
+}
+
+// The guidance lines a Worker prompt gets for the root rule files present in its
+// Station. The result is always owned, even when it is empty.
+worker_guidance :: proc(station_path: string, allocator := context.allocator) -> string {
+	builder := strings.builder_make(allocator)
+	workers_path := state_file_path(station_path, "workers.md", allocator)
+	defer delete(workers_path, allocator)
+	standards_path := state_file_path(station_path, "standards.md", allocator)
+	defer delete(standards_path, allocator)
+	if os.exists(workers_path) {
+		strings.write_string(&builder, "Read the repository-root workers.md first and follow it.\n")
+	}
+	if os.exists(standards_path) {
+		strings.write_string(&builder, "Read the repository-root standards.md first and follow it.\n")
+	}
+	return strings.to_string(builder)
 }

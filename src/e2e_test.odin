@@ -50,6 +50,14 @@ for last; do :; done
 case " $* " in
 *" --no-extensions "*) echo "No findings"; exit 0 ;;
 esac
+case "$last" in
+*"Shot: nochange"*)
+	printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"report for nochange\nCS-DONE"}]}]}'
+	exit 0 ;;
+*"Shot: NOMARK"*)
+	printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"report for nomark\nstill working"}]}]}'
+	exit 0 ;;
+esac
 printf '%s' "$last" > prompt.record
 printf '%s\n' '{"type":"turn_start"}'
 printf '%s\n' '{"type":"tool_execution_start","toolName":"read","args":{}}'
@@ -492,6 +500,11 @@ e2e_setup :: proc(t: ^testing.T, pi_sleep: string) -> E2E {
 	append(&env, fmt.tprintf("CS_STATE_DIR=%s", state))
 	append(&env, fmt.tprintf("FAKE_HERDR_DIR=%s", fake_dir))
 	append(&env, fmt.tprintf("FAKE_PI_SLEEP=%s", pi_sleep))
+	// Every process in the test writes debug messages to one file per fixture, kept after the test.
+	_ = os.make_directory_all("/tmp/cs-e2e-logs", os.Permissions{.Read_User, .Write_User, .Execute_User})
+	log_name := root[strings.last_index_byte(root, '/')+1:]
+	append(&env, "CS_LOG_LEVEL=debug")
+	append(&env, fmt.tprintf("CS_LOG_FILE=/tmp/cs-e2e-logs/%s.log", log_name))
 	return E2E{root = root, repo = repo, state = state, binary = binary, env = env[:]}
 }
 
@@ -688,4 +701,69 @@ test_e2e_server_exits_when_its_repository_is_idle :: proc(t: ^testing.T) {
 	// The timeout is 30 seconds; allow generous slack for a loaded machine.
 	_, wait_err := os.process_wait(server, 45 * time.Second)
 	testing.expect_value(t, wait_err, os.Error(nil))
+}
+
+// Three Shots, three outcomes: one that never sends the completion marker, one
+// that says it is done but changed nothing although changes were expected, and
+// one that writes its file. Only the last completes; the Brew is not complete.
+@(test)
+test_e2e_completion_outcomes_are_incomplete_unless_the_shot_proves_them :: proc(t: ^testing.T) {
+	e2e := e2e_setup(t, "0")
+	defer remove_fixture_root(e2e.root)
+	recipe := e2e_write(e2e, "recipe.json", `{"order":"completion","shots":[{"id":"quiet","prompt":"NOMARK"},{"id":"idle","prompt":"nochange","expect_changes":true},{"id":"made","prompt":"write made"}]}`)
+
+	brew_code, brew_out, _ := e2e_run(e2e, "brew", "--repo", e2e.repo, "--recipe", recipe)
+	testing.expect_value(t, brew_code, 0)
+	brew_id := strings.trim_space(brew_out)
+
+	// The Shots finish in moments; poll until none is running.
+	status := ""
+	status_code := -1
+	status_err := ""
+	for _ in 0 ..< 80 {
+		status_code, status, status_err = e2e_run(e2e, "status", brew_id)
+		// Done when the Brew header is terminal. Empty output means the command failed.
+		if strings.contains(status, "(repo): incomplete") || strings.contains(status, "(repo): completed") {
+			break
+		}
+		time.sleep(250 * time.Millisecond)
+	}
+	testing.expect_value(t, status_code, 0)
+	testing.expect(t, status_err == "", status_err)
+	testing.expect(t, strings.contains(status, "quiet  incomplete"), fmt.tprintf("%s\nroot: %s", status, e2e.root))
+	testing.expect(t, strings.contains(status, "idle  incomplete"), status)
+	testing.expect(t, strings.contains(status, "made  completed"), fmt.tprintf("%s\nroot: %s", status, e2e.root))
+
+	collect_code, oreo, _ := e2e_run(e2e, "collect", brew_id)
+	testing.expect_value(t, collect_code, 1)
+	testing.expect(t, strings.contains(oreo, "missing CS-DONE completion marker"), oreo)
+	testing.expect(t, strings.contains(oreo, "Station is unchanged"), oreo)
+	testing.expect(t, strings.contains(oreo, "## Shot made: completed"), oreo)
+}
+
+// A Brew keeps its own copies of its prompt and preamble files. Deleting the
+// sources after the Brew starts changes nothing it reports.
+@(test)
+test_e2e_brew_collects_after_its_source_files_are_deleted :: proc(t: ^testing.T) {
+	e2e := e2e_setup(t, "0")
+	defer remove_fixture_root(e2e.root)
+	_ = os.make_directory(fmt.tprintf("%s/prompts", e2e.root))
+	prompt_path := fmt.tprintf("%s/prompts/alpha.md", e2e.root)
+	preamble_path := fmt.tprintf("%s/pre.md", e2e.root)
+	rw := os.Permissions{.Read_User, .Write_User}
+	_ = os.write_entire_file(prompt_path, "write alpha", rw)
+	_ = os.write_entire_file(preamble_path, "Keep the preamble in mind.", rw)
+	recipe := e2e_write(e2e, "recipe.json", `{"order":"files","preamble_file":"pre.md","shots":[{"id":"alpha","prompt_file":"prompts/alpha.md"}]}`)
+
+	brew_code, brew_out, _ := e2e_run(e2e, "brew", "--repo", e2e.repo, "--recipe", recipe)
+	testing.expect_value(t, brew_code, 0)
+	brew_id := strings.trim_space(brew_out)
+
+	testing.expect_value(t, os.remove(prompt_path), os.Error(nil))
+	testing.expect_value(t, os.remove(preamble_path), os.Error(nil))
+
+	collect_code, oreo, collect_err := e2e_run(e2e, "collect", brew_id)
+	testing.expect_value(t, collect_code, 0)
+	testing.expect(t, strings.contains(oreo, "## Shot alpha: completed"), collect_err)
+	testing.expect(t, strings.contains(oreo, "Preamble: pre.md"), oreo)
 }

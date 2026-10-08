@@ -2,6 +2,7 @@ package main
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:log"
 import "core:hash"
 import "core:os"
 import "core:strings"
@@ -103,6 +104,7 @@ server_running :: proc(directory: string) -> bool {
 // from the previous start; only the generation advances.
 server_start :: proc(directory, id, repository_path, socket_path: string) -> (lock: ^os.File, record: Server_Record, ok: bool) {
 	acquired, acquired_ok := server_acquire(directory)
+	log.debugf("election dir=%s acquired=%v", directory, acquired_ok)
 	if !acquired_ok {
 		return nil, {}, false
 	}
@@ -150,6 +152,7 @@ server_read_record :: proc(directory: string) -> (record: Server_Record, ok: boo
 }
 
 server_write_record :: proc(directory: string, record: Server_Record) -> bool {
+	log.debugf("record write dir=%s generation=%d pid=%d", directory, record.generation, record.pid)
 	data, marshal_err := json.marshal(record, json.Marshal_Options{spec = .JSON})
 	defer delete(data)
 	if marshal_err != nil {
@@ -206,6 +209,7 @@ SERVER_IDLE_NS :: 30 * 1_000_000_000
 // The __server process: one per repository. It exits quietly if another server
 // already holds the repository, and after a period with no active Brew.
 run_server :: proc(state_root, repository: string) -> int {
+	log.debugf("server start repository=%s state=%s", repository, state_root)
 	id := server_id(repository)
 	defer delete(id)
 	directory := server_directory(state_root, id)

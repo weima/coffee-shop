@@ -4,6 +4,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 import "core:unicode/utf8"
 
@@ -208,7 +209,7 @@ recipe_fields_known :: proc(data: string, allocator := context.allocator) -> boo
 	root, ok := value.(json.Object)
 	if !ok { return false }
 	for key in root {
-		if key != "order" && key != "order_file" && key != "preamble" && key != "preamble_file" && key != "model" && key != "thinking" && key != "review_model" && key != "review_thinking" && key != "workers" && key != "share" && key != "shots" { return false }
+		if !slice.contains(RECIPE_ROOT_KEYS, key) { return false }
 	}
 	shots_value, found := root["shots"]
 	shots, shots_ok := shots_value.(json.Array)
@@ -217,7 +218,7 @@ recipe_fields_known :: proc(data: string, allocator := context.allocator) -> boo
 		object, ok := item.(json.Object)
 		if !ok { return false }
 		for key in object {
-			if key != "id" && key != "prompt" && key != "prompt_file" && key != "model" && key != "thinking" && key != "expect_changes" { return false }
+			if !slice.contains(RECIPE_SHOT_KEYS, key) { return false }
 		}
 	}
 	return true
@@ -305,3 +306,8 @@ valid_share_path :: proc(path: string) -> bool {
 	}
 	return true
 }
+
+// Every key a Recipe or a Shot may contain. recipe.schema.json must declare exactly
+// these; recipe_schema_test.odin checks that they agree.
+RECIPE_ROOT_KEYS :: []string{"order", "order_file", "preamble", "preamble_file", "model", "thinking", "review_model", "review_thinking", "workers", "share", "shots"}
+RECIPE_SHOT_KEYS :: []string{"id", "prompt", "prompt_file", "model", "thinking", "expect_changes"}
