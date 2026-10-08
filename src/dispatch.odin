@@ -40,13 +40,6 @@ Worker_Result :: struct {
 	detail: string,
 }
 
-Active_Worker :: struct {
-	shot_index: int,
-	result_path: string,
-	started_path: string,
-	running_recorded: bool,
-}
-
 run_brew :: proc(repo, recipe_path: string) -> (brew_id: string, err: string) {
 	state_root, state_err := default_state_root()
 	if state_err != "" {
@@ -78,7 +71,7 @@ run_brew_with :: proc(repo, recipe_path, state_root, executable, herdr: string) 
 	}
 	defer destroy_recipe(&recipe)
 
-	brew_id = next_brew_id(state_root)
+	brew_id = next_brew_id(state_root, time.now())
 	brew_dir := state_file_path(state_root, brew_id)
 	defer delete(brew_dir)
 	register, state_error := register_from_recipe(brew_id, repo, recipe)
@@ -200,7 +193,10 @@ run_brew_with :: proc(repo, recipe_path, state_root, executable, herdr: string) 
 		}
 	}
 
-	if state_error := dispatch_workers(brew_dir, &register, executable, herdr); state_error.kind != .None {
+	if !write_supervisor(brew_dir) {
+		return brew_id, "could not record the Brew supervisor"
+	}
+	if state_error := dispatch_workers(brew_dir, &register, executable, state_root, herdr); state_error.kind != .None {
 		return brew_id, state_error_message(state_error)
 	}
 	return brew_id, ""
@@ -291,27 +287,40 @@ destroy_herdr_response :: proc(response: ^Herdr_Response, allocator := context.a
 	response^ = Herdr_Response{}
 }
 
-dispatch_workers :: proc(directory: string, register: ^Register, executable, herdr: string) -> State_Error {
-	active: [2]Active_Worker
-	active_count := 0
-	next_shot := 0
+dispatch_workers :: proc(directory: string, register: ^Register, executable, state_root, herdr: string) -> State_Error {
+	launched := make([]bool, len(register.shots))
+	defer delete(launched)
 
 	for {
-		for active_count < len(active) && next_shot < len(register.shots) {
-			index := next_shot
-			next_shot += 1
+		if cancel_requested(directory) {
+			return settle_brew(directory, register, herdr, .Cancel)
+		}
+		if err := settle_brew(directory, register, herdr, .Observe); err.kind != .None {
+			return err
+		}
+
+		active := 0
+		for shot, index in register.shots {
+			if launched[index] && !is_terminal(shot.status) {
+				active += 1
+			}
+		}
+		for index in 0 ..< len(register.shots) {
+			if active >= SCALE {
+				break
+			}
 			shot := &register.shots[index]
-			if shot.status != SHOT_QUEUED || shot.herdr_pane_id == "" {
+			if launched[index] || shot.status != SHOT_QUEUED {
 				continue
 			}
-
-			command, quote_err := worker_command(executable, register.brew_id, shot.id)
-			if quote_err != "" {
-				if err := transition_shot(directory, register, shot.id, SHOT_FAILED, quote_err); err.kind != .None {
+			if shot.herdr_pane_id == "" {
+				if err := transition_shot(directory, register, shot.id, SHOT_FAILED, "Shot has no Herdr tab"); err.kind != .None {
 					return err
 				}
 				continue
 			}
+
+			command, _ := worker_command(executable, state_root, register.brew_id, shot.id)
 			launch_err := herdr_run_worker(herdr, shot.herdr_pane_id, command)
 			delete(command)
 			if launch_err != "" {
@@ -320,59 +329,14 @@ dispatch_workers :: proc(directory: string, register: ^Register, executable, her
 				}
 				continue
 			}
-			result_path := worker_result_path(directory, shot.id)
-			started_path := worker_started_path(directory, shot.id)
-			active[active_count] = Active_Worker{shot_index = index, result_path = result_path, started_path = started_path}
-			active_count += 1
+			launched[index] = true
+			active += 1
 		}
 
-		if active_count == 0 {
-			if next_shot >= len(register.shots) {
-				return State_Error{}
-			}
-			continue
+		if all_terminal(register^) {
+			return State_Error{}
 		}
-
-		made_progress := false
-		for i := 0; i < active_count; {
-			result_ready := os.exists(active[i].result_path)
-			started := os.exists(active[i].started_path)
-			if !active[i].running_recorded && (started || result_ready) {
-				shot_id := register.shots[active[i].shot_index].id
-				if err := transition_shot(directory, register, shot_id, SHOT_RUNNING, "Worker started"); err.kind != .None {
-					return err
-				}
-				active[i].running_recorded = true
-				made_progress = true
-			}
-			if !result_ready {
-				i += 1
-				continue
-			}
-			result, err := read_worker_result(active[i].result_path)
-			if err != "" || result.brew_id != register.brew_id || result.shot_id != register.shots[active[i].shot_index].id {
-				destroy_worker_result(&result)
-				return State_Error{kind = .Corrupt_Register}
-			}
-			shot_id := register.shots[active[i].shot_index].id
-			next_state := SHOT_FAILED
-			if result.started && result.success {
-				next_state = SHOT_COMPLETED
-			}
-			if state_err := transition_shot(directory, register, shot_id, next_state, result.detail); state_err.kind != .None {
-				destroy_worker_result(&result)
-				return state_err
-			}
-			destroy_worker_result(&result)
-			delete(active[i].result_path)
-			delete(active[i].started_path)
-			active_count -= 1
-			active[i] = active[active_count]
-			made_progress = true
-		}
-		if !made_progress {
-			time.sleep(100 * time.Millisecond)
-		}
+		time.sleep(100 * time.Millisecond)
 	}
 }
 
@@ -391,21 +355,23 @@ herdr_run_worker :: proc(herdr, pane_id, command: string) -> string {
 	return err
 }
 
-worker_command :: proc(executable, brew_id, shot_id: string) -> (command: string, err: string) {
-	escaped, allocated := strings.replace_all(executable, "'", "'\\''")
-	defer if allocated { delete(escaped) }
-	quoted_executable := fmt.tprintf("'%s'", escaped)
-	command = fmt.aprintf("%s __worker --brew-id %s --shot-id %s", quoted_executable, brew_id, shot_id)
+// The command text holds only Coffee Shop's own paths and validated IDs, never
+// task text. Paths are single-quoted for the Herdr pane's shell.
+worker_command :: proc(executable, state_root, brew_id, shot_id: string) -> (command: string, err: string) {
+	quoted_executable := shell_quote(executable)
+	defer delete(quoted_executable)
+	quoted_state_root := shell_quote(state_root)
+	defer delete(quoted_state_root)
+	command = fmt.aprintf("%s __worker --state-root %s --brew-id %s --shot-id %s", quoted_executable, quoted_state_root, brew_id, shot_id)
 	return command, ""
 }
 
-run_worker :: proc(brew_id, shot_id: string) -> int {
-	state_root, err := default_state_root()
-	if err != "" {
-		write_error(err)
-		return 2
-	}
-	defer delete(state_root)
+shell_quote :: proc(value: string) -> string {
+	escaped, _ := strings.replace_all(value, "'", "'\\''", context.temp_allocator)
+	return fmt.aprintf("'%s'", escaped)
+}
+
+run_worker :: proc(state_root, brew_id, shot_id: string) -> int {
 	return run_worker_with(state_root, brew_id, shot_id, "pi")
 }
 
@@ -588,21 +554,7 @@ worker_started_path :: proc(directory, shot_id: string) -> string {
 write_worker_started :: proc(directory, shot_id: string) -> bool {
 	path := worker_started_path(directory, shot_id)
 	defer delete(path)
-	temp_path, err := strings.concatenate({path, ".tmp"})
-	if err != nil {
-		return false
-	}
-	defer delete(temp_path)
-	marker := "started\n"
-	if write_all_to_file(temp_path, transmute([]byte)marker, os.O_WRONLY|os.O_CREATE|os.O_TRUNC).kind != .None {
-		_ = os.remove(temp_path)
-		return false
-	}
-	if os.rename(temp_path, path) != nil {
-		_ = os.remove(temp_path)
-		return false
-	}
-	return true
+	return write_identity_file(path, current_identity())
 }
 
 state_error_message :: proc(err: State_Error) -> string {
@@ -623,31 +575,63 @@ state_error_message :: proc(err: State_Error) -> string {
 	return "unknown state error"
 }
 
-next_brew_id :: proc(state_root: string) -> string {
+// Brew IDs are "brew-<UTC time>-<pid>", so sorting by name sorts by start time.
+// The ID is never reused: if the directory exists (same second, same process),
+// a counter is appended, which still sorts after the original.
+next_brew_id :: proc(state_root: string, now: time.Time) -> string {
+	year, month, day := time.date(now)
+	hour, minute, second := time.clock(now)
 	pid := os.get_pid()
-	for sequence := 0; ; sequence += 1 {
-		brew_id := fmt.aprintf("brew-%d-%d", pid, sequence)
+	base := fmt.aprintf("brew-%04d%02d%02dT%02d%02d%02dZ-%d", year, int(month), day, hour, minute, second, pid)
+	brew_id := base
+	for sequence := 1; ; sequence += 1 {
 		brew_path := state_file_path(state_root, brew_id)
 		exists := os.exists(brew_path)
 		delete(brew_path)
 		if !exists {
+			if sequence > 1 {
+				delete(base)
+			}
 			return brew_id
 		}
-		delete(brew_id)
+		if sequence > 1 {
+			delete(brew_id)
+		}
+		brew_id = fmt.aprintf("%s-%d", base, sequence)
 	}
 }
 
+// State lives in $CS_STATE_DIR when set, otherwise in ~/.coffee-shop. No
+// platform-specific directory convention is assumed.
 default_state_root :: proc(allocator := context.allocator) -> (path: string, err: string) {
-	state_home, os_err := os.user_state_dir(allocator)
-	if os_err != nil {
-		delete(state_home, allocator)
-		return "", "could not locate the user's state directory"
+	override := os.get_env("CS_STATE_DIR", context.temp_allocator)
+	home := ""
+	if override == "" {
+		home_dir, home_err := os.user_home_dir(context.temp_allocator)
+		if home_err == nil {
+			home = home_dir
+		}
 	}
-	joined, alloc_err := filepath.join([]string{state_home, "coffee-shop"}, allocator)
-	delete(state_home, allocator)
-	if alloc_err != nil {
+	return resolve_state_root(override, home, allocator)
+}
+
+resolve_state_root :: proc(override, home: string, allocator := context.allocator) -> (path: string, err: string) {
+	if override != "" {
+		if !filepath.is_abs(override) {
+			return "", "CS_STATE_DIR must be an absolute path"
+		}
+		cloned, clone_err := strings.clone(override, allocator)
+		if clone_err != nil {
+			return "", "could not allocate the Coffee Shop state path"
+		}
+		return cloned, ""
+	}
+	if home == "" {
+		return "", "set CS_STATE_DIR: could not locate the home directory"
+	}
+	joined, join_err := filepath.join([]string{home, ".coffee-shop"}, allocator)
+	if join_err != nil {
 		return "", "could not allocate the Coffee Shop state path"
 	}
-	path = joined
-	return path, ""
+	return joined, ""
 }

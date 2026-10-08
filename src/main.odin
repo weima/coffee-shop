@@ -34,11 +34,14 @@ run_cli :: proc(args: []string) -> int {
 	if command.kind == .Status {
 		return run_status(command.brew_id)
 	}
+	if command.kind == .Cancel {
+		return run_cancel(command.brew_id)
+	}
 	if command.kind == .Collect {
 		return run_collect(command.brew_id)
 	}
 	if command.kind == .Worker {
-		return run_worker(command.brew_id, command.shot_id)
+		return run_worker(command.state_root, command.brew_id, command.shot_id)
 	}
 
 	write_error("command not implemented yet")

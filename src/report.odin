@@ -53,6 +53,23 @@ run_status :: proc(brew_id: string) -> int {
 	return 0
 }
 
+run_cancel :: proc(brew_id: string) -> int {
+	state_root, err := default_state_root()
+	if err != "" {
+		write_error(err)
+		return 2
+	}
+	defer delete(state_root)
+	output, cancel_err := cancel_brew(state_root, "herdr", brew_id)
+	if cancel_err != "" {
+		write_error(cancel_err)
+		return 1
+	}
+	defer delete(output)
+	fmt.print(output)
+	return 0
+}
+
 run_collect :: proc(brew_id: string) -> int {
 	state_root, err := default_state_root()
 	if err != "" {
@@ -60,6 +77,10 @@ run_collect :: proc(brew_id: string) -> int {
 		return 2
 	}
 	defer delete(state_root)
+	if settle_err := settle_orphaned_brew(state_root, "herdr", brew_id); settle_err != "" {
+		write_error(settle_err)
+		return 1
+	}
 	output, complete, collect_err := render_collect(state_root, brew_id)
 	if collect_err != "" {
 		write_error(collect_err)
@@ -72,6 +93,53 @@ run_collect :: proc(brew_id: string) -> int {
 		return 1
 	}
 	return 0
+}
+
+// Asks the Brew to cancel. A live supervisor does the work; if it is gone,
+// this process settles the Brew itself. Repeating the command is safe.
+cancel_brew :: proc(state_root, herdr, brew_id: string) -> (output: string, err: string) {
+	register, brew_dir, load_err := load_brew(state_root, brew_id)
+	if load_err != "" {
+		return "", load_err
+	}
+	defer delete(brew_dir)
+	if all_terminal(register) {
+		status := brew_status(register)
+		destroy_register(&register)
+		return fmt.aprintf("Brew %s already finished: %s\n", brew_id, status), ""
+	}
+	if !request_cancel(brew_dir) {
+		destroy_register(&register)
+		return "", "could not record the cancellation request"
+	}
+	if supervisor_alive(brew_dir) {
+		destroy_register(&register)
+		return fmt.aprintf("Cancellation requested for Brew %s; its supervisor will stop the Workers.\n", brew_id), ""
+	}
+	if settle_err := settle_brew(brew_dir, &register, herdr, .Cancel); settle_err.kind != .None {
+		destroy_register(&register)
+		return "", fmt.tprintf("could not settle Brew: %s", state_error_message(settle_err))
+	}
+	destroy_register(&register)
+	return render_status(state_root, brew_id)
+}
+
+// When the supervisor has died, evidence-backed outcomes (finished Workers,
+// vanished Workers) still need recording before results can be collected.
+settle_orphaned_brew :: proc(state_root, herdr, brew_id: string) -> string {
+	register, brew_dir, load_err := load_brew(state_root, brew_id)
+	if load_err != "" {
+		return load_err
+	}
+	defer destroy_register(&register)
+	defer delete(brew_dir)
+	if all_terminal(register) || supervisor_alive(brew_dir) {
+		return ""
+	}
+	if err := settle_brew(brew_dir, &register, herdr, .Observe); err.kind != .None {
+		return fmt.tprintf("could not settle Brew: %s", state_error_message(err))
+	}
+	return ""
 }
 
 render_status :: proc(state_root, brew_id: string) -> (output: string, err: string) {
@@ -90,6 +158,9 @@ render_status :: proc(state_root, brew_id: string) -> (output: string, err: stri
 			suffix = " (cancel requested)"
 		}
 		fmt.sbprintfln(&builder, "  %s  %s%s", shot.id, shot.status, suffix)
+	}
+	if !all_terminal(register) && !supervisor_alive(brew_dir) {
+		fmt.sbprintln(&builder, "Supervisor is not running; `collect` or `cancel` will settle unfinished Shots.")
 	}
 	return strings.to_string(builder), ""
 }

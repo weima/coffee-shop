@@ -49,3 +49,21 @@ test_parses_help :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, "")
 	testing.expect_value(t, parsed.kind, Command_Kind.Help)
 }
+
+@(test)
+test_parse_worker_arguments_include_the_state_root :: proc(t: ^testing.T) {
+	parsed, err := parse_args([]string{"__worker", "--state-root", "/tmp/state", "--brew-id", "brew-1-0", "--shot-id", "shot-a"})
+
+	testing.expect_value(t, err, "")
+	testing.expect_value(t, parsed.kind, Command_Kind.Worker)
+	testing.expect_value(t, parsed.state_root, "/tmp/state")
+	testing.expect_value(t, parsed.brew_id, "brew-1-0")
+	testing.expect_value(t, parsed.shot_id, "shot-a")
+}
+
+@(test)
+test_rejects_worker_without_a_state_root :: proc(t: ^testing.T) {
+	_, err := parse_args([]string{"__worker", "--brew-id", "brew-1-0", "--shot-id", "shot-a"})
+
+	testing.expect(t, err != "")
+}

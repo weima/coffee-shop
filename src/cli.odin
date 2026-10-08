@@ -17,6 +17,7 @@ Command :: struct {
 	recipe:  string,
 	brew_id: string,
 	shot_id: string,
+	state_root: string,
 }
 
 Brew_Arguments :: struct {
@@ -29,6 +30,7 @@ Brew_ID_Arguments :: struct {
 }
 
 Worker_Arguments :: struct {
+	state_root: string `args:"required" usage:"Coffee Shop state directory."`,
 	brew_id: string `args:"required" usage:"Brew identifier."`,
 	shot_id: string `args:"required" usage:"Shot identifier."`,
 }
@@ -65,7 +67,7 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 		if flags.parse(&options, args[1:], .Unix) != nil {
 			return Command{kind = .Help}, "invalid Worker arguments"
 		}
-		return Command{kind = .Worker, brew_id = options.brew_id, shot_id = options.shot_id}, ""
+		return Command{kind = .Worker, brew_id = options.brew_id, shot_id = options.shot_id, state_root = options.state_root}, ""
 	case "status", "cancel", "collect":
 		options: Brew_ID_Arguments
 		if flags.parse(&options, args[1:], .Unix) != nil {

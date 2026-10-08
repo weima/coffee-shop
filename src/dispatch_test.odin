@@ -2,14 +2,16 @@ package main
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:testing"
+import "core:time"
 
 @(test)
-test_worker_command_quotes_executable_and_contains_only_ids :: proc(t: ^testing.T) {
-	command, err := worker_command("/tmp/it's here/coffee-shop", "brew-1-0", "shot-a")
+test_worker_command_quotes_paths_and_contains_only_ids :: proc(t: ^testing.T) {
+	command, err := worker_command("/tmp/it's here/coffee-shop", "/tmp/my state", "brew-1-0", "shot-a")
 	defer delete(command)
 	testing.expect_value(t, err, "")
-	testing.expect_value(t, command, `'/tmp/it'\''s here/coffee-shop' __worker --brew-id brew-1-0 --shot-id shot-a`)
+	testing.expect_value(t, command, `'/tmp/it'\''s here/coffee-shop' __worker --state-root '/tmp/my state' --brew-id brew-1-0 --shot-id shot-a`)
 }
 
 @(test)
@@ -83,4 +85,51 @@ make_fixture_repo :: proc(t: ^testing.T, path: string) {
 		state, _, _, err := os.process_exec(os.Process_Desc{command = args}, context.allocator)
 		testing.expect(t, err == nil && state.success)
 	}
+}
+
+@(test)
+test_brew_ids_are_utc_timestamps_that_sort_chronologically :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	earlier, _ := time.components_to_time(2026, 10, 8, 4, 15, 0)
+	later, _ := time.components_to_time(2026, 10, 8, 4, 15, 1)
+
+	first := next_brew_id(root, earlier)
+	defer delete(first)
+	testing.expect(t, strings.has_prefix(first, "brew-20261008T041500Z-"), first)
+	testing.expect(t, valid_shot_id(first), "Brew IDs must satisfy the safe ID rule")
+
+	// A second Brew in the same second must still get a distinct, later-sorting ID.
+	_ = os.make_directory_all(fmt.tprintf("%s/%s", root, first))
+	same_second := next_brew_id(root, earlier)
+	defer delete(same_second)
+	testing.expect(t, same_second != first)
+	testing.expect(t, same_second > first, same_second)
+
+	next := next_brew_id(root, later)
+	defer delete(next)
+	testing.expect(t, next > same_second && next > first)
+}
+
+@(test)
+test_state_root_uses_cs_state_dir_when_set_and_home_otherwise :: proc(t: ^testing.T) {
+	path, err := resolve_state_root("/data/cs", "/home/me")
+	testing.expect_value(t, err, "")
+	testing.expect_value(t, path, "/data/cs")
+	delete(path)
+
+	path, err = resolve_state_root("", "/home/me")
+	testing.expect_value(t, err, "")
+	testing.expect_value(t, path, "/home/me/.coffee-shop")
+	delete(path)
+}
+
+@(test)
+test_state_root_rejects_relative_override_and_missing_home :: proc(t: ^testing.T) {
+	// A relative path would mean different directories for brew and its Workers.
+	_, err := resolve_state_root("relative/dir", "/home/me")
+	testing.expect_value(t, err, "CS_STATE_DIR must be an absolute path")
+
+	_, err = resolve_state_root("", "")
+	testing.expect_value(t, err, "set CS_STATE_DIR: could not locate the home directory")
 }

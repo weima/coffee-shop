@@ -44,6 +44,8 @@ The intended invocation is `coffee-shop brew --repo <beans-path> --recipe <recip
 
 ## Development
 
+Coffee Shop currently supports Linux, including WSL. Cancel and recovery identify processes through `/proc`, so macOS is not supported yet. Keep `CS_STATE_DIR` on the Linux filesystem, not under `/mnt/c`.
+
 The initial implementation uses Odin `dev-2026-09-nightly:a2fb372`, Pi `1.1.0`, and Herdr `0.9.3`. Run the CLI checks with:
 
 ```sh

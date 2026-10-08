@@ -23,7 +23,7 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 
 - Recipe input is strict JSON with a non-empty `order` and `shots` array. Each Shot has a non-empty `prompt` and a unique 1–64 character ASCII `id` matching `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. The Beans repository path is a separate CLI argument.
 - CLI: `coffee-shop brew --repo <path> --recipe <recipe.json>`; `status`, `cancel`, and `collect` take a Brew ID.
-- Store each Brew under `~/.local/state/coffee-shop/<brew-id>/`, with current state in `register.json` and append-only events in `receipt.ndjson`. Retain records indefinitely in v1; report corrupt or partial records without automatic repair.
+- Store each Brew under `$CS_STATE_DIR/<brew-id>/` (default `~/.coffee-shop/<brew-id>/`), with current state in `register.json` and append-only events in `receipt.ndjson`. Retain records indefinitely in v1; report corrupt or partial records without automatic repair.
 - Shot states are `queued`, `running`, `completed`, `failed`, `cancelled`, and `interrupted`. Queued launch failures become `failed`; active cancellation is a request until Worker exit is confirmed. Derive Brew status from its Shots.
 - Use a fixed Scale of two active Workers and no automatic timeout. `brew` runs a per-Brew supervisor that schedules queued Shots and exits when the Brew is terminal; it is not a daemon.
 - Use `pi --print --no-session`; create one Herdr workspace per Brew and one tab per Shot. Herdr's command string launches a hidden Coffee Shop Worker subcommand with validated IDs only; the Worker subcommand reads task text from state and starts Pi with an argument vector.

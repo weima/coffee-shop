@@ -53,7 +53,7 @@ Recipes are strict JSON objects with a non-empty `order` and a non-empty `shots`
 
 ## Local state
 
-Store each Brew under `~/.local/state/coffee-shop/<brew-id>/`. `register.json` contains its current state; `receipt.ndjson` is its append-only event history. This state remains outside the Beans repository.
+Store each Brew under `$CS_STATE_DIR/<brew-id>/`; when `CS_STATE_DIR` is unset, the default is `~/.coffee-shop/<brew-id>/`. `CS_STATE_DIR` must be an absolute path. Coffee Shop does not use XDG or any other platform directory convention. A Brew ID is `brew-<UTC start time>-<pid>`, for example `brew-20261008T041500Z-1634886`, so sorting by name sorts by start time. IDs are never reused; a counter is appended if two Brews would collide. `register.json` contains its current state; `receipt.ndjson` is its append-only event history. This state remains outside the Beans repository.
 
 The Receipt event is appended before the Register is rewritten. If a write is interrupted, or the two files disagree, Coffee Shop reports the Brew's state as unknown, names the failing line when it can, and leaves both files untouched. It never repairs state automatically. To recover, inspect `receipt.ndjson` and `register.json` by hand; the Receipt is the more detailed record. A file that cannot be read for another reason, such as permissions, is reported as an I/O error rather than as corruption.
 
@@ -70,6 +70,12 @@ The Receipt event is appended before the Register is rewritten. If a write is in
 
 Allowed transitions are `queued` → `running`, `failed`, or `cancelled`, and `running` → `completed`, `failed`, `cancelled`, or `interrupted`. A cancellation request is recorded separately; a running Shot stays `running` until the Worker exit is confirmed, then becomes `cancelled`. Cancelling a Brew marks queued Shots `cancelled` and interrupts active Workers. Brew status is derived from its Shots rather than maintained as a second state machine.
 
+## Cancellation and recovery
+
+`cancel <brew-id>` records a cancellation request and is safe to repeat. While the supervisor is alive it does the work: queued Shots become `cancelled`, and each running Worker has its Herdr tab closed, which ends Pi. A Shot becomes `cancelled` once its Worker process is confirmed gone, or `interrupted` if that cannot be confirmed within ten seconds.
+
+The supervisor records its process identity (PID plus kernel start time, so a reused PID is not mistaken for it) in `supervisor.json`; each Worker does the same in `workers/<shot>.started`. If the supervisor has died, `status` says so, and `collect` or `cancel` take over its job using only evidence: a Worker's result file is recorded as completed or failed, and a Worker that vanished without a result becomes `interrupted`. A live Worker is left alone unless the Brew is being cancelled. A Shot is never marked `completed` without a recorded successful result.
+
 ## Data flow
 
 1. The Barista supplies a JSON Recipe and the path to the Beans.
@@ -83,14 +89,14 @@ Allowed transitions are `queued` → `running`, `failed`, or `cancelled`, and `r
 ## Safety boundaries
 
 - A Worker never shares a Station with another Worker in the same Brew.
-- Herdr launches Workers from command text. Its command contains only Coffee Shop's internal Worker subcommand and validated Brew/Shot IDs. That subcommand reads the prompt as data and starts Pi with a separate argument vector; Order and Shot text never enter shell syntax.
+- Herdr launches Workers from command text. Its command contains only Coffee Shop's internal Worker subcommand, the state directory (so the Worker reads the same Brew state even when `CS_STATE_DIR` is set), and validated Brew/Shot IDs. That subcommand reads the prompt as data and starts Pi with a separate argument vector; Order and Shot text never enter shell syntax.
 - Coffee Shop reports a missing or failed Worker as incomplete. It does not treat an unreadable state record as success.
 - A test-authoring Worker reads the Beans repository's root `standards.md` and receives Taste-Driven Development as task guidance; Coffee Shop does not install the skill into the Beans repository.
 - Filter reports review findings and test outcomes; it does not auto-fix, commit, merge, publish, or manage CI. It does not rewrite test scripts or configuration. If discovery is ambiguous or setup is unavailable, it reports that instead of guessing.
 - Workers do not merge or publish their changes. A person reviews the Oreo and decides what to integrate.
 - Coffee Shop never automatically deletes Stations or local Brew state. Users remove reviewed Stations and state manually; `collect` preserves them.
 - The per-Brew supervisor exists only while `brew` is active; there is no always-on watcher or automatic Worker timeout. The Barista asks for status or collection when needed.
-- The Register and Receipt live under `~/.local/state/coffee-shop`, outside the Beans repository.
+- The Register and Receipt live under the Coffee Shop state directory, outside the Beans repository.
 
 ## Deliberate omissions
 
