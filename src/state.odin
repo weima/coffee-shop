@@ -685,3 +685,106 @@ state_file_path :: proc(directory, name: string, allocator := context.allocator)
 private_file_permissions :: proc() -> os.Permissions {
 	return os.Permissions{.Read_User, .Write_User}
 }
+
+// read_state, after bringing the Register forward if the Receipt is ahead of it.
+// The server writes the Receipt before the Register, so a crash between the two
+// leaves the Receipt one or more events ahead. Replaying those events is safe:
+// each one is checked against the state before it, as validate_receipt does.
+read_state_recovering :: proc(directory: string, allocator := context.allocator) -> (register: Register, err: State_Error) {
+	register, err = read_state(directory, allocator)
+	if err.kind != .Conflicting_Records && err.kind != .Malformed_Receipt {
+		return register, err
+	}
+	if recover_err := recover_receipt_ahead(directory); recover_err.kind != .None {
+		return Register{}, recover_err
+	}
+	return read_state(directory, allocator)
+}
+
+// Rolls the Register forward over complete Receipt lines it has not yet recorded.
+// A final line without its newline was never fully written, so it is ignored.
+recover_receipt_ahead :: proc(directory: string) -> State_Error {
+	register_path := state_file_path(directory, REGISTER_FILE_NAME)
+	defer delete(register_path)
+	register_data, register_io_err := os.read_entire_file(register_path, context.allocator)
+	defer delete(register_data)
+	if register_io_err != nil {
+		return State_Error{kind = .Corrupt_Register}
+	}
+	register: Register
+	defer destroy_struct(&register)
+	if json.unmarshal_string(transmute(string)register_data, &register, .JSON) != nil || !valid_register(register) {
+		return State_Error{kind = .Corrupt_Register}
+	}
+
+	receipt_path := state_file_path(directory, RECEIPT_FILE_NAME)
+	defer delete(receipt_path)
+	receipt_data, receipt_io_err := os.read_entire_file(receipt_path, context.allocator)
+	defer delete(receipt_data)
+	if receipt_io_err != nil {
+		return State_Error{kind = .Corrupt_Receipt}
+	}
+
+	complete_end := 0
+	for i := len(receipt_data); i > 0; i -= 1 {
+		if receipt_data[i-1] == '\n' {
+			complete_end = i
+			break
+		}
+	}
+	complete := receipt_data[:complete_end]
+	if complete_end < len(receipt_data) && !write_file_atomic(receipt_path, complete) {
+		return State_Error{kind = .IO_Error}
+	}
+
+	expected := make([dynamic]Replay_Shot, 0, len(register.shots))
+	defer delete(expected)
+	for shot in register.shots {
+		append(&expected, Replay_Shot{status = shot.status, cancel_requested = shot.cancel_requested})
+	}
+
+	sequence := register.event_sequence
+	line_start := 0
+	for i := 0; i < len(complete); i += 1 {
+		if complete[i] != '\n' {
+			continue
+		}
+		line := string(complete[line_start:i])
+		line_start = i + 1
+
+		event: State_Event
+		if json.unmarshal_string(line, &event, .JSON) != nil {
+			destroy_struct(&event)
+			return State_Error{kind = .Malformed_Receipt}
+		}
+		if event.sequence <= register.event_sequence {
+			destroy_struct(&event)
+			continue
+		}
+		if !apply_event(register, expected[:], event, sequence+1) {
+			destroy_struct(&event)
+			return State_Error{kind = .Conflicting_Records}
+		}
+		sequence = event.sequence
+		index := find_shot(register, event.shot_id)
+		delete(register.shots[index].detail)
+		register.shots[index].detail = strings.clone(event.detail)
+		destroy_struct(&event)
+	}
+	if sequence == register.event_sequence {
+		return State_Error{}
+	}
+
+	for &shot, index in register.shots {
+		if shot.status != expected[index].status {
+			delete(shot.status)
+			shot.status = strings.clone(expected[index].status)
+		}
+		shot.cancel_requested = expected[index].cancel_requested
+	}
+	register.event_sequence = sequence
+	if write_err := write_register_atomic(register_path, register); write_err.kind != .None {
+		return write_err
+	}
+	return State_Error{}
+}

@@ -325,6 +325,7 @@ Both were recorded `completed`, and the Oreo's decisions list said nothing. Only
 - A request carrying another Brew's token, or aimed at a server for a different repository, is rejected.
 - Election and liveness: a server is alive while it holds `server.lock`. Commands test liveness by trying that lock without waiting; the heartbeat in `server.json` is for display and diagnosis only.
 - `state.lock` is retired in stage 4. The server serializes all writes after launch, so no lock is needed between processes.
+- Election lock identity: a lock belongs to the file it was taken on. A server stops, without touching the socket path, once its lock file is no longer the one at its path (the directory was removed and recreated). Found by the killed-server gate: a live server from an earlier test kept its lock on a deleted file, and a new server acquired a second lock on the recreated one.
 
 **Lifecycle.**
 

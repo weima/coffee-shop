@@ -1,5 +1,6 @@
 package main
 
+import "core:os"
 import "core:strings"
 import "core:testing"
 import "core:time"
@@ -104,4 +105,29 @@ test_server_heartbeat_updates_the_stored_record :: proc(t: ^testing.T) {
 	testing.expect(t, stored_ok, "server.json must be readable")
 	defer destroy_struct(&stored)
 	testing.expect(t, stored.heartbeat_ns > before, "the stored heartbeat must advance")
+}
+
+// Removing and recreating the server directory leaves the old lock on a file the
+// path no longer names. That lock must not count as the server's.
+@(test)
+test_stale_lock_is_not_current_after_its_directory_is_recreated :: proc(t: ^testing.T) {
+	root := make_test_state_directory(t)
+	defer remove_test_state_directory(root)
+	id := server_id("/work/gac")
+	defer delete(id)
+	directory := server_directory(root, id)
+	defer delete(directory)
+
+	old_lock, old_ok := server_acquire(directory)
+	testing.expect(t, old_ok, "the first server must be admitted")
+	testing.expect(t, server_lock_is_current(directory, old_lock), "a fresh lock is current")
+
+	testing.expect(t, os.remove_all(directory) == nil, "the directory must be removable")
+	new_lock, new_ok := server_acquire(directory)
+	testing.expect(t, new_ok, "the recreated directory has a new lock file")
+	testing.expect(t, !server_lock_is_current(directory, old_lock), "the old lock names a deleted file")
+	testing.expect(t, server_lock_is_current(directory, new_lock), "the new lock is current")
+
+	file_lock_release(old_lock)
+	file_lock_release(new_lock)
 }

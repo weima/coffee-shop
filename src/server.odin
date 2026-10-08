@@ -52,7 +52,31 @@ server_acquire :: proc(directory: string) -> (file: ^os.File, ok: bool) {
 		_ = os.close(opened)
 		return nil, false
 	}
+	if !server_lock_is_current(directory, opened) {
+		file_lock_release(opened)
+		return nil, false
+	}
 	return opened, true
+}
+
+// A lock belongs to the file it was taken on. If the directory was removed and
+// recreated, the path names a new file, and a lock on the old one proves nothing.
+// Such a server must stop without touching the socket path, which now belongs to
+// its successor.
+server_lock_is_current :: proc(directory: string, lock: ^os.File) -> bool {
+	path := state_file_path(directory, SERVER_LOCK_FILE_NAME)
+	defer delete(path)
+	on_path, path_err := os.stat(path, context.allocator)
+	if path_err != nil {
+		return false
+	}
+	defer os.file_info_delete(on_path, context.allocator)
+	held, held_err := os.fstat(lock, context.allocator)
+	if held_err != nil {
+		return false
+	}
+	defer os.file_info_delete(held, context.allocator)
+	return on_path.inode == held.inode
 }
 
 // True while another process holds the election lock. A missing lock file means
@@ -162,7 +186,7 @@ repository_has_active_brew :: proc(state_root, repository: string) -> bool {
 		brew_repository, brew_token, ok := brew_identity(brew_dir)
 		active := false
 		if ok && brew_repository == repository {
-			register, state_err := read_state(brew_dir)
+			register, state_err := read_state_recovering(brew_dir)
 			active = state_err.kind == .None && !all_terminal(register)
 			destroy_struct(&register)
 		}
@@ -208,11 +232,17 @@ run_server :: proc(state_root, repository: string) -> int {
 		write_error("the server socket could not be opened")
 		return 2
 	}
-	defer server_api_close(&api)
+	defer if api.listener >= 0 {
+		server_api_close(&api)
+	}
 
 	last_beat := time.now()._nsec
 	last_active := last_beat
 	for {
+		if !server_lock_is_current(directory, lock) {
+			server_api_abandon(&api)
+			return 0
+		}
 		server_api_serve_one(api, 100)
 		now := time.now()._nsec
 		if now - last_beat >= SERVER_HEARTBEAT_NS {

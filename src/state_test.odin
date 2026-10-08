@@ -1,5 +1,7 @@
 package main
 
+
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -270,4 +272,39 @@ test_missing_register_is_reported_as_missing_state :: proc(t: ^testing.T) {
 
 	_, err := read_state(directory)
 	testing.expect_value(t, err.kind, State_Error_Kind.Corrupt_Register)
+}
+
+// A server that appended a Receipt event and died before rewriting the Register.
+@(test)
+test_receipt_ahead_of_register_is_rolled_forward :: proc(t: ^testing.T) {
+	directory := make_test_state_directory(t)
+	defer remove_test_state_directory(directory)
+	register := make_test_register(t)
+	defer destroy_struct(&register)
+	brew_dir := fmt.tprintf("%s/brew", directory)
+	testing.expect_value(t, create_state(brew_dir, &register).kind, State_Error_Kind.None)
+	shot_id := register.shots[0].id
+	testing.expect_value(t, apply_transition(brew_dir, &register, shot_id, SHOT_RUNNING, "Worker started").kind, State_Error_Kind.None)
+
+	receipt_path := state_file_path(brew_dir, RECEIPT_FILE_NAME)
+	defer delete(receipt_path)
+	receipt, read_err := os.read_entire_file(receipt_path, context.allocator)
+	defer delete(receipt)
+	testing.expect(t, read_err == nil, "the receipt must be readable")
+	// The next event, complete, then a torn event that was never finished.
+	next_event := strings.concatenate({"{\"sequence\":2,\"kind\":\"shot_transition\",\"shot_id\":\"", shot_id, "\",\"from_state\":\"running\",\"to_state\":\"completed\",\"detail\":\"CS-DONE\"}\n"}, context.temp_allocator)
+	ahead := strings.concatenate({string(receipt), next_event, "{\"sequence\":3,"}, context.temp_allocator)
+	testing.expect(t, os.write_entire_file_from_string(receipt_path, ahead, os.Permissions{.Read_User, .Write_User}) == nil, "the receipt must be writable")
+
+	_, conflict := read_state(brew_dir)
+	testing.expect_value(t, conflict.kind, State_Error_Kind.Malformed_Receipt)
+	recovery := recover_receipt_ahead(brew_dir)
+	testing.expect_value(t, recovery.kind, State_Error_Kind.None)
+
+	recovered, err := read_state_recovering(brew_dir)
+	defer destroy_struct(&recovered)
+	testing.expect_value(t, err.kind, State_Error_Kind.None)
+	testing.expect_value(t, recovered.event_sequence, 2)
+	testing.expect_value(t, recovered.shots[0].status, SHOT_COMPLETED)
+	testing.expect_value(t, recovered.shots[0].detail, "CS-DONE")
 }

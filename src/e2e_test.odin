@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:sys/posix"
 import "core:testing"
 import "core:time"
 
@@ -559,4 +560,110 @@ e2e_section :: proc(oreo, shot_id: string) -> string {
 		return oreo[start : start + len(marker) + end]
 	}
 	return oreo[start:]
+}
+
+// The server dies with Workers running. The next command starts a new server,
+// the Workers carry on through the restart, and the Brew still completes.
+@(test)
+test_e2e_workers_and_brew_survive_a_killed_server :: proc(t: ^testing.T) {
+	e2e := e2e_setup(t, "3")
+	defer remove_fixture_root(e2e.root)
+	recipe := e2e_write(e2e, "recipe.json", `{"order":"e2e order","shots":[{"id":"alpha","prompt":"write alpha"},{"id":"beta","prompt":"write beta"}]}`)
+
+	devnull, _ := os.open("/dev/null", {.Write})
+	defer os.close(devnull)
+	supervisor, start_err := os.process_start(os.Process_Desc{
+		command = []string{e2e.binary, "brew", "--repo", e2e.repo, "--recipe", recipe},
+		env = e2e.env,
+		stdout = devnull,
+		stderr = devnull,
+	})
+	testing.expect_value(t, start_err, os.Error(nil))
+
+	brew_id := ""
+	for _ in 0 ..< 80 {
+		brew_id = e2e_first_brew(e2e)
+		if brew_id != "" {
+			_, status, _ := e2e_run(e2e, "status", brew_id)
+			if strings.contains(status, "alpha  running") && strings.contains(status, "beta  running") {
+				break
+			}
+		}
+		time.sleep(250 * time.Millisecond)
+	}
+
+	server_id_text := server_id(e2e.repo)
+	defer delete(server_id_text)
+	server_dir := server_directory(e2e.state, server_id_text)
+	defer delete(server_dir)
+	old_record, old_ok := server_read_record(server_dir)
+	defer destroy_struct(&old_record)
+	testing.expect(t, old_ok, "the running server must have a record")
+	testing.expect_value(t, posix.kill(posix.pid_t(old_record.pid), .SIGKILL), posix.result.OK)
+
+	// The next command restarts the server; nothing is reported as failed.
+	code, status, _ := e2e_run(e2e, "status", brew_id)
+	testing.expect_value(t, code, 0)
+	testing.expect(t, !strings.contains(status, "failed"), status)
+
+	new_record, new_ok := server_read_record(server_dir)
+	defer destroy_struct(&new_record)
+	testing.expect(t, new_ok, "the restarted server must have a record")
+	testing.expect(t, new_record.pid != old_record.pid, "a new server process must have started")
+	testing.expect_value(t, new_record.generation, old_record.generation + 1)
+	testing.expect_value(t, new_record.id, old_record.id)
+
+	state, wait_err := os.process_wait(supervisor)
+	testing.expect_value(t, wait_err, os.Error(nil))
+	testing.expect(t, state.success, "the Brew must finish after the restart")
+
+	collect_code, oreo, _ := e2e_run(e2e, "collect", brew_id)
+	testing.expect_value(t, collect_code, 0)
+	testing.expect(t, strings.contains(oreo, "## Shot alpha: completed"), oreo)
+	testing.expect(t, strings.contains(oreo, "## Shot beta: completed"), oreo)
+	register, state_err := read_state(fmt.tprintf("%s/%s", e2e.state, brew_id))
+	defer destroy_struct(&register)
+	testing.expect_value(t, state_err.kind, State_Error_Kind.None)
+	testing.expect_value(t, register.event_sequence, 4)
+}
+
+// Two servers started for one repository at once: one takes the election lock,
+// the other exits, and the winner stays until it is idle.
+@(test)
+test_e2e_two_simultaneous_server_starts_leave_one_server :: proc(t: ^testing.T) {
+	e2e := e2e_setup(t, "0")
+	defer remove_fixture_root(e2e.root)
+
+	devnull, _ := os.open("/dev/null", {.Write})
+	defer os.close(devnull)
+	start :: proc(e2e: E2E, devnull: ^os.File) -> (os.Process, os.Error) {
+		return os.process_start(os.Process_Desc{
+			command = []string{e2e.binary, "__server", "--state-root", e2e.state, "--repository", e2e.repo},
+			env = e2e.env,
+			stdout = devnull,
+			stderr = devnull,
+		})
+	}
+	first, first_err := start(e2e, devnull)
+	second, second_err := start(e2e, devnull)
+	testing.expect_value(t, first_err, os.Error(nil))
+	testing.expect_value(t, second_err, os.Error(nil))
+
+	// The loser exits at once; the winner keeps running for the idle timeout.
+	_, first_wait := os.process_wait(first, 3 * time.Second)
+	_, second_wait := os.process_wait(second, 3 * time.Second)
+	winner := first
+	survivors := 0
+	if first_wait != nil {
+		survivors += 1
+	} else {
+		winner = second
+	}
+	if second_wait != nil {
+		survivors += 1
+		winner = second
+	}
+	testing.expect_value(t, survivors, 1)
+	_ = os.process_kill(winner)
+	_, _ = os.process_wait(winner)
 }

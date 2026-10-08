@@ -119,7 +119,7 @@ server_api_handle :: proc(api: Server_Api, request: Server_Request) -> Server_Re
 	}
 	brew_dir := state_file_path(api.state_root, request.brew_id)
 	defer delete(brew_dir)
-	register, state_err := read_state(brew_dir)
+	register, state_err := read_state_recovering(brew_dir)
 	if state_err.kind != .None {
 		return Server_Response{error = strings.clone(state_error_message(state_err))}
 	}
@@ -267,4 +267,12 @@ server_write_all :: proc(conn: posix.FD, data: []byte) -> bool {
 		sent += uint(n)
 	}
 	return true
+}
+
+// Stops listening without removing the socket path. Used by a stale server, whose
+// path now belongs to its successor.
+server_api_abandon :: proc(api: ^Server_Api) {
+	posix.close(api.listener)
+	delete(api.socket_path)
+	api^ = Server_Api{listener = -1}
 }
