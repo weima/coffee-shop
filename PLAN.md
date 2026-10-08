@@ -132,7 +132,7 @@ Pass child-process arguments as an argument vector. Distinguish a launch error f
 
 ## Roadmap: v0.2.0
 
-These items came from dogfooding v0.1 (see [the Odin book dogfood](docs/dogfood-odin-book.md)). They are planned, not started; the contracts below are proposals to settle before coding.
+These items came from dogfooding v0.1 on the [Odin in Practice](https://github.com/weima/odin-in-practice) book, whose repository keeps the record of that exercise. Each item states its own evidence. They are planned, not started; the contracts below are proposals to settle before coding.
 
 ### 1. Show that a Worker is alive
 
