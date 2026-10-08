@@ -1,9 +1,11 @@
 package main
 
+import "core:crypto"
 import "core:encoding/json"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "core:sys/linux"
 
 REGISTER_FILE_NAME :: "register.json"
 REGISTER_TEMP_FILE_NAME :: "register.json.tmp"
@@ -16,6 +18,7 @@ SHOT_COMPLETED :: "completed"
 SHOT_FAILED :: "failed"
 SHOT_CANCELLED :: "cancelled"
 SHOT_INTERRUPTED :: "interrupted"
+SHOT_INCOMPLETE :: "incomplete"
 
 State_Error_Kind :: enum {
 	None,
@@ -43,14 +46,30 @@ Register_Shot :: struct {
 	status: string,
 	cancel_requested: bool,
 	station_path: string,
+	model: string,
+	thinking: string,
+	expect_changes: bool,
+	prompt_source: string,
 	herdr_tab_id: string,
 	herdr_pane_id: string,
+	// Why the Shot last changed state, as recorded in the Receipt.
+	detail: string,
 }
 
 Register :: struct {
 	schema_version: int,
 	brew_id: string,
 	beans_path: string,
+	repository_name: string,
+	// Random, fixed for the Brew's life. Workers present it so a Worker from another
+	// Brew on the same resource cannot be mistaken for one of this Brew's.
+	brew_token: string,
+	workers: int,
+	model: string,
+	thinking: string,
+	review_model: string,
+	review_thinking: string,
+	completion_marker_required: bool,
 	// Beans HEAD when the Brew started; Stations branch from it and the Filter
 	// reviews changes against it. Empty in Registers written before it existed.
 	base_commit: string,
@@ -58,6 +77,9 @@ Register :: struct {
 	share: [dynamic]string,
 	herdr_workspace_id: string,
 	order: string,
+	order_source: string,
+	preamble: string,
+	preamble_source: string,
 	event_sequence: int,
 	shots: [dynamic]Register_Shot,
 }
@@ -102,6 +124,23 @@ register_from_recipe :: proc(
 		return Register{}, State_Error{kind = .Out_Of_Memory}
 	}
 
+	register.workers = recipe.workers
+	register.brew_token = brew_token(brew_id, allocator)
+	register.completion_marker_required = true
+	register.order_source, alloc_err = strings.clone(recipe.order_file, allocator)
+	if alloc_err != nil { destroy_register(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
+	register.preamble, alloc_err = strings.clone(recipe.preamble, allocator)
+	if alloc_err != nil { destroy_register(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
+	register.preamble_source, alloc_err = strings.clone(recipe.preamble_file, allocator)
+	if alloc_err != nil { destroy_register(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
+	register.model, alloc_err = strings.clone(recipe.model, allocator)
+	if alloc_err != nil { destroy_register(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
+	register.thinking, alloc_err = strings.clone(recipe.thinking, allocator)
+	if alloc_err != nil { destroy_register(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
+	register.review_model, alloc_err = strings.clone(recipe.review_model, allocator)
+	if alloc_err != nil { destroy_register(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
+	register.review_thinking, alloc_err = strings.clone(recipe.review_thinking, allocator)
+	if alloc_err != nil { destroy_register(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
 	register.shots, alloc_err = make([dynamic]Register_Shot, 0, len(recipe.shots), allocator)
 	if alloc_err != nil {
 		destroy_register(&register, allocator)
@@ -142,10 +181,27 @@ register_from_recipe :: proc(
 			destroy_register(&register, allocator)
 			return Register{}, State_Error{kind = .Out_Of_Memory}
 		}
+		model_value := shot.model
+		if model_value == "" { model_value = recipe.model }
+		thinking_value := shot.thinking
+		if thinking_value == "" { thinking_value = recipe.thinking }
+		model, model_err := strings.clone(model_value, allocator)
+		thinking, thinking_err := strings.clone(thinking_value, allocator)
+		if model_err != nil || thinking_err != nil {
+			delete(id, allocator); delete(prompt, allocator); delete(status, allocator); delete(model, allocator); delete(thinking, allocator)
+			destroy_register(&register, allocator)
+			return Register{}, State_Error{kind = .Out_Of_Memory}
+		}
+		prompt_source, source_err := strings.clone(shot.prompt_file, allocator)
+		if source_err != nil { delete(id, allocator); delete(prompt, allocator); delete(status, allocator); delete(model, allocator); delete(thinking, allocator); destroy_register(&register, allocator); return Register{}, State_Error{kind = .Out_Of_Memory} }
 		_, append_err := append(&register.shots, Register_Shot{
 			id = id,
 			prompt = prompt,
 			status = status,
+			model = model,
+			thinking = thinking,
+			expect_changes = shot.expect_changes,
+			prompt_source = prompt_source,
 		})
 		if append_err != nil {
 			delete(id, allocator)
@@ -168,6 +224,10 @@ destroy_register :: proc(register: ^Register, allocator := context.allocator) {
 		delete(shot.id, allocator)
 		delete(shot.prompt, allocator)
 		delete(shot.status, allocator)
+		delete(shot.model, allocator)
+		delete(shot.thinking, allocator)
+		delete(shot.prompt_source, allocator)
+		delete(shot.detail, allocator)
 		if len(shot.station_path) > 0 {
 			delete(shot.station_path, allocator)
 		}
@@ -181,6 +241,15 @@ destroy_register :: proc(register: ^Register, allocator := context.allocator) {
 	delete(register.shots)
 	delete(register.brew_id, allocator)
 	delete(register.beans_path, allocator)
+	delete(register.repository_name, allocator)
+	delete(register.brew_token, allocator)
+	delete(register.model, allocator)
+	delete(register.thinking, allocator)
+	delete(register.review_model, allocator)
+	delete(register.review_thinking, allocator)
+	delete(register.order_source, allocator)
+	delete(register.preamble, allocator)
+	delete(register.preamble_source, allocator)
 	for path in register.share {
 		delete(path, allocator)
 	}
@@ -221,7 +290,47 @@ create_state :: proc(directory: string, register: ^Register) -> State_Error {
 	return write_register_atomic(register_path, register^)
 }
 
+STATE_LOCK_FILE_NAME :: "state.lock"
+
+// One advisory lock per Brew, shared by every process that touches its Register
+// or Receipt: the supervisor, Workers, and status, cancel and collect. Exclusive
+// for writes, shared for reads. The kernel releases it if the holder dies.
+state_lock :: proc(directory: string, exclusive: bool) -> (file: ^os.File, locked: bool) {
+	path := state_file_path(directory, STATE_LOCK_FILE_NAME)
+	defer delete(path)
+	file_err: os.Error
+	file, file_err = os.open(path, os.O_RDWR|os.O_CREATE, private_file_permissions())
+	if file_err != nil {
+		return nil, false
+	}
+	op := linux.FLock_Op{.SH}
+	if exclusive {
+		op = {.EX}
+	}
+	if linux.flock(linux.Fd(os.fd(file)), op) != .NONE {
+		_ = os.close(file)
+		return nil, false
+	}
+	return file, true
+}
+
+state_unlock :: proc(file: ^os.File) {
+	_ = linux.flock(linux.Fd(os.fd(file)), {.UN})
+	_ = os.close(file)
+}
+
+// Reads the Register and Receipt under a shared lock, so a write in progress is
+// never seen half done.
 read_state :: proc(directory: string, allocator := context.allocator) -> (register: Register, err: State_Error) {
+	file, locked := state_lock(directory, false)
+	defer if locked {
+		state_unlock(file)
+	}
+	return read_state_unlocked(directory, allocator)
+}
+
+// The caller must already hold the Brew's lock.
+read_state_unlocked :: proc(directory: string, allocator := context.allocator) -> (register: Register, err: State_Error) {
 	register_path := state_file_path(directory, REGISTER_FILE_NAME, allocator)
 	defer delete(register_path, allocator)
 	receipt_path := state_file_path(directory, RECEIPT_FILE_NAME, allocator)
@@ -267,6 +376,11 @@ transition_shot :: proc(
 	register: ^Register,
 	shot_id, to_state, detail: string,
 ) -> State_Error {
+	lock, locked := state_lock(directory, true)
+	if !locked {
+		return State_Error{kind = .IO_Error}
+	}
+	defer state_unlock(lock)
 	index := find_shot(register^, shot_id)
 	if index < 0 {
 		return State_Error{kind = .Shot_Not_Found}
@@ -286,6 +400,11 @@ transition_shot :: proc(
 	if clone_err != nil {
 		return State_Error{kind = .Out_Of_Memory}
 	}
+	new_detail, detail_err := strings.clone(detail)
+	if detail_err != nil {
+		delete(new_state)
+		return State_Error{kind = .Out_Of_Memory}
+	}
 	event := State_Event{
 		sequence = register.event_sequence + 1,
 		kind = "shot_transition",
@@ -296,6 +415,7 @@ transition_shot :: proc(
 	}
 	if err := append_receipt_event(directory, event); err.kind != .None {
 		delete(new_state)
+		delete(new_detail)
 		return err
 	}
 
@@ -309,13 +429,21 @@ transition_shot :: proc(
 		shot.status = old_state
 		register.event_sequence = old_sequence
 		delete(new_state)
+		delete(new_detail)
 		return err
 	}
 	delete(old_state)
+	delete(shot.detail)
+	shot.detail = new_detail
 	return State_Error{}
 }
 
 request_shot_cancel :: proc(directory: string, register: ^Register, shot_id, detail: string) -> State_Error {
+	lock, locked := state_lock(directory, true)
+	if !locked {
+		return State_Error{kind = .IO_Error}
+	}
+	defer state_unlock(lock)
 	index := find_shot(register^, shot_id)
 	if index < 0 {
 		return State_Error{kind = .Shot_Not_Found}
@@ -448,6 +576,11 @@ apply_event :: proc(register: Register, expected: []Replay_Shot, event: State_Ev
 }
 
 save_register_metadata :: proc(directory: string, register: Register) -> State_Error {
+	lock, locked := state_lock(directory, true)
+	if !locked {
+		return State_Error{kind = .IO_Error}
+	}
+	defer state_unlock(lock)
 	if err := verify_current_state(directory, register); err.kind != .None {
 		return err
 	}
@@ -457,7 +590,7 @@ save_register_metadata :: proc(directory: string, register: Register) -> State_E
 }
 
 verify_current_state :: proc(directory: string, register: Register) -> State_Error {
-	current, err := read_state(directory)
+	current, err := read_state_unlocked(directory)
 	defer destroy_register(&current)
 	if err.kind != .None {
 		return err
@@ -555,6 +688,28 @@ valid_initial_register :: proc(register: Register) -> bool {
 	return true
 }
 
+// Sixteen random bytes as lowercase hex. Not a secret: it only tells apart Workers
+// that share a resource.
+random_token :: proc(allocator := context.allocator) -> string {
+	bytes: [16]u8
+	crypto.rand_bytes(bytes[:])
+	digits := "0123456789abcdef"
+	hex: [32]u8
+	for b, i in bytes {
+		hex[2*i] = digits[b>>4]
+		hex[2*i+1] = digits[b&0xf]
+	}
+	token, _ := strings.clone(string(hex[:]), allocator)
+	return token
+}
+
+// The Brew token is the Brew ID with a random GUID appended.
+brew_token :: proc(brew_id: string, allocator := context.allocator) -> string {
+	guid := random_token(context.temp_allocator)
+	token, _ := strings.concatenate({brew_id, "-", guid}, allocator)
+	return token
+}
+
 valid_register :: proc(register: Register) -> bool {
 	if register.schema_version != STATE_SCHEMA_VERSION || register.event_sequence < 0 || !valid_shot_id(register.brew_id) || strings.trim_space(register.beans_path) == "" || strings.trim_space(register.order) == "" || len(register.shots) == 0 {
 		return false
@@ -588,12 +743,13 @@ canonical_shot_status :: proc(status: string) -> string {
 	case SHOT_FAILED: return SHOT_FAILED
 	case SHOT_CANCELLED: return SHOT_CANCELLED
 	case SHOT_INTERRUPTED: return SHOT_INTERRUPTED
+	case SHOT_INCOMPLETE: return SHOT_INCOMPLETE
 	case: return ""
 	}
 }
 
 valid_shot_status :: proc(status: string) -> bool {
-	return status == SHOT_QUEUED || status == SHOT_RUNNING || status == SHOT_COMPLETED || status == SHOT_FAILED || status == SHOT_CANCELLED || status == SHOT_INTERRUPTED
+	return status == SHOT_QUEUED || status == SHOT_RUNNING || status == SHOT_COMPLETED || status == SHOT_FAILED || status == SHOT_CANCELLED || status == SHOT_INTERRUPTED || status == SHOT_INCOMPLETE
 }
 
 valid_transition :: proc(from, to: string) -> bool {
@@ -601,7 +757,7 @@ valid_transition :: proc(from, to: string) -> bool {
 	case SHOT_QUEUED:
 		return to == SHOT_RUNNING || to == SHOT_FAILED || to == SHOT_CANCELLED
 	case SHOT_RUNNING:
-		return to == SHOT_COMPLETED || to == SHOT_FAILED || to == SHOT_CANCELLED || to == SHOT_INTERRUPTED
+		return to == SHOT_COMPLETED || to == SHOT_FAILED || to == SHOT_CANCELLED || to == SHOT_INTERRUPTED || to == SHOT_INCOMPLETE
 	case:
 		return false
 	}

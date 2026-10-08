@@ -62,6 +62,7 @@ flowchart TD
 | **Activity channel** | A per-Brew Unix-domain stream socket. Workers send bounded newline-delimited summaries best-effort; the supervisor validates Brew/Shot identity and persists the latest one per running Shot. It does not establish liveness. |
 | **Register** | Durable current status for each Brew and Shot. |
 | **Receipt** | Append-only events that explain status changes. |
+| **Server** (planned) | One per repository. It starts on demand, holds the Register in memory, and becomes the only writer of Brew state, so commands and Workers ask it instead of editing files. It is elected by an exclusive lock on `server.lock` and exits when the repository has no active Brew. See PLAN.md item 8. |
 | **Scale** | The maximum number of concurrent Workers. |
 | **Filter** | Uses a separate one-shot Pi reviewer to check selected changes against the Beans repository's root `standards.md`, then discovers and runs unit/component and end-to-end test commands from existing manifests and test configuration. It reports evidence without fixing code or changing test setup. |
 | **Oreo** | The final review packet with the outcome, evidence, and any decision for the developer. |
@@ -69,7 +70,7 @@ flowchart TD
 
 ## Recipe contract
 
-Recipes are strict JSON objects with a non-empty `order`, a non-empty `shots` array, and an optional `share` array of unique repository-relative paths. Every Shot has a non-empty `prompt` and a unique `id` of 1–64 ASCII letters, digits, hyphens, or underscores; the first character must be a letter or digit. Prompts are preserved as supplied. This ID rule makes Shot names safe path segments and safe arguments to Coffee Shop's internal Worker command.
+Recipes are strict JSON objects described by the root `recipe.schema.json`. They have exactly one of `order`/`order_file`, a non-empty `shots` array, optional `share`, optional model/thinking defaults, and optional `preamble`/`preamble_file`. A Shot has exactly one of `prompt`/`prompt_file`, a unique safe `id`, optional model/thinking overrides, and optional `expect_changes`. File inputs resolve relative to the Recipe, reject absolute/traversal paths, and are read before Stations are created. Text is snapshotted in Brew state. Scale defaults to two; `workers` opts into 1–5.
 
 ## Shared paths
 
@@ -83,6 +84,10 @@ The link is read-through, so a Worker that installs packages modifies the Beans'
 
 Store each Brew under `$CS_STATE_DIR/<brew-id>/`; when `CS_STATE_DIR` is unset, the default is `~/.coffee-shop/<brew-id>/`. `CS_STATE_DIR` must be an absolute path. Coffee Shop does not use XDG or any other platform directory convention. A Brew ID is `brew-<UTC start time>-<pid>`, for example `brew-20261008T041500Z-1634886`, so sorting by name sorts by start time. IDs are never reused; a counter is appended if two Brews would collide. `register.json` contains its current state; `receipt.ndjson` is its append-only event history. This state remains outside the Beans repository.
 
+Each Brew has a Brew token, `<brew-id>-<guid>`, recorded in `register.json` when the Brew is created. Workers receive it at launch and present it, and a Worker carrying another Brew's token is refused before it records a start. The GUID tells apart Workers that share a resource; it is not a security measure.
+
+Planned (PLAN.md item 8): one server per repository keeps its files under `$CS_STATE_DIR/servers/<name>-<hash>/`, with `server.json` (pid, generation, heartbeat, socket path, repository path) and `server.lock`. The server holds `server.lock` for its whole life, so liveness is a kernel fact: a command that cannot take the lock knows a server is running. The heartbeat is for display only. A restarted server keeps its id, `<name>-<hash>`, which is the directory name derived from the repository path, so Workers launched under the old server still reach its socket. Until stage 4 the Register and Receipt are still written directly under `state.lock`; that lock is retired once the server is the only writer.
+
 The Receipt event is appended before the Register is rewritten. If a write is interrupted, or the two files disagree, Coffee Shop reports the Brew's state as unknown, names the failing line when it can, and leaves both files untouched. It never repairs state automatically. To recover, inspect `receipt.ndjson` and `register.json` by hand; the Receipt is the more detailed record. A file that cannot be read for another reason, such as permissions, is reported as an I/O error rather than as corruption.
 
 ## Shot lifecycle
@@ -91,12 +96,13 @@ The Receipt event is appended before the Register is rewritten. If a write is in
 | --- | --- |
 | `queued` | The Shot is validated and waiting to start. |
 | `running` | Its Worker has started and no terminal outcome is confirmed. |
-| `completed` | The Worker exited successfully. |
+| `completed` | For v0.1 Brews, the Worker exited successfully. For v0.2 Brews, it exited successfully and ended its final response with `CS-DONE`. |
 | `failed` | The Worker could not be launched or exited unsuccessfully. |
 | `cancelled` | The Shot was cancelled before launch, or its Worker exited after a cancellation request. |
 | `interrupted` | The Worker outcome cannot be proved, for example after an unexpected session loss. |
+| `incomplete` | A v0.2 Worker exited successfully but did not finish with `CS-DONE`, declared `CS-BLOCKED`, or failed its `expect_changes` check. |
 
-Allowed transitions are `queued` → `running`, `failed`, or `cancelled`, and `running` → `completed`, `failed`, `cancelled`, or `interrupted`. A cancellation request is recorded separately; a running Shot stays `running` until the Worker exit is confirmed, then becomes `cancelled`. Cancelling a Brew marks queued Shots `cancelled` and interrupts active Workers. Brew status is derived from its Shots rather than maintained as a second state machine.
+Allowed transitions are `queued` → `running`, `failed`, or `cancelled`, and `running` → `completed`, `failed`, `cancelled`, `interrupted`, or `incomplete`. A cancellation request is recorded separately; a running Shot stays `running` until the Worker exit is confirmed, then becomes `cancelled`. Cancelling a Brew marks queued Shots `cancelled` and interrupts active Workers. Brew status is derived from its Shots rather than maintained as a second state machine.
 
 ## Worker activity
 
@@ -125,9 +131,9 @@ Liveness has three answers, not two. A process is **gone** only on evidence: its
 
 1. The Barista supplies a JSON Recipe and the path to the Beans.
 2. The CLI validates the repository and Recipe before it starts Workers.
-3. The CLI creates one Station per Shot and one Herdr workspace per Brew. A per-Brew supervisor creates one tab per Shot, runs `pi --mode json --print --no-session` from each Station, and keeps at most two Workers active. It schedules queued Shots as slots open, receives best-effort activity messages, and exits when the Brew is terminal.
+3. The CLI creates one Station per Shot and one Herdr workspace per Brew. A per-Brew supervisor creates one tab per Shot, runs `pi --mode json --print --no-session` from each Station, and keeps at most the Recipe's Worker limit active (two by default, five maximum). It schedules queued Shots as slots open, receives best-effort activity messages, and exits when the Brew is terminal.
 4. Workers write their result and check evidence to their own Station. The Barista may assign a normal Shot to add tests from `standards.md`; that Worker receives the Taste-Driven Development skill as task guidance, without installing it into the Beans repository.
-5. The CLI updates the Register and Receipt as it observes Worker state. The supervisor persists latest activity separately; activity recency never changes liveness. The Scale allows two active Workers; the supervisor continues queued independent Shots after a Worker fails. There is no automatic timeout.
+5. The CLI updates the Register and Receipt as it observes Worker state. Planned: the repository's server makes these writes (PLAN.md item 8). The supervisor persists latest activity separately; activity recency never changes liveness. The Scale uses the Recipe's Worker limit (two by default, five maximum); the supervisor continues queued independent Shots after a Worker fails. There is no automatic timeout.
 6. Filter runs a separate one-shot Pi code review against `standards.md`, then discovers and runs the repository's existing unit/component and end-to-end test commands without overriding them.
 7. The Barista collects Worker reports and Filter evidence into the Oreo for human review.
 8. The proposed `blend <brew-id>` action integrates reviewed Shot changes after the Barista approves the Oreo.
@@ -147,7 +153,7 @@ If changes conflict or the commit fails, Blend leaves the original tabs, Station
 - Filter reports review findings and test outcomes; it does not auto-fix, commit, merge, publish, or manage CI. It does not rewrite test scripts or configuration. If discovery is ambiguous or setup is unavailable, it reports that instead of guessing.
 - Workers do not merge, commit, or publish their changes. A person reviews the Oreo and explicitly decides when to integrate them.
 - Coffee Shop preserves Stations and Brew state by default. The proposed Blend action removes only the target Brew's per-Shot worktrees after its single integration commit succeeds; Brew state, reports, and Filter evidence remain.
-- The per-Brew supervisor exists only while `brew` is active; there is no always-on watcher or automatic Worker timeout. The Barista asks for status or collection when needed.
+- The per-Brew supervisor exists only while `brew` is active. A repository's server (planned) runs only while that repository has an active Brew and exits after an idle timeout. There is no always-on watcher or automatic Worker timeout. The Barista asks for status or collection when needed.
 - The Register and Receipt live under the Coffee Shop state directory, outside the Beans repository.
 
 ## Deliberate omissions

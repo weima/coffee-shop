@@ -9,7 +9,7 @@ import "core:time"
 // A Brew is as finished as its least finished Shot. Terminal Brews report the
 // worst outcome so a failure is never hidden behind completed Shots.
 brew_status :: proc(register: Register) -> string {
-	any_queued, any_failed, any_interrupted, any_cancelled := false, false, false, false
+	any_queued, any_failed, any_interrupted, any_cancelled, any_incomplete := false, false, false, false, false
 	any_running := false
 	for shot in register.shots {
 		switch shot.status {
@@ -18,6 +18,7 @@ brew_status :: proc(register: Register) -> string {
 		case SHOT_FAILED: any_failed = true
 		case SHOT_INTERRUPTED: any_interrupted = true
 		case SHOT_CANCELLED: any_cancelled = true
+		case SHOT_INCOMPLETE: any_incomplete = true
 		}
 	}
 	switch {
@@ -30,6 +31,7 @@ brew_status :: proc(register: Register) -> string {
 			}
 		}
 		return SHOT_QUEUED
+	case any_incomplete: return SHOT_INCOMPLETE
 	case any_failed: return SHOT_FAILED
 	case any_interrupted: return SHOT_INTERRUPTED
 	case any_cancelled: return SHOT_CANCELLED
@@ -143,6 +145,16 @@ settle_orphaned_brew :: proc(state_root, herdr, brew_id: string) -> string {
 	return ""
 }
 
+// The name shown for a Brew. A derived name is returned as owned, so the caller
+// frees it; a stored name is borrowed from the Register.
+report_repository :: proc(register: Register) -> (name, derived: string) {
+	if register.repository_name != "" {
+		return register.repository_name, {}
+	}
+	derived = repository_name(register.beans_path)
+	return derived, derived
+}
+
 render_status :: proc(state_root, brew_id: string) -> (output: string, err: string) {
 	register, brew_dir, load_err := load_brew(state_root, brew_id)
 	if load_err != "" {
@@ -152,7 +164,14 @@ render_status :: proc(state_root, brew_id: string) -> (output: string, err: stri
 	defer delete(brew_dir)
 
 	builder := strings.builder_make()
-	fmt.sbprintfln(&builder, "Brew %s: %s", register.brew_id, brew_status(register))
+	repository, derived := report_repository(register)
+	defer delete(derived)
+	fmt.sbprintfln(&builder, "Brew %s (%s): %s", register.brew_id, repository, brew_status(register))
+	running := 0
+	queued := 0
+	for shot in register.shots { if shot.status == SHOT_RUNNING { running += 1 }; if shot.status == SHOT_QUEUED { queued += 1 } }
+	fmt.sbprintfln(&builder, "Workers: %d of %d running, %d queued", running, workers_limit(register), queued)
+	if register.preamble_source != "" { fmt.sbprintfln(&builder, "Preamble: %s (%d bytes)", register.preamble_source, len(register.preamble)) }
 	now_ns := time.now()._nsec
 	for shot in register.shots {
 		suffix := ""
@@ -164,7 +183,11 @@ render_status :: proc(state_root, brew_id: string) -> (output: string, err: stri
 		) {
 			continue
 		}
-		fmt.sbprintfln(&builder, "  %s  %s%s", shot.id, shot.status, suffix)
+		reason := ""
+		if is_terminal(shot.status) && shot.status != SHOT_COMPLETED {
+			reason = detail_suffix(shot.detail)
+		}
+		fmt.sbprintfln(&builder, "  %s  %s%s%s", shot.id, shot.status, suffix, reason)
 	}
 	if !all_terminal(register) && supervisor_gone(brew_dir) {
 		fmt.sbprintln(&builder, "Supervisor is not running; `collect` or `cancel` will settle unfinished Shots.")
@@ -239,9 +262,21 @@ render_collect_with_pi :: proc(state_root, brew_id, pi: string) -> (result: Coll
 
 	builder := strings.builder_make()
 	result.complete = true
-	fmt.sbprintfln(&builder, "# Brew %s: %s", register.brew_id, brew_status(register))
-	fmt.sbprintfln(&builder, "Order: %s", register.order)
+	repository, derived := report_repository(register)
+	defer delete(derived)
+	fmt.sbprintfln(&builder, "# Brew %s (%s): %s", register.brew_id, repository, brew_status(register))
+	fmt.sbprintfln(&builder, "Workers: %d", workers_limit(register))
+	if register.model != "" { fmt.sbprintfln(&builder, "Default model: %s", register.model) }
+	if register.thinking != "" { fmt.sbprintfln(&builder, "Default thinking: %s", register.thinking) }
+	order_display := register.order
+	if register.order_source != "" {
+		if end := strings.index(register.order, "\n\n"); end >= 0 { order_display = register.order[:end] }
+		fmt.sbprintfln(&builder, "Order: %s\nFull order: inputs/order.txt", order_display)
+	} else {
+		fmt.sbprintfln(&builder, "Order: %s", order_display)
+	}
 	fmt.sbprintfln(&builder, "Beans: %s", register.beans_path)
+	if register.preamble_source != "" { fmt.sbprintfln(&builder, "Preamble: %s (%d bytes)", register.preamble_source, len(register.preamble)) }
 	for shot, index in register.shots {
 		fmt.sbprintfln(&builder, "\n## Shot %s: %s", shot.id, shot.status)
 		if shot.status != SHOT_COMPLETED {
@@ -255,7 +290,20 @@ render_collect_with_pi :: proc(state_root, brew_id, pi: string) -> (result: Coll
 			continue
 		}
 		fmt.sbprintfln(&builder, "Station: %s", shot.station_path)
-		fmt.sbprintfln(&builder, "Branch: coffee-shop-%s-%s", register.brew_id, shot.id)
+		for rule_file in ([]string{"workers.md", "standards.md"}) {
+			rule_path := state_file_path(shot.station_path, rule_file); defer delete(rule_path)
+			fmt.sbprintfln(&builder, "Repository guidance: %s %s", rule_file, os.exists(rule_path) ? "present" : "absent")
+		}
+		branch := ""
+		if register.repository_name == "" { branch = fmt.aprintf("coffee-shop-%s-%s", register.brew_id, shot.id) } else {
+			branch_repo := repository_slug(register.beans_path)
+			branch = fmt.aprintf("cs-%s-%s-%s", branch_repo, register.brew_id, shot.id)
+			delete(branch_repo)
+		}
+		fmt.sbprintfln(&builder, "Branch: %s", branch)
+		delete(branch)
+		if shot.model != "" { fmt.sbprintfln(&builder, "Model: %s", shot.model) }
+		if shot.thinking != "" { fmt.sbprintfln(&builder, "Thinking: %s", shot.thinking) }
 		if shot.status == SHOT_QUEUED {
 			continue
 		}
@@ -265,6 +313,7 @@ render_collect_with_pi :: proc(state_root, brew_id, pi: string) -> (result: Coll
 		report := read_shot_report(brew_dir, shot.id)
 		if report != "" {
 			fmt.sbprintfln(&builder, "Report:\n%s", report)
+			if shot.status == SHOT_INCOMPLETE { append(&decisions, fmt.aprintf("Shot %s final response: \"%s\"", shot.id, report_tail(report))) }
 		}
 		delete(report)
 
@@ -287,6 +336,15 @@ render_collect_with_pi :: proc(state_root, brew_id, pi: string) -> (result: Coll
 	}
 	result.output = strings.to_string(builder)
 	return result, ""
+}
+
+report_tail :: proc(report: string) -> string {
+	start := 0
+	newlines := 0
+	for i := len(report)-1; i >= 0; i -= 1 {
+		if report[i] == '\n' { newlines += 1; if newlines == 3 { start = i+1; break } }
+	}
+	return report[start:]
 }
 
 detail_suffix :: proc(detail: string) -> string {

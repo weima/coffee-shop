@@ -5,6 +5,27 @@ import "core:strings"
 import "core:testing"
 
 @(test)
+test_random_token_is_32_lowercase_hex_and_differs_per_call :: proc(t: ^testing.T) {
+	first := random_token()
+	defer delete(first)
+	second := random_token()
+	defer delete(second)
+	testing.expect_value(t, len(first), 32)
+	testing.expect(t, first != second, "two tokens must differ")
+	for c in first {
+		testing.expect(t, (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'), first)
+	}
+}
+
+@(test)
+test_brew_token_is_the_brew_id_and_a_guid :: proc(t: ^testing.T) {
+	token := brew_token("brew-1-0")
+	defer delete(token)
+	testing.expect(t, strings.has_prefix(token, "brew-1-0-"), token)
+	testing.expect_value(t, len(token), len("brew-1-0-") + 32)
+}
+
+@(test)
 test_state_round_trips_and_records_transitions :: proc(t: ^testing.T) {
 	directory := make_test_state_directory(t)
 	defer remove_test_state_directory(directory)
@@ -203,6 +224,7 @@ make_test_register :: proc(t: ^testing.T) -> Register {
 
 	register, err := register_from_recipe("brew-test", "/tmp/beans", recipe)
 	testing.expect_value(t, err.kind, State_Error_Kind.None)
+	register.completion_marker_required = false
 	return register
 }
 

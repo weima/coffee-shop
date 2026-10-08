@@ -7,11 +7,25 @@ import "core:testing"
 import "core:time"
 
 @(test)
+test_completion_marker_is_removed_and_missing_marker_is_incomplete :: proc(t: ^testing.T) {
+	marker, report := completion_marker("finished\nCS-DONE")
+	defer delete(marker); defer delete(report)
+	testing.expect_value(t, marker, "CS-DONE")
+	testing.expect_value(t, report, "finished")
+	blocked, blocked_report := completion_marker("stuck\nCS-BLOCKED: needs access")
+	defer delete(blocked); defer delete(blocked_report)
+	testing.expect_value(t, blocked, "CS-BLOCKED: needs access")
+	missing, missing_report := completion_marker("still working")
+	defer delete(missing); defer delete(missing_report)
+	testing.expect(t, strings.contains(missing, "missing"))
+}
+
+@(test)
 test_worker_command_quotes_paths_and_contains_only_ids :: proc(t: ^testing.T) {
-	command, err := worker_command("/tmp/it's here/coffee-shop", "/tmp/my state", "brew-1-0", "shot-a")
+	command, err := worker_command("/tmp/it's here/coffee-shop", "/tmp/my state", "brew-1-0", "shot-a", "abc123")
 	defer delete(command)
 	testing.expect_value(t, err, "")
-	testing.expect_value(t, command, `'/tmp/it'\''s here/coffee-shop' __worker --state-root '/tmp/my state' --brew-id brew-1-0 --shot-id shot-a`)
+	testing.expect_value(t, command, `'/tmp/it'\''s here/coffee-shop' __worker --state-root '/tmp/my state' --brew-id brew-1-0 --shot-id shot-a --token 'abc123'`)
 }
 
 @(test)
@@ -43,7 +57,7 @@ test_worker_records_pi_failure_and_passes_prompt_as_one_argument :: proc(t: ^tes
 	repo := fmt.tprintf("%s/repo", root)
 	make_fixture_repo(t, repo)
 	recipe_path := fmt.tprintf("%s/recipe.json", root)
-	_ = os.write_entire_file(recipe_path, `{"order":"o","shots":[{"id":"a","prompt":"it's $(x)"}]}`, os.Permissions{.Read_User, .Write_User})
+	_ = os.write_entire_file(recipe_path, `{"order":"o","model":"openai/default","thinking":"medium","shots":[{"id":"a","prompt":"it's $(x)","model":"anthropic/custom","thinking":"low"}]}`, os.Permissions{.Read_User, .Write_User})
 	state_root := fmt.tprintf("%s/state", root)
 	// Herdr fails after Stations exist, so the Worker can be run directly.
 	brew_id, _ := run_brew_with(repo, recipe_path, state_root, "/nonexistent", "/nonexistent/herdr")
@@ -53,6 +67,7 @@ test_worker_records_pi_failure_and_passes_prompt_as_one_argument :: proc(t: ^tes
 	fake_pi_script := `#!/bin/sh
 for last; do :; done
 printf '%s' "$last" > arg.txt
+printf '%s' "$*" > argv.txt
 exit 3
 `
 	_ = os.write_entire_file(
@@ -64,7 +79,11 @@ exit 3
 
 	arg, _ := os.read_entire_file(fmt.tprintf("%s/%s/stations/a/arg.txt", state_root, brew_id), context.allocator)
 	defer delete(arg)
-	testing.expect_value(t, string(arg), "Order: o\n\nShot: it's $(x)")
+	testing.expect(t, strings.has_prefix(string(arg), "Order: o\n\nShot: it's $(x)\n\nFinish with exactly one final line:"), string(arg))
+	argv, _ := os.read_entire_file(fmt.tprintf("%s/%s/stations/a/argv.txt", state_root, brew_id), context.temp_allocator)
+	defer delete(argv, context.temp_allocator)
+	testing.expect(t, strings.contains(transmute(string)argv, "--model anthropic/custom") && strings.contains(transmute(string)argv, "--thinking low"), transmute(string)argv)
+	testing.expect(t, strings.contains(string(arg), "CS-DONE") && strings.contains(string(arg), "CS-BLOCKED:"), string(arg))
 	result_path := worker_result_path(fmt.tprintf("%s/%s", state_root, brew_id), "a")
 	defer delete(result_path)
 	result, result_err := read_worker_result(result_path)

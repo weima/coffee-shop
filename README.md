@@ -43,16 +43,21 @@ See [the architecture](docs/architecture.md) for the diagram and boundaries. See
 
 ## Recipe format
 
-A Recipe is strict JSON with a non-empty `order` and a non-empty `shots` array. Each Shot has a non-empty `prompt` and a unique `id`: 1–64 ASCII letters, digits, `_` or `-`, starting with a letter or digit.
+A Recipe is strict JSON described by [`recipe.schema.json`](recipe.schema.json). It has `order` or `order_file`, a non-empty `shots` array, and each Shot has `prompt` or `prompt_file` plus a unique safe ID. Optional Recipe defaults `model` and `thinking` can be overridden per Shot; `review_model` and `review_thinking` configure the Filter review. `workers` opts into 1–5 concurrent Workers (default 2).
 
 ```json
 {
   "order": "Improve the command-line help",
+  "model": "provider/model-id",
+  "thinking": "medium",
+  "workers": 2,
   "shots": [
-    { "id": "help-copy", "prompt": "Review and improve the help text." }
+    { "id": "help-copy", "prompt": "Review and improve the help text.", "expect_changes": true }
   ]
 }
 ```
+
+Use `order_file`, `prompt_file`, and `preamble_file` for long Markdown text. Paths are relative to the Recipe file and cannot escape its directory. Coffee Shop validates and snapshots text before creating Stations. A preamble is delivered to every Worker as appended system guidance; `status` and the Oreo show its filename and size, not its contents. Each Worker is instructed to read root `workers.md` and `standards.md` when present. Finish Worker reports with `CS-DONE` when complete and verified, or `CS-BLOCKED: <reason>` when blocked; Coffee Shop sends no automatic follow-up.
 
 ### Sharing installed dependencies
 
@@ -83,7 +88,7 @@ coffee-shop collect <brew-id>
 ```
 
 - `brew` creates and runs the Brew, blocks until every Shot is terminal, then prints the Brew ID (`brew-<UTC start time>-<pid>`). It exits 0 even if some Workers failed, because those outcomes belong to `status` and `collect`. It exits 1, still printing the ID, only when no Worker could be started at all (for example, no Herdr server is running).
-- At most two Workers run at once.
+- At most two Workers run at once by default; `workers` can opt into a limit up to five.
 - `status` prints the Brew and each Shot's status. Running Shots also show elapsed time and the latest Pi activity; activity older than 12 minutes is marked quiet. Activity is only a progress hint: process identity remains the liveness authority, and quiet Workers are never killed automatically.
 - `cancel` requests cancellation; repeating it is safe.
 - `collect` prints each Shot's outcome, Worker report and Station changes, then runs the Filter once per completed Shot: a read-only Pi review against the repository's `standards.md` and the repository's own test commands. The saved evidence is reused on later collections. It ends with the decisions that need a human, and exits non-zero unless every Shot completed. See [the architecture](docs/architecture.md#filter-and-oreo).
@@ -96,7 +101,8 @@ These are the behaviours observed while building and dogfooding Coffee Shop, not
 
 - **Linux and WSL only.** Keep `CS_STATE_DIR` on the Linux filesystem, not under `/mnt/c`.
 - **Stations start from the Beans' `HEAD` commit.** Uncommitted changes in the Beans repository are invisible to Workers, so commit first.
-- **Two Workers at a time, no timeout.** A Worker that never finishes stays `running` until you `cancel` the Brew.
+- **Two Workers by default, five maximum, no timeout.** A Worker that never finishes stays `running` until you `cancel` the Brew.
+- **Explicit completion.** v0.2 Recipes complete only when the final response ends with `CS-DONE`; missing markers and `CS-BLOCKED` become `incomplete`.
 - **Nothing is deleted automatically.** Stations, branches and state accumulate until you remove them.
 - **Shared paths are read-through.** A Worker that installs packages changes the Beans' real copy.
 - **The Filter's checks run inside the Station**, a fresh checkout. Dependencies the repository does not commit are missing unless shared, a command may write build output there, and output is buffered in memory with no timeout.

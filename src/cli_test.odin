@@ -52,7 +52,7 @@ test_parses_help :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_worker_arguments_include_the_state_root :: proc(t: ^testing.T) {
-	parsed, err := parse_args([]string{"__worker", "--state-root", "/tmp/state", "--brew-id", "brew-1-0", "--shot-id", "shot-a"})
+	parsed, err := parse_args([]string{"__worker", "--state-root", "/tmp/state", "--brew-id", "brew-1-0", "--shot-id", "shot-a", "--token", "abc123"})
 
 	testing.expect_value(t, err, "")
 	testing.expect_value(t, parsed.kind, Command_Kind.Worker)
