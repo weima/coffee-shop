@@ -37,6 +37,14 @@ flowchart TD
     Filter --> Collect
     Collect --> Oreo[Oreo<br/>summary, evidence, decisions]
     Oreo --> Barista
+    Barista -->|explicit request| Blend[Proposed Blend command<br/>one commit]
+    Station1 -->|Shot changes| Blend
+    StationN -->|Shot changes| Blend
+    Blend --> Delivery[Retained integration worktree]
+    Delivery -->|commit hash and path| Barista
+    Delivery -. commit succeeds .-> Cleanup[Close Herdr tabs<br/>remove per-Shot Stations]
+    Blend -. conflict or commit failure .-> Preserve[Keep tabs and Stations]
+    Preserve --> Barista
     Barista --> Dev
 ```
 
@@ -57,6 +65,7 @@ flowchart TD
 | **Scale** | The maximum number of concurrent Workers. |
 | **Filter** | Uses a separate one-shot Pi reviewer to check selected changes against the Beans repository's root `standards.md`, then discovers and runs unit/component and end-to-end test commands from existing manifests and test configuration. It reports evidence without fixing code or changing test setup. |
 | **Oreo** | The final review packet with the outcome, evidence, and any decision for the developer. |
+| **Blend (proposed)** | An explicit post-review operation that gathers a Brew's Shot changes into one commit in a retained integration worktree, then removes the per-Shot worktrees after success. |
 
 ## Recipe contract
 
@@ -121,6 +130,13 @@ Liveness has three answers, not two. A process is **gone** only on evidence: its
 5. The CLI updates the Register and Receipt as it observes Worker state. The supervisor persists latest activity separately; activity recency never changes liveness. The Scale allows two active Workers; the supervisor continues queued independent Shots after a Worker fails. There is no automatic timeout.
 6. Filter runs a separate one-shot Pi code review against `standards.md`, then discovers and runs the repository's existing unit/component and end-to-end test commands without overriding them.
 7. The Barista collects Worker reports and Filter evidence into the Oreo for human review.
+8. The proposed `blend <brew-id>` action integrates reviewed Shot changes after the Barista approves the Oreo.
+
+## Blend (proposed)
+
+Blend creates one retained integration worktree from the Brew's recorded Beans base commit and combines its Shot changes into one local commit. Workers continue not to commit. On success, Blend closes that Brew's Herdr tabs and removes its per-Shot Station worktrees, but preserves Brew state, reports, and Filter evidence. It prints the commit hash and integration-worktree path; it never pushes or creates a PR. The Barista removes the retained integration worktree only after the owner is done with it.
+
+If changes conflict or the commit fails, Blend leaves the original tabs, Stations, and state intact. The action is explicit and scoped to one Brew; it does not clean up historical or unrelated Brews.
 
 ## Safety boundaries
 
@@ -129,8 +145,8 @@ Liveness has three answers, not two. A process is **gone** only on evidence: its
 - Coffee Shop reports a missing or failed Worker as incomplete. It does not treat an unreadable state record as success.
 - A test-authoring Worker reads the Beans repository's root `standards.md` and receives Taste-Driven Development as task guidance; Coffee Shop does not install the skill into the Beans repository.
 - Filter reports review findings and test outcomes; it does not auto-fix, commit, merge, publish, or manage CI. It does not rewrite test scripts or configuration. If discovery is ambiguous or setup is unavailable, it reports that instead of guessing.
-- Workers do not merge or publish their changes. A person reviews the Oreo and decides what to integrate.
-- Coffee Shop never automatically deletes Stations or local Brew state. Users remove reviewed Stations and state manually; `collect` preserves them.
+- Workers do not merge, commit, or publish their changes. A person reviews the Oreo and explicitly decides when to integrate them.
+- Coffee Shop preserves Stations and Brew state by default. The proposed Blend action removes only the target Brew's per-Shot worktrees after its single integration commit succeeds; Brew state, reports, and Filter evidence remain.
 - The per-Brew supervisor exists only while `brew` is active; there is no always-on watcher or automatic Worker timeout. The Barista asks for status or collection when needed.
 - The Register and Receipt live under the Coffee Shop state directory, outside the Beans repository.
 
