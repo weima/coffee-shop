@@ -93,18 +93,23 @@ destroy_recipe :: proc(recipe: ^Recipe, allocator := context.allocator) {
 	recipe^ = Recipe{}
 }
 
+// Shot IDs are path-safe segments: 1–64 ASCII characters, starting with a
+// letter or digit; later characters may also be '-' or '_'. A direct check is
+// clearer here than compiling a regex for this small, fixed rule.
 valid_shot_id :: proc(id: string) -> bool {
 	if len(id) == 0 || len(id) > MAX_SHOT_ID_LENGTH {
 		return false
 	}
 
-	for r, i in id {
-		is_alphanumeric := 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9'
-		if i == 0 {
+	for c, index in id {
+		is_alphanumeric := 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9'
+		// Keep punctuation out of the first character; only later positions
+		// may contain '-' or '_'.
+		if index == 0 {
 			if !is_alphanumeric {
 				return false
 			}
-		} else if !is_alphanumeric && r != '-' && r != '_' {
+		} else if !is_alphanumeric && c != '-' && c != '_' {
 			return false
 		}
 	}
