@@ -823,7 +823,21 @@ completion_marker :: proc(report: string) -> (marker, clean_report: string) {
 		return fmt.aprintf("CS-BLOCKED: %s", strings.trim_space(last[len("CS-BLOCKED:"): ])), clean_report
 	}
 	delete(clean_report)
+	if reason, found := blocked_reason(trimmed); found {
+		return fmt.aprintf("CS-BLOCKED: %s", reason), strings.clone(report)
+	}
 	return strings.clone("missing CS-DONE completion marker"), strings.clone(report)
+}
+
+// The reason of the last CS-BLOCKED line in the message, if there is one.
+blocked_reason :: proc(message: string) -> (reason: string, found: bool) {
+	lines := strings.split_lines(message, context.temp_allocator)
+	for index := len(lines) - 1; index >= 0; index -= 1 {
+		if strings.has_prefix(lines[index], "CS-BLOCKED:") {
+			return strings.trim_space(lines[index][len("CS-BLOCKED:"):]), true
+		}
+	}
+	return "", false
 }
 
 // Reports live in the Brew's state directory, not the Station, so they never

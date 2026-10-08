@@ -667,3 +667,25 @@ test_e2e_two_simultaneous_server_starts_leave_one_server :: proc(t: ^testing.T) 
 	_ = os.process_kill(winner)
 	_, _ = os.process_wait(winner)
 }
+
+// A server with no active Brew on its repository exits after its idle timeout, and
+// the next command starts a new one.
+@(test)
+test_e2e_server_exits_when_its_repository_is_idle :: proc(t: ^testing.T) {
+	e2e := e2e_setup(t, "0")
+	defer remove_fixture_root(e2e.root)
+
+	devnull, _ := os.open("/dev/null", {.Write})
+	defer os.close(devnull)
+	server, start_err := os.process_start(os.Process_Desc{
+		command = []string{e2e.binary, "__server", "--state-root", e2e.state, "--repository", e2e.repo},
+		env = e2e.env,
+		stdout = devnull,
+		stderr = devnull,
+	})
+	testing.expect_value(t, start_err, os.Error(nil))
+
+	// The timeout is 30 seconds; allow generous slack for a loaded machine.
+	_, wait_err := os.process_wait(server, 45 * time.Second)
+	testing.expect_value(t, wait_err, os.Error(nil))
+}
