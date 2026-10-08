@@ -31,7 +31,7 @@ test_brew_links_shared_paths_into_every_station_without_showing_changes :: proc(
 
 	brew_dir := fmt.tprintf("%s/%s", state_root, brew_id)
 	register, state_err := read_state(brew_dir)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	testing.expect_value(t, state_err.kind, State_Error_Kind.None)
 	testing.expect_value(t, len(register.share), 2)
 	for shot in register.shots {
@@ -71,13 +71,13 @@ test_filter_suggests_sharing_a_dependency_directory_the_station_lacks :: proc(t:
 	make_fixture_repo(t, station)
 
 	register := make_test_register(t)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	delete(register.beans_path)
 	register.beans_path = strings.clone(repo)
 	shot := Register_Shot{id = "shot-a", station_path = station}
 
 	evidence := run_filter(register, shot, "/nonexistent/pi")
-	defer destroy_filter_evidence(&evidence)
+	defer destroy_struct(&evidence)
 	found := false
 	for note in evidence.notes {
 		if strings.contains(note, `Beans has "node_modules"`) && strings.contains(note, `"share"`) {
@@ -89,7 +89,7 @@ test_filter_suggests_sharing_a_dependency_directory_the_station_lacks :: proc(t:
 	// Once it is shared, the suggestion goes away.
 	append(&register.share, strings.clone("node_modules"))
 	shared := run_filter(register, shot, "/nonexistent/pi")
-	defer destroy_filter_evidence(&shared)
+	defer destroy_struct(&shared)
 	for note in shared.notes {
 		testing.expect(t, !strings.contains(note, `Beans has "node_modules"`), note)
 	}

@@ -91,7 +91,7 @@ make_filter_fixture :: proc(t: ^testing.T, make_test_body, pi_body: string) -> F
 	state_root := fmt.tprintf("%s/state", root)
 	brew_id := "brew-test"
 	register := make_test_register(t)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	register.base_commit = base
 	brew_dir := fmt.tprintf("%s/%s", state_root, brew_id)
 	_ = create_state(brew_dir, &register)
@@ -109,7 +109,7 @@ test_filter_saves_evidence_for_every_completed_shot :: proc(t: ^testing.T) {
 	// Complete the second Shot too; the shared filter/ directory already exists by then.
 	brew_dir := fmt.tprintf("%s/%s", fixture.state_root, fixture.brew_id)
 	register, _ := read_state(brew_dir)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	register.shots[1].station_path = strings.clone(fmt.tprintf("%s/station", fixture.root))
 	_ = save_register_metadata(brew_dir, register)
 	_ = transition_shot(brew_dir, &register, "shot-b", SHOT_RUNNING, "Worker started")

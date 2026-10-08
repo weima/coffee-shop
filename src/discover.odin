@@ -141,21 +141,6 @@ discover_checks :: proc(station_path: string, allocator := context.allocator) ->
 	return result
 }
 
-destroy_discovery :: proc(discovery: ^Discovery, allocator := context.allocator) {
-	previous_allocator := context.allocator
-	context.allocator = allocator
-	defer context.allocator = previous_allocator
-	for command in discovery.commands {
-		for arg in command.argv do delete(arg, allocator)
-		delete(command.argv, allocator)
-		delete(command.source, allocator)
-	}
-	delete(discovery.commands)
-	for note in discovery.notes do delete(note, allocator)
-	delete(discovery.notes)
-	discovery^ = Discovery{}
-}
-
 discover_package_json :: proc(result: ^Discovery, candidates: ^[dynamic]discover_candidate, data, station_path: string, allocator: runtime.Allocator) {
 	root_value, parse_err := json.parse_string(data, .JSON, false, allocator)
 	if parse_err != .None {

@@ -83,12 +83,6 @@ review_prompt :: proc(diff, untracked: string, diff_truncated: bool, allocator :
 	return fmt.aprintf("You are performing a read-only review. Read standards.md in the repository root and check the change below against it. Report concrete findings with file and line and a severity (high/medium/low). Say \"No findings\" when there are none. Do not modify files; never modify files in the repository. Keep your answer under 400 words.%s\nDiff:\n%s\nUntracked files:\n%s", truncation_note, diff, untracked)
 }
 
-destroy_review_result :: proc(result: ^Review_Result, allocator := context.allocator) {
-	delete(result.findings, allocator)
-	delete(result.detail, allocator)
-	result^ = Review_Result{}
-}
-
 review_result :: proc(performed: bool, findings, detail: string, allocator: runtime.Allocator) -> Review_Result {
 	owned_findings, findings_err := strings.clone(findings, allocator)
 	owned_detail, detail_err := strings.clone(detail, allocator)

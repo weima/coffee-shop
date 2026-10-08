@@ -9,7 +9,7 @@ import "core:testing"
 @(test)
 test_parse_valid_recipe :: proc(t: ^testing.T) {
 	recipe, err := parse_recipe(`{"order":"Improve the CLI","shots":[{"id":"cli-test","prompt":"Add a parser test"},{"id":"cli-impl","prompt":"Implement the parser"}]}`)
-	defer destroy_recipe(&recipe)
+	defer destroy_struct(&recipe)
 
 	testing.expect_value(t, err, "")
 	testing.expect_value(t, recipe.order, "Improve the CLI")
@@ -43,7 +43,7 @@ test_recipe_schema_review_model_pattern_agrees_with_parser :: proc(t: ^testing.T
 	testing.expect_value(t, pattern, `^(|[^/\u0000-\u0020'"\\][^\u0000-\u0020'"\\]*)$`)
 
 	recipe, err := parse_recipe(`{"order":"o","review_model":"openai/gpt-4o","shots":[{"id":"a","prompt":"p"}]}`)
-	defer destroy_recipe(&recipe)
+	defer destroy_struct(&recipe)
 	testing.expect_value(t, err, "")
 	testing.expect_value(t, recipe.review_model, "openai/gpt-4o")
 }
@@ -51,7 +51,7 @@ test_recipe_schema_review_model_pattern_agrees_with_parser :: proc(t: ^testing.T
 @(test)
 test_load_recipe_file :: proc(t: ^testing.T) {
 	recipe, err := load_recipe("testdata/valid-recipe.json")
-	defer destroy_recipe(&recipe)
+	defer destroy_struct(&recipe)
 
 	testing.expect_value(t, err, "")
 	testing.expect_value(t, recipe.order, "Add a command parser test")
@@ -76,7 +76,7 @@ test_recipe_text_files_resolve_relative_to_recipe_and_are_loaded :: proc(t: ^tes
 	path := fmt.tprintf("%s/recipe.json", root)
 	_ = os.write_entire_file(path, `{"order_file":"order.md","preamble_file":"preamble.md","shots":[{"id":"a","prompt_file":"prompts/a.md"}]}`, os.Permissions{.Read_User, .Write_User})
 	recipe, err := load_recipe(path)
-	defer destroy_recipe(&recipe)
+	defer destroy_struct(&recipe)
 	testing.expect_value(t, err, "")
 	testing.expect_value(t, recipe.order, "order from file")
 	testing.expect_value(t, recipe.preamble, "shared rules")
@@ -139,7 +139,7 @@ test_recipe_rejects_duplicate_shot_ids :: proc(t: ^testing.T) {
 @(test)
 test_recipe_model_thinking_and_workers_settings :: proc(t: ^testing.T) {
 	recipe, err := parse_recipe(`{"order":"work","model":"openai/gpt-4o","thinking":"high","workers":5,"shots":[{"id":"a","prompt":"p","model":"anthropic/claude","thinking":"low","expect_changes":true}]}`)
-	defer destroy_recipe(&recipe)
+	defer destroy_struct(&recipe)
 	testing.expect_value(t, err, "")
 	testing.expect_value(t, recipe.workers, 5)
 	testing.expect_value(t, recipe.shots[0].model, "anthropic/claude")
@@ -192,26 +192,26 @@ test_recipe_rejects_preamble_with_both_input_forms :: proc(t: ^testing.T) {
 
 expect_recipe_error :: proc(t: ^testing.T, data, expected: string, loc := #caller_location) {
 	recipe, err := parse_recipe(data)
-	defer destroy_recipe(&recipe)
+	defer destroy_struct(&recipe)
 	testing.expect_value(t, err, expected, loc)
 }
 
 reject_recipe :: proc(t: ^testing.T, data: string) {
 	recipe, err := parse_recipe(data)
-	defer destroy_recipe(&recipe)
+	defer destroy_struct(&recipe)
 	testing.expect(t, err != "")
 }
 
 @(test)
 test_recipe_accepts_an_optional_share_list :: proc(t: ^testing.T) {
 	recipe, err := parse_recipe(`{"order":"o","share":["node_modules","packages/web/node_modules","vendor/bundle"],"shots":[{"id":"a","prompt":"p"}]}`)
-	defer destroy_recipe(&recipe)
+	defer destroy_struct(&recipe)
 	testing.expect_value(t, err, "")
 	testing.expect_value(t, len(recipe.share), 3)
 	testing.expect_value(t, recipe.share[1], "packages/web/node_modules")
 
 	plain, plain_err := parse_recipe(`{"order":"o","shots":[{"id":"a","prompt":"p"}]}`)
-	defer destroy_recipe(&plain)
+	defer destroy_struct(&plain)
 	testing.expect_value(t, plain_err, "")
 	testing.expect_value(t, len(plain.share), 0)
 }
@@ -222,10 +222,10 @@ test_recipe_rejects_unsafe_share_paths :: proc(t: ^testing.T) {
 		// Concatenate: Odin's fmt treats `{` in a format string as a directive.
 		data, _ := strings.concatenate({`{"order":"o","share":["`, path, `"],"shots":[{"id":"a","prompt":"p"}]}`}, context.temp_allocator)
 		recipe, err := parse_recipe(data)
-		destroy_recipe(&recipe)
+		destroy_struct(&recipe)
 		testing.expect(t, err == "share paths must be relative paths inside the repository", fmt.tprintf("path %q gave: %s", path, err))
 	}
 	dup, dup_err := parse_recipe(`{"order":"o","share":["node_modules","node_modules"],"shots":[{"id":"a","prompt":"p"}]}`)
-	destroy_recipe(&dup)
+	destroy_struct(&dup)
 	testing.expect_value(t, dup_err, "share paths must be unique")
 }

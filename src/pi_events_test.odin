@@ -6,7 +6,7 @@ import "core:testing"
 @(test)
 test_pi_events_report_normalized_tool_and_response_activity :: proc(t: ^testing.T) {
 	state: Pi_Event_State
-	defer pi_event_state_destroy(&state)
+	defer destroy_struct(&state)
 
 	start := `{"type":"tool_execution_start","toolCallId":"call-1",` +
 		`"toolName":"read","args":{"path":"secret"}}`
@@ -42,7 +42,7 @@ test_pi_events_report_normalized_tool_and_response_activity :: proc(t: ^testing.
 @(test)
 test_pi_events_extracts_last_final_assistant_text_blocks :: proc(t: ^testing.T) {
 	state: Pi_Event_State
-	defer pi_event_state_destroy(&state)
+	defer destroy_struct(&state)
 	line := `{"type":"agent_end","messages":[` +
 		`{"role":"assistant","content":[{"type":"text","text":"old"}]},` +
 		`{"role":"toolResult","content":[{"type":"text","text":"ignore"}]},` +
@@ -62,7 +62,7 @@ test_pi_events_extracts_last_final_assistant_text_blocks :: proc(t: ^testing.T) 
 @(test)
 test_pi_events_ignores_invalid_irrelevant_and_empty_events :: proc(t: ^testing.T) {
 	state: Pi_Event_State
-	defer pi_event_state_destroy(&state)
+	defer destroy_struct(&state)
 	valid := `{"type":"turn_start"}`
 	testing.expect(t, pi_event_consume(&state, valid))
 	before_kind := state.last_kind
@@ -86,7 +86,7 @@ test_pi_events_ignores_invalid_irrelevant_and_empty_events :: proc(t: ^testing.T
 @(test)
 test_pi_events_keep_message_end_report_if_agent_end_exceeds_bound :: proc(t: ^testing.T) {
 	state: Pi_Event_State
-	defer pi_event_state_destroy(&state)
+	defer destroy_struct(&state)
 	message_end := `{"type":"message_end","message":{"role":"assistant",` +
 		`"content":[{"type":"text","text":"final answer"}]}}`
 	testing.expect(t, !pi_event_consume(&state, message_end))
@@ -101,7 +101,7 @@ test_pi_events_keep_message_end_report_if_agent_end_exceeds_bound :: proc(t: ^te
 @(test)
 test_pi_events_malformed_report_events_preserve_previous_report :: proc(t: ^testing.T) {
 	state := Pi_Event_State{final_report = strings.clone("previous report")}
-	defer pi_event_state_destroy(&state)
+	defer destroy_struct(&state)
 	message_end := `{"type":"message_end","message":{"role":"assistant","content":"not an array"}}`
 	testing.expect(t, !pi_event_consume(&state, message_end))
 	testing.expect_value(t, state.final_report, "previous report")
@@ -114,7 +114,7 @@ test_pi_events_malformed_report_events_preserve_previous_report :: proc(t: ^test
 @(test)
 test_pi_events_bounds_description_and_handles_repeated_agent_end :: proc(t: ^testing.T) {
 	state: Pi_Event_State
-	defer pi_event_state_destroy(&state)
+	defer destroy_struct(&state)
 	name := strings.repeat("x", 1000)
 	defer delete(name)
 	line, _ := strings.concatenate({

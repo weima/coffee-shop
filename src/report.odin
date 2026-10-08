@@ -108,22 +108,22 @@ cancel_brew :: proc(state_root, herdr, brew_id: string) -> (output: string, err:
 	defer delete(brew_dir)
 	if all_terminal(register) {
 		status := brew_status(register)
-		destroy_register(&register)
+		destroy_struct(&register)
 		return fmt.aprintf("Brew %s already finished: %s\n", brew_id, status), ""
 	}
 	if !request_cancel(brew_dir) {
-		destroy_register(&register)
+		destroy_struct(&register)
 		return "", "could not record the cancellation request"
 	}
 	if !supervisor_gone(brew_dir) {
-		destroy_register(&register)
+		destroy_struct(&register)
 		return fmt.aprintf("Cancellation requested for Brew %s; its supervisor will stop the Workers.\n", brew_id), ""
 	}
 	if settle_err := settle_brew(brew_dir, &register, herdr, .Cancel); settle_err.kind != .None {
-		destroy_register(&register)
+		destroy_struct(&register)
 		return "", fmt.tprintf("could not settle Brew: %s", state_error_message(settle_err))
 	}
-	destroy_register(&register)
+	destroy_struct(&register)
 	return render_status(state_root, brew_id)
 }
 
@@ -134,7 +134,7 @@ settle_orphaned_brew :: proc(state_root, herdr, brew_id: string) -> string {
 	if load_err != "" {
 		return load_err
 	}
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	defer delete(brew_dir)
 	if all_terminal(register) || !supervisor_gone(brew_dir) {
 		return ""
@@ -160,7 +160,7 @@ render_status :: proc(state_root, brew_id: string) -> (output: string, err: stri
 	if load_err != "" {
 		return "", load_err
 	}
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	defer delete(brew_dir)
 
 	builder := strings.builder_make()
@@ -202,7 +202,7 @@ render_shot_activity :: proc(
 ) -> bool {
 	started_at, has_started := read_worker_started_at(brew_dir, shot_id)
 	activity, has_activity := read_activity_record(brew_dir, shot_id)
-	defer activity_record_destroy(&activity)
+	defer destroy_struct(&activity)
 	if !has_started && !has_activity {
 		return false
 	}
@@ -246,7 +246,7 @@ render_collect_with_pi :: proc(state_root, brew_id, pi: string) -> (result: Coll
 	if load_err != "" {
 		return Collect_Result{}, load_err
 	}
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	defer delete(brew_dir)
 
 	details := last_details(brew_dir, register)
@@ -324,7 +324,7 @@ render_collect_with_pi :: proc(state_root, brew_id, pi: string) -> (result: Coll
 				return Collect_Result{}, filter_err
 			}
 			render_filter_evidence(&builder, &decisions, shot.id, evidence)
-			destroy_filter_evidence(&evidence)
+			destroy_struct(&evidence)
 		}
 	}
 
@@ -365,11 +365,10 @@ load_brew :: proc(state_root, brew_id: string) -> (register: Register, brew_dir:
 		delete(brew_dir)
 		return Register{}, "", fmt.tprintf("no Brew named %s", brew_id)
 	}
-	state_err: State_Error
-	register, state_err = read_state(brew_dir)
-	if state_err.kind != .None {
+	register, err = command_snapshot(state_root, brew_id)
+	if err != "" {
 		delete(brew_dir)
-		return Register{}, "", fmt.tprintf("Brew state is unknown: %s", state_error_message(state_err))
+		return Register{}, "", err
 	}
 	return register, brew_dir, ""
 }
@@ -382,7 +381,7 @@ brew_launch_failure :: proc(state_root, brew_id: string) -> string {
 	if load_err != "" {
 		return ""
 	}
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	defer delete(brew_dir)
 
 	failed_index := -1

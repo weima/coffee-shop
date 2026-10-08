@@ -35,12 +35,6 @@ run_check :: proc(station_path: string, argv: []string, max_tail_bytes := 8192, 
 	}
 }
 
-destroy_check_result :: proc(result: ^Check_Result, allocator := context.allocator) {
-	delete(result.output_tail, allocator)
-	delete(result.detail, allocator)
-	result^ = Check_Result{}
-}
-
 command_text :: proc(argv: []string, allocator := context.allocator) -> string {
 	text: [dynamic]u8
 	text.allocator = allocator

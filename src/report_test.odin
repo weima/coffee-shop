@@ -19,7 +19,7 @@ test_brew_status_reports_the_least_finished_or_worst_outcome :: proc(t: ^testing
 	}
 	for c in cases {
 		register := make_test_register(t)
-		defer destroy_register(&register)
+		defer destroy_struct(&register)
 		for status, index in c.statuses {
 			delete(register.shots[index].status)
 			register.shots[index].status = strings.clone(status)
@@ -44,7 +44,7 @@ test_status_lists_each_shot_and_pending_cancellation :: proc(t: ^testing.T) {
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	register := make_test_register(t)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	brew_dir := fmt.tprintf("%s/brew-test", root)
 	_ = create_state(brew_dir, &register)
 	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_RUNNING, "Worker started")
@@ -61,7 +61,7 @@ test_status_shows_runtime_latest_activity_and_quiet_marker :: proc(t: ^testing.T
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	register := make_test_register(t)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	brew_dir := fmt.tprintf("%s/brew-test", root)
 	_ = create_state(brew_dir, &register)
 	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_RUNNING, "Worker started")
@@ -94,7 +94,7 @@ test_collect_includes_report_changes_and_failure_detail_and_flags_incomplete :: 
 	_ = os.write_entire_file(fmt.tprintf("%s/new.txt", station), "x", os.Permissions{.Read_User, .Write_User})
 
 	register := make_test_register(t)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	brew_dir := fmt.tprintf("%s/brew-test", root)
 	_ = create_state(brew_dir, &register)
 	register.shots[0].station_path = strings.clone(station)
@@ -120,7 +120,7 @@ test_collect_reports_missing_station_changes_for_completed_shot :: proc(t: ^test
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)
 	register := make_test_register(t)
-	defer destroy_register(&register)
+	defer destroy_struct(&register)
 	brew_dir := fmt.tprintf("%s/brew-test", root)
 	_ = create_state(brew_dir, &register)
 	register.shots[0].station_path = strings.clone(fmt.tprintf("%s/missing-station", root))
@@ -146,7 +146,7 @@ test_launch_failure_is_reported_only_when_no_worker_ever_started :: proc(t: ^tes
 
 	// Every Shot failed before any Worker started: that is a launch failure.
 	nothing := make_test_register(t)
-	defer destroy_register(&nothing)
+	defer destroy_struct(&nothing)
 	nothing_dir := fmt.tprintf("%s/brew-nothing", root)
 	_ = create_state(nothing_dir, &nothing)
 	_ = transition_shot(nothing_dir, &nothing, "shot-a", SHOT_FAILED, "Herdr workspace launch failed: no server")
@@ -155,7 +155,7 @@ test_launch_failure_is_reported_only_when_no_worker_ever_started :: proc(t: ^tes
 
 	// One Worker started and failed: an ordinary Worker failure, not a launch failure.
 	ran := make_test_register(t)
-	defer destroy_register(&ran)
+	defer destroy_struct(&ran)
 	ran_dir := fmt.tprintf("%s/brew-ran", root)
 	_ = create_state(ran_dir, &ran)
 	_ = transition_shot(ran_dir, &ran, "shot-a", SHOT_RUNNING, "Worker started")
@@ -165,7 +165,7 @@ test_launch_failure_is_reported_only_when_no_worker_ever_started :: proc(t: ^tes
 
 	// Cancelled before anything started is the user's choice, not a failure.
 	cancelled := make_test_register(t)
-	defer destroy_register(&cancelled)
+	defer destroy_struct(&cancelled)
 	cancelled_dir := fmt.tprintf("%s/brew-cancelled", root)
 	_ = create_state(cancelled_dir, &cancelled)
 	_ = transition_shot(cancelled_dir, &cancelled, "shot-a", SHOT_CANCELLED, "Brew cancelled before the Worker started")

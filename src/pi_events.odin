@@ -60,13 +60,6 @@ pi_event_consume :: proc(state: ^Pi_Event_State, line: string) -> bool {
 	return changed
 }
 
-pi_event_state_destroy :: proc(state: ^Pi_Event_State) {
-	delete(state.last_kind)
-	delete(state.last_description)
-	delete(state.final_report)
-	state^ = Pi_Event_State{}
-}
-
 pi_event_string :: proc(object: json.Object, key: string) -> string {
 	value, found := object[key]
 	if !found {

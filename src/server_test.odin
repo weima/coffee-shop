@@ -17,11 +17,11 @@ test_server_election_admits_one_holder :: proc(t: ^testing.T) {
 	testing.expect(t, first_ok, "the first server must be admitted")
 	_, second_ok := server_acquire(directory)
 	testing.expect(t, !second_ok, "a second server must not be admitted")
-	state_unlock(first)
+	file_lock_release(first)
 
 	third, third_ok := server_acquire(directory)
 	testing.expect(t, third_ok, "a server may start once the first has gone")
-	state_unlock(third)
+	file_lock_release(third)
 }
 
 @(test)
@@ -37,7 +37,7 @@ test_server_running_tracks_the_election_lock :: proc(t: ^testing.T) {
 	lock, ok := server_acquire(directory)
 	testing.expect(t, ok, "the lock must be acquired")
 	testing.expect(t, server_running(directory), "a held lock means a running server")
-	state_unlock(lock)
+	file_lock_release(lock)
 	testing.expect(t, !server_running(directory), "a released lock means no running server")
 }
 
@@ -53,17 +53,17 @@ test_server_restart_keeps_id_and_increments_generation :: proc(t: ^testing.T) {
 	first_lock, first, first_ok := server_start(directory, id, "/work/gac", "/tmp/gac.sock")
 	testing.expect(t, first_ok, "the first start must succeed")
 	testing.expect_value(t, first.generation, 1)
-	state_unlock(first_lock)
+	file_lock_release(first_lock)
 
 	second_lock, second, second_ok := server_start(directory, id, "/work/gac", "/tmp/gac.sock")
 	testing.expect(t, second_ok, "a restart must succeed once the first has gone")
 	testing.expect_value(t, second.generation, 2)
 	testing.expect(t, second.id == first.id, "a restart keeps the server id")
-	state_unlock(second_lock)
+	file_lock_release(second_lock)
 
 	stored, stored_ok := server_read_record(directory)
 	testing.expect(t, stored_ok, "server.json must be readable")
-	defer server_record_destroy(&stored)
+	defer destroy_struct(&stored)
 	testing.expect_value(t, stored.id, id)
 	testing.expect_value(t, stored.generation, 2)
 }
@@ -93,7 +93,7 @@ test_server_heartbeat_updates_the_stored_record :: proc(t: ^testing.T) {
 
 	lock, record, ok := server_start(directory, id, "/work/gac", "/tmp/gac.sock")
 	testing.expect(t, ok, "the start must succeed")
-	defer state_unlock(lock)
+	defer file_lock_release(lock)
 	before := record.heartbeat_ns
 
 	time.sleep(5 * time.Millisecond)
@@ -102,6 +102,6 @@ test_server_heartbeat_updates_the_stored_record :: proc(t: ^testing.T) {
 
 	stored, stored_ok := server_read_record(directory)
 	testing.expect(t, stored_ok, "server.json must be readable")
-	defer server_record_destroy(&stored)
+	defer destroy_struct(&stored)
 	testing.expect(t, stored.heartbeat_ns > before, "the stored heartbeat must advance")
 }

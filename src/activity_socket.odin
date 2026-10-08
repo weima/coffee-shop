@@ -226,7 +226,7 @@ activity_client_receive :: proc(
 				if client.line_len == 0 || json.unmarshal_string(
 					string(client.line[:client.line_len]), &message, .JSON, allocator,
 				) != nil || !activity_valid_message(message) {
-					activity_message_destroy(&message, allocator)
+					destroy_struct(&message, allocator)
 					client.line_len = 0
 					return Activity_Receive_Result{kind = .Malformed}
 				}
@@ -262,14 +262,6 @@ activity_client_close :: proc(client: ^Activity_Client) {
 		posix.close(client.fd)
 	}
 	client^ = Activity_Client{fd = -1}
-}
-
-activity_message_destroy :: proc(message: ^Activity_Message, allocator := context.allocator) {
-	delete(message.brew_id, allocator)
-	delete(message.shot_id, allocator)
-	delete(message.kind, allocator)
-	delete(message.description, allocator)
-	message^ = Activity_Message{}
 }
 
 activity_valid_message :: proc(message: Activity_Message) -> bool {
