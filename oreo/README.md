@@ -1,16 +1,17 @@
 # Oreo
 
-Oreo is a small Odin agent harness intended to be used as a library by Coffee Shop and, once mature, published from its own repository. **Pi is the reference implementation for provider authentication and agent-loop behavior only; Oreo will not depend on Pi's code, executable, runtime, or credential store.**
+Oreo is a small Odin agent harness intended to be used as a library by Coffee Shop and, once mature, published from its own repository. It hosts one in-memory session per top-level task; each session can submit many work items to a shared thread pool in one long-lived process. **Pi is the behavioral reference for provider authentication, agent-loop defaults, and built-in tools only; Oreo will not depend on Pi's code, executable, runtime, or credential store.**
 
 > **Status:** design and planning only. The Odin implementation has not started.
 
 ## What Oreo will provide
 
-- Direct provider authentication and model requests for OpenAI Codex and GitHub Copilot.
-- A caller-owned session loop with three tools: `read`, `write`, and `execute`.
+- A long-lived Odin host with per-task in-memory sessions and a shared worker pool for each session's work items.
+- Provider authentication and model requests for OpenAI Codex and GitHub Copilot, after the provider-neutral core is established and provider contracts are verified.
+- Pi-compatible `read`, `write`, and `execute` tools, plus events for external input, progress, and final results.
 - A small Odin library API that Coffee Shop can call.
 
-Oreo does not schedule work or set a global session limit. Consumers choose their own concurrency and are responsible for the resource limits of the machine.
+A typical workload is about 5 task sessions with 5 concurrent work items each (about 25 worker jobs). The stretch target is at least 1,000 queued/retained work items; Oreo does not need 1,000 active threads. Coffee Shop owns task decomposition and worktrees. Every dispatched work item carries provider, model, and thinking-level settings. The recommended design pauses work awaiting user input and releases its worker; confirm this detail in the core API design.
 
 ## Authentication
 
@@ -18,8 +19,8 @@ Oreo will implement the provider-specific OAuth flows directly and store credent
 
 ## Design documents
 
-- [Architecture](architecture.md) — responsibilities, session flow, provider boundaries, and tools.
-- [Implementation plan](PLAN.md) — staged work and verification gates.
+- [Architecture](architecture.md) — authoritative design decisions, session lifecycle, pool direction, provider boundaries, and tools.
+- [Implementation plan](PLAN.md) — staged work, open decisions, and verification gates.
 - [Roadmap](ROADMAP.md) — first usable release, Coffee Shop adoption, and future repository extraction.
 
 ## Reference implementation
