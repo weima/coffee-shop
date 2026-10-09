@@ -6,7 +6,7 @@ Build Oreo as an independent Odin agent harness in the top-level `oreo/` package
 
 | Slice | Result | Gate |
 |---|---|---|
-| 0. Confirm provider contracts | Auth and API assumptions are checked against Pi's behavior and provider requirements. | Oreo's own authorized client registrations and redirects, supported provider APIs, session settings, tool contracts, and cancellation behavior are documented. |
+| 0. Confirm provider contracts | Auth and API assumptions are checked against Pi's behavior and provider requirements. | Oreo's authorized client registrations and redirects, supported APIs, session settings, and tool contracts are documented; login, refresh, chat, tool-call, and cancellation behavior is explicit; client-ID and endpoint reuse is resolved. |
 | 1. Establish the Odin package | A buildable package with its minimal public session and provider interfaces. | `odin check` succeeds; package tests run without network access. |
 | 2. Add credential storage and login | Oreo-owned private credential storage and provider login flows. | Fake-server tests cover success, malformed responses, cancellation, expiry, and refresh for each provider. No test uses live credentials. |
 | 3. Implement provider requests | Direct provider API calls, streaming responses, tool-call parsing, and normalized errors. | Recorded or synthetic fixtures cover text, tool calls, usage, provider errors, and interrupted streams. |
