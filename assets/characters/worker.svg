@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-labelledby="title desc">
+  <title id="title">Worker, a regular person</title>
+  <desc id="desc">A Worker: a person in a brown shirt holding a coffee cup. Each Worker runs one Shot at its Station.</desc>
+  <defs>
+    <clipPath id="badge-worker"><circle cx="120" cy="120" r="108"/></clipPath>
+  </defs>
+  <circle cx="120" cy="120" r="108" fill="#F4EBDD"/>
+  <g clip-path="url(#badge-worker)">
+    <path d="M36 250 Q42 194 120 190 Q198 194 204 250 Z" fill="#6A4638"/>
+    <rect x="104" y="158" width="32" height="34" fill="#D3A66F"/>
+    <path d="M104 186 Q120 196 136 186" fill="none" stroke="#4A3027" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="80" cy="126" r="7" fill="#D3A66F"/>
+    <circle cx="160" cy="126" r="7" fill="#D3A66F"/>
+    <ellipse cx="120" cy="120" rx="40" ry="46" fill="#D3A66F"/>
+    <path d="M78 112 Q76 66 120 66 Q164 66 162 112 Q150 90 120 90 Q92 92 78 112 Z" fill="#2E2320"/>
+    <circle cx="106" cy="122" r="3" fill="#242323"/>
+    <circle cx="134" cy="122" r="3" fill="#242323"/>
+    <path d="M108 146 q12 8 24 0" fill="none" stroke="#242323" stroke-width="2.5" stroke-linecap="round"/>
+    <rect x="164" y="176" width="22" height="20" rx="4" fill="#F4EBDD" stroke="#4A3027" stroke-width="2"/>
+    <path d="M186 182 q6 0 6 6 q0 6 -6 6" fill="none" stroke="#4A3027" stroke-width="3"/>
+  </g>
+  <circle cx="120" cy="120" r="108" fill="none" stroke="#4A3027" stroke-width="4"/>
+</svg>
