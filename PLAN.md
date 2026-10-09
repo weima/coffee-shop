@@ -1,6 +1,6 @@
 # Coffee Shop Implementation Plan
 
-Build Coffee Shop as a local Odin CLI that dispatches explicit work to parallel Pi Workers. The Barista prepares a Recipe; Coffee Shop creates an isolated Station for each Shot, runs Workers in Herdr tabs, records their state, and returns an Oreo for human review. This plan turns [the architecture](docs/architecture.md) into ordered implementation slices. It does not authorize code changes by itself.
+Build Coffee Shop as a local Odin CLI that dispatches explicit work to parallel Pi Workers. The Barista prepares a Recipe; Coffee Shop creates an isolated Station for each Shot, runs Workers in Herdr tabs, records their state, and returns a Tray for human review. This plan turns [the architecture](docs/architecture.md) into ordered implementation slices. It does not authorize code changes by itself.
 
 ## Delivery path
 
@@ -14,7 +14,7 @@ Implement the slices in order. Each slice has a concrete result and a gate; do n
 | 3. Durable state | Register and Receipt with tested transitions | 2 |
 | 4. Station and Worker dispatch | Isolated worktrees and Herdr Pi workers | 3 |
 | 5. Status and recovery | Honest state after process restarts | 4 |
-| 6. Collection and Oreo | Reviewable results with Filter evidence | 5 |
+| 6. Collection and Tray | Reviewable results with Filter evidence | 5 |
 | 7. End-to-end dogfood | Verified local workflow and accurate docs | 1–6 |
 
 ## Slice 0 — Lock contracts before coding
@@ -82,25 +82,25 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 
 **Gate:** Tests simulate restart, missing sessions, stale records, and repeated cancellation. Status distinguishes completed, failed, active, and uncertain Workers correctly.
 
-## Slice 6 — Collect results and prepare the Oreo
+## Slice 6 — Collect results and prepare the Tray
 
 - Implement `collect` to gather each Shot's report and Filter evidence.
 - Run a separate one-shot, read-only Pi review of the selected changes against the Beans repository's root `standards.md`.
 - Discover unit/component and end-to-end test commands from the repository's existing manifests and test configuration, then run them unchanged. For MFEs, use Playwright only for browser behavior that unit/component tests cannot prove, following the repository's conventions.
 - Report review findings, missing standards, ambiguous test commands, unavailable setup, and test failures explicitly. Filter does not fix code, override commands, or hide findings.
-- Build the Oreo from Worker reports and Filter evidence. Identify any decisions needed from the developer. Do not merge, publish, or remove unreviewed Stations.
+- Build the Tray from Worker reports and Filter evidence. Identify any decisions needed from the developer. Do not merge, publish, or remove unreviewed Stations.
 - Make collection repeatable without losing or duplicating evidence.
 
-**Gate:** Tests cover successful, failed, and missing reports; review against `standards.md`; test discovery without command overrides; failing or unavailable test evidence; and repeated collection. The Oreo reports every Shot outcome, evidence, and unresolved decision.
+**Gate:** Tests cover successful, failed, and missing reports; review against `standards.md`; test discovery without command overrides; failing or unavailable test evidence; and repeated collection. The Tray reports every Shot outcome, evidence, and unresolved decision.
 
 ## Slice 7 — Verify the vertical slice and dogfood
 
 - Run Odin compiler checks and the focused tests for input validation, state transitions, process boundaries, recovery, and collection.
-- Run a local end-to-end Brew with fake Workers in a temporary repository. Verify status after restart and collect an Oreo.
+- Run a local end-to-end Brew with fake Workers in a temporary repository. Verify status after restart and collect a Tray.
 - Run one small real Pi dogfood task only after the fake-worker workflow passes; keep it local and review the returned Station manually.
 - Update the README with verified prerequisites, commands, workflow, and limitations.
 
-**Release gate:** A multi-Shot Brew completes without GitHub access or a second coordinator; Stations remain isolated and available for human review; the Register and Receipt survive restart; the Oreo contains check evidence; documentation matches observed behavior.
+**Release gate:** A multi-Shot Brew completes without GitHub access or a second coordinator; Stations remain isolated and available for human review; the Register and Receipt survive restart; the Tray contains check evidence; documentation matches observed behavior.
 
 ## Verification status
 
@@ -111,7 +111,7 @@ Slices 0–7 are implemented. `just test` runs 93 tests, including four end-to-e
 | A multi-Shot Brew completes without GitHub access or a second coordinator | End-to-end test: three Shots, one failing, no network. Live Brews with real Pi. |
 | Stations remain isolated and available for human review | End-to-end test: each Shot's output exists only in its own Station and never in the Beans repository; one Herdr tab per Shot. Nothing is deleted by `collect`. |
 | The Register and Receipt survive restart | End-to-end tests run `status` and `collect` as fresh processes, then kill the supervisor with `SIGKILL` and recover both Shots' results. A third test cancels a running Brew: Workers end, queued Shots are cancelled, and a repeat `cancel` changes nothing. A fourth shows `brew` exiting 1, with the Brew ID and Herdr's message, when no Herdr server is running. |
-| The Oreo contains check evidence | End-to-end test: review text, a passing `make test`, the failing Shot's reason, and the decisions list. A repeat `collect` is byte-identical. |
+| The Tray contains check evidence | End-to-end test: review text, a passing `make test`, the failing Shot's reason, and the decisions list. A repeat `collect` is byte-identical. |
 | Documentation matches observed behaviour | README requirements, usage and limitations were written from the runs above. |
 
 Known gaps, deliberately not hidden:
@@ -212,12 +212,12 @@ These items came from dogfooding v0.1 on the [Odin in Practice](https://github.c
 
 - **`prompt_file`.** A Shot has either `prompt` or `prompt_file`, never both and never neither, for example `{ "id": "durable-files", "prompt_file": "prompts/durable-files.md" }`.
 - **`order_file`.** The Recipe has either `order` or `order_file`, with the same rules.
-- **Shared instructions.** The Recipe has an optional `preamble` or `preamble_file`: text every Worker receives, written once. It is not repeated in each Shot. The Oreo and `status` show only that a preamble was used, with its file name and size, never the full text.
+- **Shared instructions.** The Recipe has an optional `preamble` or `preamble_file`: text every Worker receives, written once. It is not repeated in each Shot. The Tray and `status` show only that a preamble was used, with its file name and size, never the full text.
 - **Paths.** A file path is relative to the directory of the Recipe file, not the current directory, so a Recipe works from anywhere. It must stay inside that directory; an absolute path or a `..` that escapes it is rejected.
 - **Validation first.** Every file is read once, before any Station or Herdr workspace exists. A missing, unreadable, empty or non-UTF-8 file, or one over the size cap, fails `brew` with an error that names the Shot and the file.
 - **One snapshot per Brew, shared by every Worker.** Each file is copied once into the Brew's state directory, and Workers read it from there. Nothing is copied or pasted per Shot. Editing or deleting a source file while the Brew runs changes nothing, and `collect` and recovery never depend on it.
 
-**How `order` and the preamble differ.** Every Worker already receives `Order: <order>` as shared context, so the order is shared today. But the order is also printed in `status`, the Register and every Oreo, so it should stay a short statement of intent that a person reads. The preamble is for long standing rules (coding standards, forbidden actions, how to report) that Workers need and a reader of the Oreo does not. With `order_file`, a long order should be shown in the Oreo as its first paragraph plus a pointer to the full text, not inlined.
+**How `order` and the preamble differ.** Every Worker already receives `Order: <order>` as shared context, so the order is shared today. But the order is also printed in `status`, the Register and every Tray, so it should stay a short statement of intent that a person reads. The preamble is for long standing rules (coding standards, forbidden actions, how to report) that Workers need and a reader of the Tray does not. With `order_file`, a long order should be shown in the Tray as its first paragraph plus a pointer to the full text, not inlined.
 
 **Reading from a common location.** A Shot can already do this by hand today: put the shared rules in one file at a stable path and have each prompt begin "read that file first and follow it". It needs no code, and the Odin book Brew now does exactly that (the book repository's own `workers.md`). It is the right interim answer, and its weaknesses are why the feature is still worth building: nothing guarantees a Worker actually reads the file, the file can change underneath a running Brew, and the rules arrive as ordinary prompt text rather than as standing instructions. Having Coffee Shop deliver one shared snapshot itself removes all three.
 
@@ -242,12 +242,12 @@ These items came from dogfooding v0.1 on the [Odin in Practice](https://github.c
 - `ownership-traps` ended its turn with a plan and the question "May I proceed with that design?". Nobody can answer in print mode, so it exited 0 with an empty Changes list.
 - `verify-entrypoint` ended with "I fixed the `check` recipe and restarted the requested verification sequence." and no results.
 
-Both were recorded `completed`, and the Oreo's decisions list said nothing. Only the Barista reading every report caught them. A read-only task legitimately changes nothing, so "no changes" alone cannot be the signal, and guessing from the text (for example a trailing `?`) is fragile.
+Both were recorded `completed`, and the Tray's decisions list said nothing. Only the Barista reading every report caught them. A read-only task legitimately changes nothing, so "no changes" alone cannot be the signal, and guessing from the text (for example a trailing `?`) is fragile.
 
 **Goal.** `completed` means the Worker said it finished. Anything else is visible and fails safe.
 
 - **A completion marker.** Coffee Shop appends a short, Coffee Shop-owned instruction to every Worker prompt: finish the final message with a line `CS-DONE` only when the work is complete and verified, or with `CS-BLOCKED: <reason>` when it cannot be. The instruction is not part of the user's prompt and is not repeated in the Recipe.
-- **A new terminal state, `incomplete`.** A Worker that exits 0 without `CS-DONE` (a question, a progress note, a missing marker) or with `CS-BLOCKED` ends `incomplete`, not `completed`. `status` and `collect` show it, `collect` exits non-zero as for any non-completed Shot, and the Oreo's decisions list names the Shot and quotes the last lines of its final message or the blocked reason.
+- **A new terminal state, `incomplete`.** A Worker that exits 0 without `CS-DONE` (a question, a progress note, a missing marker) or with `CS-BLOCKED` ends `incomplete`, not `completed`. `status` and `collect` show it, `collect` exits non-zero as for any non-completed Shot, and the Tray's decisions list names the Shot and quotes the last lines of its final message or the blocked reason.
 - **Fails safe.** If a Worker forgets the marker, the cost is a visible `incomplete` the Barista checks, never a silently accepted result. The marker line is removed from the report that `collect` shows.
 - **Optional change expectation.** A Shot may declare `"expect_changes": true` (item 2's schema gains the field). A Shot that says it is done but left its Station unchanged is then `incomplete` too. The default is false, because reading and analysis Shots change nothing.
 - **Lifecycle.** `running` may now also move to `incomplete`. The transition table, Brew status derivation (`incomplete` counts as not completed), recovery and cancellation all need updating. A Register from v0.1 is unaffected: only Brews created by v0.2 require the marker.
@@ -276,10 +276,10 @@ Both were recorded `completed`, and the Oreo's decisions list said nothing. Only
 **Open questions.**
 
 - Whether the file is `workers.md` or lives in a `.coffee-shop/` directory.
-- What the Oreo says when neither file exists. Today it only reports a missing `standards.md` when the review cannot run.
+- What the Tray says when neither file exists. Today it only reports a missing `standards.md` when the review cannot run.
 - Whether a Recipe can name extra files for one Brew, which is item 5's preamble by another route.
 
-**Gate.** Tests cover: a Station with both files, one, and neither; the instruction reaching every Worker's prompt exactly once; the rules coming from the base commit and not from later edits to the Beans; and the Oreo's wording when a file is absent. A real Brew confirms a Worker reads `workers.md` without being told in its prompt.
+**Gate.** Tests cover: a Station with both files, one, and neither; the instruction reaching every Worker's prompt exactly once; the rules coming from the base commit and not from later edits to the Beans; and the Tray's wording when a file is absent. A real Brew confirms a Worker reads `workers.md` without being told in its prompt.
 
 ### v0.2.0 implementation decisions and evidence
 
@@ -298,7 +298,7 @@ Both were recorded `completed`, and the Oreo's decisions list said nothing. Only
 - Item 5, preamble: Pi received the preamble. The Shot reported `PREAMBLE-OK` (brew-20261008T231935Z-3381856).
 - Item 6, completion: a Shot told to finish with `CS-BLOCKED` ended `incomplete` with the reason shown, while the other Shot in the same Brew completed (brew-20261008T231935Z-3381856). The first run of this check showed `missing CS-DONE` instead of the reason. That was fixed: a block line followed by other text now names its reason, and a unit test covers it.
 - Item 4, five Workers: five Shots started within about 0.2 seconds of each other, so all five ran at once (brew-20261008T232006Z-3383324).
-- Item 2, model and thinking: the Oreo records the requested model and thinking level. That the Shot ran on that model was not checked.
+- Item 2, model and thinking: the Tray records the requested model and thinking level. That the Shot ran on that model was not checked.
 - Item 8, server: each run used the per-repository server. The idle-exit behaviour is covered by an end-to-end test; killing the server during a real run was not done.
 
 Authoring note: a preamble that asks for a line after the completion marker conflicts with the marker rule. The marker must still end the final message, so the preamble must ask for its line before the marker.
@@ -379,7 +379,7 @@ Gates still not exercised for real: item 6 with a live Pi failure, and the model
 ### 3. Account for tokens and cost
 
 - Confirm which usage fields Pi 1.1.0 reports in its JSON events before relying on them.
-- Record per Shot: model, input, output and cache tokens, and estimated cost. Keep these in the Register and Receipt, and show running totals in `status` and in the Oreo.
+- Record per Shot: model, input, output and cache tokens, and estimated cost. Keep these in the Register and Receipt, and show running totals in `status` and in the Tray.
 - Optional Recipe budget, in tokens or estimated cost. A Brew launches no new Shot once it is reached. Whether running Shots finish or are cancelled is an open question.
 - **Gate.** For a real Brew, the recorded tokens match the provider's usage for the same run, within a stated tolerance.
 

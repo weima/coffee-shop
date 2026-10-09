@@ -238,7 +238,7 @@ render_collect :: proc(state_root, brew_id: string) -> (output: string, complete
 	return result.output, result.complete, collect_err
 }
 
-// Builds the Oreo: every Shot's outcome, Worker report and Filter evidence, then
+// Builds the Tray: every Shot's outcome, Worker report and Filter evidence, then
 // the decisions that need a human. Filter evidence is created once per completed
 // Shot and reused by later collections.
 render_collect_with_pi :: proc(state_root, brew_id, pi: string) -> (result: Collect_Result, err: string) {

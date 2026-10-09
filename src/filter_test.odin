@@ -14,7 +14,7 @@ test_filter_reviews_and_runs_discovered_checks_once_and_reuses_evidence :: proc(
 	defer delete(first.output)
 	testing.expect_value(t, err, "")
 	testing.expect(t, strings.contains(first.output, "Review:\nNo findings"), first.output)
-	// No Worker report was written for this Shot; the Oreo must say nothing about one.
+	// No Worker report was written for this Shot; the Tray must say nothing about one.
 	testing.expect(t, !strings.contains(first.output, "Report:"), first.output)
 	testing.expect(t, strings.contains(first.output, "[unit] make test (Makefile test): passed"), first.output)
 
@@ -29,7 +29,7 @@ test_filter_reviews_and_runs_discovered_checks_once_and_reuses_evidence :: proc(
 }
 
 @(test)
-test_oreo_lists_decisions_for_failed_checks_and_findings :: proc(t: ^testing.T) {
+test_tray_lists_decisions_for_failed_checks_and_findings :: proc(t: ^testing.T) {
 	fixture := make_filter_fixture(t, "echo broken; exit 2", "echo '- high: src/a.odin:1 leaks'")
 	defer remove_fixture_root(fixture.root)
 

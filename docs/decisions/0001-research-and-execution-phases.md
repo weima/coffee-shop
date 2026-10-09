@@ -30,7 +30,7 @@ The flow is named in `PLAN.md` (v0.3, item 5): Grind, Cupping, Dial-in, Pull, Ta
 - **Data flow:** add the phase barrier between Cupping and Pulls.
 - **Blend:** redefine it as combining commits (decision 6).
 - **Safety boundaries:** replace "Workers do not commit" with "only Pulls commit, after Taste", and add the Cupping rule.
-- **Oreo:** list the Cupping findings and each Pull's commit.
+- **Tray:** list the Cupping findings and each Pull's commit.
 
 `specs/UBIQUITOUS_LANGUAGE_LATEST.md` gains Grind, Cupping, Dial-in, Pull and Taste, and Blend's definition changes.
 

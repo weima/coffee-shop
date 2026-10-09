@@ -106,24 +106,24 @@ test_e2e_multi_shot_brew_status_collect_and_isolation :: proc(t: ^testing.T) {
 	testing.expect_value(t, state_err.kind, State_Error_Kind.None)
 	testing.expect_value(t, register.event_sequence, 6)
 
-	collect_code, oreo, collect_err := e2e_run(e2e, "collect", brew_id)
+	collect_code, tray, collect_err := e2e_run(e2e, "collect", brew_id)
 	testing.expect_value(t, collect_code, 1) // not every Shot completed
 	testing.expect(t, strings.contains(collect_err, "not fully completed"), collect_err)
-	alpha := e2e_section(oreo, "alpha")
-	beta := e2e_section(oreo, "beta")
-	gamma := e2e_section(oreo, "gamma")
+	alpha := e2e_section(tray, "alpha")
+	beta := e2e_section(tray, "beta")
+	gamma := e2e_section(tray, "gamma")
 	testing.expect(t, strings.contains(alpha, "?? out-alpha.txt"), alpha)
 	testing.expect(t, strings.contains(alpha, "report for alpha"), alpha)
 	testing.expect(t, strings.contains(alpha, "Review:\nNo findings"), alpha)
 	testing.expect(t, strings.contains(alpha, "[unit] make test (Makefile test): passed"), alpha)
 	testing.expect(t, strings.contains(beta, "?? out-beta.txt") && !strings.contains(beta, "out-alpha"), beta)
 	testing.expect(t, strings.contains(gamma, "Detail: Pi exited with code 3"), gamma)
-	testing.expect(t, strings.contains(oreo, "## Decisions for the developer"), oreo)
-	testing.expect(t, strings.contains(oreo, "- Shot gamma is failed"), oreo)
+	testing.expect(t, strings.contains(tray, "## Decisions for the developer"), tray)
+	testing.expect(t, strings.contains(tray, "- Shot gamma is failed"), tray)
 
-	// Collecting again reuses the saved evidence and prints the same Oreo.
+	// Collecting again reuses the saved evidence and prints the same Tray.
 	_, again, _ := e2e_run(e2e, "collect", brew_id)
-	testing.expect_value(t, again, oreo)
+	testing.expect_value(t, again, tray)
 
 	// One Herdr workspace tab per Shot: the first Shot reuses the workspace's
 	// initial tab, so the other two Shots each needed a new tab.
@@ -187,10 +187,10 @@ test_e2e_a_killed_supervisor_is_recovered_without_losing_results :: proc(t: ^tes
 	}
 
 	// With no supervisor, collect records what the evidence proves, then reports it.
-	code, oreo, _ := e2e_run(e2e, "collect", brew_id)
+	code, tray, _ := e2e_run(e2e, "collect", brew_id)
 	testing.expect_value(t, code, 0)
-	testing.expect(t, strings.contains(oreo, "## Shot alpha: completed"), oreo)
-	testing.expect(t, strings.contains(oreo, "## Shot beta: completed"), oreo)
+	testing.expect(t, strings.contains(tray, "## Shot alpha: completed"), tray)
+	testing.expect(t, strings.contains(tray, "## Shot beta: completed"), tray)
 	register, state_err := read_state(fmt.tprintf("%s/%s", e2e.state, brew_id))
 	defer destroy_struct(&register)
 	testing.expect_value(t, state_err.kind, State_Error_Kind.None)
@@ -561,18 +561,18 @@ e2e_worker_logs :: proc(e2e: E2E) -> string {
 	return joined
 }
 
-// The part of an Oreo belonging to one Shot, up to the next heading.
-e2e_section :: proc(oreo, shot_id: string) -> string {
+// The part of a Tray belonging to one Shot, up to the next heading.
+e2e_section :: proc(tray, shot_id: string) -> string {
 	marker := fmt.tprintf("## Shot %s:", shot_id)
-	start := strings.index(oreo, marker)
+	start := strings.index(tray, marker)
 	if start < 0 {
 		return ""
 	}
-	rest := oreo[start + len(marker):]
+	rest := tray[start + len(marker):]
 	if end := strings.index(rest, "\n## "); end >= 0 {
-		return oreo[start : start + len(marker) + end]
+		return tray[start : start + len(marker) + end]
 	}
-	return oreo[start:]
+	return tray[start:]
 }
 
 // The server dies with Workers running. The next command starts a new server,
@@ -630,10 +630,10 @@ test_e2e_workers_and_brew_survive_a_killed_server :: proc(t: ^testing.T) {
 	testing.expect_value(t, wait_err, os.Error(nil))
 	testing.expect(t, state.success, "the Brew must finish after the restart")
 
-	collect_code, oreo, _ := e2e_run(e2e, "collect", brew_id)
+	collect_code, tray, _ := e2e_run(e2e, "collect", brew_id)
 	testing.expect_value(t, collect_code, 0)
-	testing.expect(t, strings.contains(oreo, "## Shot alpha: completed"), oreo)
-	testing.expect(t, strings.contains(oreo, "## Shot beta: completed"), oreo)
+	testing.expect(t, strings.contains(tray, "## Shot alpha: completed"), tray)
+	testing.expect(t, strings.contains(tray, "## Shot beta: completed"), tray)
 	register, state_err := read_state(fmt.tprintf("%s/%s", e2e.state, brew_id))
 	defer destroy_struct(&register)
 	testing.expect_value(t, state_err.kind, State_Error_Kind.None)
@@ -734,11 +734,11 @@ test_e2e_completion_outcomes_are_incomplete_unless_the_shot_proves_them :: proc(
 	testing.expect(t, strings.contains(status, "idle  incomplete"), status)
 	testing.expect(t, strings.contains(status, "made  completed"), fmt.tprintf("%s\nroot: %s", status, e2e.root))
 
-	collect_code, oreo, _ := e2e_run(e2e, "collect", brew_id)
+	collect_code, tray, _ := e2e_run(e2e, "collect", brew_id)
 	testing.expect_value(t, collect_code, 1)
-	testing.expect(t, strings.contains(oreo, "missing CS-DONE completion marker"), oreo)
-	testing.expect(t, strings.contains(oreo, "Station is unchanged"), oreo)
-	testing.expect(t, strings.contains(oreo, "## Shot made: completed"), oreo)
+	testing.expect(t, strings.contains(tray, "missing CS-DONE completion marker"), tray)
+	testing.expect(t, strings.contains(tray, "Station is unchanged"), tray)
+	testing.expect(t, strings.contains(tray, "## Shot made: completed"), tray)
 }
 
 // A Brew keeps its own copies of its prompt and preamble files. Deleting the
@@ -762,8 +762,8 @@ test_e2e_brew_collects_after_its_source_files_are_deleted :: proc(t: ^testing.T)
 	testing.expect_value(t, os.remove(prompt_path), os.Error(nil))
 	testing.expect_value(t, os.remove(preamble_path), os.Error(nil))
 
-	collect_code, oreo, collect_err := e2e_run(e2e, "collect", brew_id)
+	collect_code, tray, collect_err := e2e_run(e2e, "collect", brew_id)
 	testing.expect_value(t, collect_code, 0)
-	testing.expect(t, strings.contains(oreo, "## Shot alpha: completed"), collect_err)
-	testing.expect(t, strings.contains(oreo, "Preamble: pre.md"), oreo)
+	testing.expect(t, strings.contains(tray, "## Shot alpha: completed"), collect_err)
+	testing.expect(t, strings.contains(tray, "Preamble: pre.md"), tray)
 }

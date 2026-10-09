@@ -35,8 +35,8 @@ flowchart TD
     Register --> Collect[Collect completed results]
     Receipt --> Collect
     Filter --> Collect
-    Collect --> Oreo[Oreo<br/>summary, evidence, decisions]
-    Oreo --> Barista
+    Collect --> Tray[Tray<br/>summary, evidence, decisions]
+    Tray --> Barista
     Barista -->|explicit request| Blend[Proposed Blend command<br/>one commit]
     Station1 -->|Shot changes| Blend
     StationN -->|Shot changes| Blend
@@ -169,7 +169,7 @@ stateDiagram-v2
 | **Server** | One per repository. It starts on demand, holds the Register in memory, and is the only writer of Brew state, so commands and Workers ask it instead of editing files. It is elected by an exclusive lock on `server.lock`, exits when the repository has no active Brew, and serves requests over one Unix socket. See the Server section below. |
 | **Scale** | The maximum number of concurrent Workers. |
 | **Filter** | Uses a separate one-shot Pi reviewer to check selected changes against the Beans repository's root `standards.md`, then discovers and runs unit/component and end-to-end test commands from existing manifests and test configuration. It reports evidence without fixing code or changing test setup. |
-| **Oreo** | The final review packet with the outcome, evidence, and any decision for the developer. |
+| **Tray** | The final review packet with the outcome, evidence, and any decision for the developer. |
 | **Blend (proposed)** | An explicit post-review operation that gathers a Brew's Shot changes into one commit in a retained integration worktree, then removes the per-Shot worktrees after success. |
 
 ## Recipe contract
@@ -234,14 +234,14 @@ The supervisor records its process identity (PID plus kernel start time, so a re
 
 Liveness has three answers, not two. A process is **gone** only on evidence: its `/proc/<pid>/stat` entry is missing, it is a zombie, or its start time differs. If that entry cannot be read, or does not parse, the answer is **unknown**, and unknown is never treated as gone: a Worker is not recorded as `interrupted`, `cancel` does not confirm an exit it cannot see (after its grace period the Shot ends `interrupted`, which says the exit was not confirmed), and `collect` and `cancel` do not take over from a supervisor whose state they cannot read. A process that cannot record its own identity says so and stops rather than writing a guessed start time.
 
-## Filter and Oreo
+## Filter and Tray
 
 `collect` runs the Filter once for each `completed` Shot and saves its evidence in `<brew>/filter/<shot>.json`; later collections show the saved evidence without re-running Pi or the tests. Delete that file to run the Filter again for a Shot.
 
-- **Review.** A one-shot `pi --print --no-session --no-extensions --no-mcp --tools read,grep,find,ls` reviews `git diff <base commit>` plus the untracked file list against the Station's `standards.md`. The tool allowlist is what keeps it read-only. The Brew records the Beans HEAD commit as the base when it starts. If `standards.md` is missing, the base commit is unknown, there are no changes, or Pi fails, the Oreo says the review was not performed; it never shows a failed review as clean.
-- **Checks.** Test commands are discovered, never invented, from the Station's own manifests: `package.json` scripts (`test`, `test:unit`, `test:e2e`, `e2e`, `test:playwright`, using the package manager its lockfile or `packageManager` field names), `justfile` (also `Justfile`, `.justfile`) and `Makefile` `test`/`e2e`/`test-e2e` targets, `go.mod`, and `Cargo.toml`. A recipe that needs arguments is skipped, since a bare run could not execute it. If more than one candidate exists for a kind, none is run and the Oreo reports the ambiguity. A Playwright configuration without an e2e script, or no recognized test configuration, is reported rather than guessed at.
+- **Review.** A one-shot `pi --print --no-session --no-extensions --no-mcp --tools read,grep,find,ls` reviews `git diff <base commit>` plus the untracked file list against the Station's `standards.md`. The tool allowlist is what keeps it read-only. The Brew records the Beans HEAD commit as the base when it starts. If `standards.md` is missing, the base commit is unknown, there are no changes, or Pi fails, the Tray says the review was not performed; it never shows a failed review as clean.
+- **Checks.** Test commands are discovered, never invented, from the Station's own manifests: `package.json` scripts (`test`, `test:unit`, `test:e2e`, `e2e`, `test:playwright`, using the package manager its lockfile or `packageManager` field names), `justfile` (also `Justfile`, `.justfile`) and `Makefile` `test`/`e2e`/`test-e2e` targets, `go.mod`, and `Cargo.toml`. A recipe that needs arguments is skipped, since a bare run could not execute it. If more than one candidate exists for a kind, none is run and the Tray reports the ambiguity. A Playwright configuration without an e2e script, or no recognized test configuration, is reported rather than guessed at.
 - **Limits.** Checks run inside the Station, a fresh checkout: dependencies the repository does not commit (for example `node_modules`) are absent, and a command may write build output there. Failures from either cause are reported as failures. Output is kept to its tail, and there is no timeout.
-- **Decisions.** The Oreo ends with "Decisions for the developer": any Shot that did not complete, a review that reported findings or could not run, a failing check, and every ambiguity or gap above.
+- **Decisions.** The Tray ends with "Decisions for the developer": any Shot that did not complete, a review that reported findings or could not run, a failing check, and every ambiguity or gap above.
 
 ## Data flow
 
@@ -251,8 +251,8 @@ Liveness has three answers, not two. A process is **gone** only on evidence: its
 4. Workers write their result and check evidence to their own Station. The Barista may assign a normal Shot to add tests from `standards.md`; that Worker receives the Taste-Driven Development skill as task guidance, without installing it into the Beans repository.
 5. The CLI updates the Register and Receipt as it observes Worker state. The repository's server makes these writes. The supervisor persists latest activity separately; activity recency never changes liveness. The Scale uses the Recipe's Worker limit (two by default, five maximum); the supervisor continues queued independent Shots after a Worker fails. There is no automatic timeout.
 6. Filter runs a separate one-shot Pi code review against `standards.md`, then discovers and runs the repository's existing unit/component and end-to-end test commands without overriding them.
-7. The Barista collects Worker reports and Filter evidence into the Oreo for human review.
-8. The proposed `blend <brew-id>` action integrates reviewed Shot changes after the Barista approves the Oreo.
+7. The Barista collects Worker reports and Filter evidence into the Tray for human review.
+8. The proposed `blend <brew-id>` action integrates reviewed Shot changes after the Barista approves the Tray.
 
 ## Blend (proposed)
 
@@ -267,7 +267,7 @@ If changes conflict or the commit fails, Blend leaves the original tabs, Station
 - Coffee Shop reports a missing or failed Worker as incomplete. It does not treat an unreadable state record as success.
 - A test-authoring Worker reads the Beans repository's root `standards.md` and receives Taste-Driven Development as task guidance; Coffee Shop does not install the skill into the Beans repository.
 - Filter reports review findings and test outcomes; it does not auto-fix, commit, merge, publish, or manage CI. It does not rewrite test scripts or configuration. If discovery is ambiguous or setup is unavailable, it reports that instead of guessing.
-- Workers do not merge, commit, or publish their changes. A person reviews the Oreo and explicitly decides when to integrate them.
+- Workers do not merge, commit, or publish their changes. A person reviews the Tray and explicitly decides when to integrate them.
 - Coffee Shop preserves Stations and Brew state by default. The proposed Blend action removes only the target Brew's per-Shot worktrees after its single integration commit succeeds; Brew state, reports, and Filter evidence remain.
 - The per-Brew supervisor exists only while `brew` is active. A repository's server runs only while that repository has an active Brew and exits after an idle timeout. There is no always-on watcher or automatic Worker timeout. The Barista asks for status or collection when needed.
 - The Register and Receipt live under the Coffee Shop state directory, outside the Beans repository.

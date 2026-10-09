@@ -24,8 +24,8 @@ Draft language for the small Pi-worker dispatcher. Coffee and snack metaphors na
 
 | Term | Definition | Aliases to avoid |
 | --- | --- | --- |
-| **Oreo** | The compact review packet for a completed Brew: outcome summary, supporting evidence, and any decision needed from the developer. | Deliverable bundle, completion packet |
-| **Blend** (proposed, not yet implemented) | An explicit operation, run after the Barista approves an Oreo, that combines a Brew's Pull commits, in dependency order, into one local commit in a retained integration worktree, then removes that Brew's per-Shot Stations after success. On conflict or commit failure it leaves Herdr tabs, Stations and Brew state intact. | Merge, integrate, squash, publish |
+| **Tray** | The compact review packet for a completed Brew: outcome summary, supporting evidence, and any decision needed from the developer. | Deliverable bundle, completion packet |
+| **Blend** (proposed, not yet implemented) | An explicit operation, run after the Barista approves a Tray, that combines a Brew's Pull commits, in dependency order, into one local commit in a retained integration worktree, then removes that Brew's per-Shot Stations after success. On conflict or commit failure it leaves Herdr tabs, Stations and Brew state intact. | Merge, integrate, squash, publish |
 
 ## Software concept matches
 
@@ -43,21 +43,21 @@ These are working mappings for the option-2 design, not a requirement to use eve
 | **Timer** | A timeout or deadline for a Worker or Brew. | Direct mapping. |
 | **Register** | The durable local index of active Brews and their current status. | Good state-store metaphor. |
 | **Receipt** | The append-only event history for a Brew. | Distinct from current status and the final review packet. |
-| **Oreo** | The final review packet: outcome, evidence, and decisions needed. | Playful presentation term; not a storage format. |
+| **Tray** | The final review packet: outcome, evidence, and decisions needed. | A coffee-shop serving metaphor; not a storage format. |
 | **Knock box** | Possible name for a cleanup/retirement area for completed Stations. | Tentative; only useful if cleanup becomes a distinct lifecycle step. |
 
 **Not mapped yet:** drink varieties, ingredients, cups and mugs, tables and chairs, tills, card readers, pastries, and other food. They have no clear unique software concept in the current scope; avoid using them just to fill out the vocabulary.
 
 ## Relationships
 
-- A **Brew** fulfills one **Order** by executing its **Recipe** and produces one **Oreo** for review.
+- A **Brew** fulfills one **Order** by executing its **Recipe** and produces one **Tray** for review.
 - A **Recipe** contains one or more **Shots**; a Shot is the smallest independently dispatched unit.
-- In a research-then-execute Brew, the phases run in order: **Grind**, then **Cupping** Shots, then **Dial-in**, which adds the **Pull** Shots, then **Blend** after the Barista approves the **Oreo**. The full flow and its decision record are in `specs/diagrams/v03-research-flow.png` and `docs/decisions/0001-research-and-execution-phases.md`.
+- In a research-then-execute Brew, the phases run in order: **Grind**, then **Cupping** Shots, then **Dial-in**, which adds the **Pull** Shots, then **Blend** after the Barista approves the **Tray**. The full flow and its decision record are in `specs/diagrams/v03-research-flow.png` and `docs/decisions/0001-research-and-execution-phases.md`.
 - Each **Shot** is assigned to one **Worker** and one **Station**; a Worker does not share a Station with another Worker during a Brew.
-- The **Barista** uses the **Beans**, prepares the Recipe, reviews the collected Shot results, and prepares the **Oreo**; Coffee Shop does not merge or publish them automatically.
-- After an **Oreo** is approved, a proposed **Blend** combines the Brew's Shot changes into one commit in a retained integration worktree. Blend does not merge or publish; those remain the developer's decision.
-- The **Register** tracks current Brew and Shot status; the **Receipt** records status events; the **Oreo** summarizes the outcome for human review.
-- The **Scale** bounds concurrent Workers. The **Filter** reviews changes and reports existing test results before an Oreo is served.
+- The **Barista** uses the **Beans**, prepares the Recipe, reviews the collected Shot results, and prepares the **Tray**; Coffee Shop does not merge or publish them automatically.
+- After a **Tray** is approved, a proposed **Blend** combines the Brew's Shot changes into one commit in a retained integration worktree. Blend does not merge or publish; those remain the developer's decision.
+- The **Register** tracks current Brew and Shot status; the **Receipt** records status events; the **Tray** summarizes the outcome for human review.
+- The **Scale** bounds concurrent Workers. The **Filter** reviews changes and reports existing test results before a Tray is served.
 - The **Barista** may assign a normal **Shot** to add tests using **Taste-Driven Development**; Filter remains responsible for running the repository's existing test commands.
 
 ## Shot states
@@ -74,7 +74,7 @@ These are working mappings for the option-2 design, not a requirement to use eve
 
 ## Diagrams
 
-![Vocabulary map: Order, Recipe, Brew, Shots, Workers, Stations, Oreo, Register and Receipt](diagrams/vocabulary-map.png)
+![Vocabulary map: Order, Recipe, Brew, Shots, Workers, Stations, Tray, Register and Receipt](diagrams/vocabulary-map.png)
 
 *How the parts fit. Source: `diagrams/vocabulary-map.html`.*
 
@@ -93,7 +93,7 @@ Each role has a character in the mascot's style. Coffee and Oreo are the two fro
 | Role | Character | Drawn as |
 | --- | --- | --- |
 | **Barista** | Coffee | a black German Shepherd and Golden Retriever mix in a coffee-brown apron |
-| **Oreo** (the review packet, and the cat who reviews a finished Brew) | Oreo | a black-and-white American Shorthair holding an Oreo cookie |
+| **Oreo** (the cat who reviews a finished Brew) | Oreo | a black-and-white American Shorthair holding an Oreo cookie |
 | **Worker** | a person | a brown shirt, holding a coffee cup |
 | **Cupper** | a person | a grey shirt, holding a tasting spoon |
 | **Filter** | a person | a slate-blue shirt, holding a magnifying glass |
@@ -114,7 +114,7 @@ Each role has a character in the mascot's style. Coffee and Oreo are the two fro
 >
 > **Developer:** “Brew those in parallel.”
 >
-> **Barista:** “Each Worker has its own Station. I’ll review both reports and put the outcome, evidence, and any decision into the Oreo.”
+> **Barista:** “Each Worker has its own Station. I’ll review both reports and put the outcome, evidence, and any decision into the Tray.”
 
 ## Coffee-shop word bank
 
@@ -131,7 +131,7 @@ Candidate words for future product vocabulary. These are a naming palette, not a
 
 - **Brew** means the full lifecycle, not a Pi process or a single worker attempt. Use **Worker** for the Pi process and **Shot** for its assigned unit of work.
 - **Recipe** is the explicit task breakdown, not a guarantee that tasks are independent. The Barista must keep dependent work in sequence rather than dispatching it as parallel Shots.
-- **Oreo** is intentionally a playful name for the review packet, not a new data format or a required file type.
+- **Tray** is the review packet presented for a completed Brew; it is not a new data format or a required file type.
 - The word bank is a candidate palette only; do not assign software meanings to these words without a concrete concept that needs naming.
 - **Taste-Driven Development** is a Worker skill name, not a new lifecycle component; test-authoring remains ordinary Shot work.
 - **Taste** is a Pull's own check before its commit. **Filter** is the independent review after a Shot. Do not treat one as the other.

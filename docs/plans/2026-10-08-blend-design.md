@@ -4,7 +4,7 @@
 
 ## Goal
 
-After the Barista reviews a Brew's Oreo, provide one explicit action that gathers the Shot changes into one local commit, closes the completed Herdr tabs, removes the per-Shot Station worktrees, and leaves one integration worktree for the owner to push and use for a PR.
+After the Barista reviews a Brew's Tray, provide one explicit action that gathers the Shot changes into one local commit, closes the completed Herdr tabs, removes the per-Shot Station worktrees, and leaves one integration worktree for the owner to push and use for a PR.
 
 ## Proposed command
 
@@ -16,7 +16,7 @@ coffee-shop blend <brew-id>
 
 ## Proposed flow
 
-1. Require a terminal Brew and a completed `collect`; the Barista reviews the Oreo and invokes `blend`.
+1. Require a terminal Brew and a completed `collect`; the Barista reviews the Tray and invokes `blend`.
 2. Create one integration worktree from the Brew's recorded Beans base commit.
 3. Apply every Shot's tracked, untracked, and deleted-file changes in Recipe order, then create exactly one commit containing the combined result.
 4. Only after that commit succeeds, close this Brew's Herdr tabs and remove its per-Shot Station worktrees. Preserve Brew state, reports, and Filter evidence.

@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-labelledby="title desc">
+  <title id="title">Oreo, the cat</title>
+  <desc id="desc">Oreo, an American Shorthair with a black coat and white chest and muzzle, holding an Oreo cookie. Oreo, who passed away at 12, is remembered in the project.</desc>
+  <defs>
+    <clipPath id="badge-oreo"><circle cx="120" cy="120" r="108"/></clipPath>
+  </defs>
+  <circle cx="120" cy="120" r="108" fill="#F4EBDD"/>
+  <g clip-path="url(#badge-oreo)">
+    <!-- Shoulders -->
+    <path d="M40 250 Q46 196 120 192 Q194 196 200 250 Z" fill="#242323"/>
+    <!-- Short, rounded ears (American Shorthair) -->
+    <path d="M72 86 L70 56 Q90 62 104 84 Z" fill="#242323"/>
+    <path d="M168 86 L170 56 Q150 62 136 84 Z" fill="#242323"/>
+    <!-- Round, full head -->
+    <path d="M66 110 Q66 66 120 66 Q174 66 174 110 Q174 160 146 172 Q120 180 94 172 Q66 160 66 110 Z" fill="#242323"/>
+    <!-- Round copper-gold eyes -->
+    <circle cx="97" cy="110" r="9" fill="#E8B85F"/>
+    <circle cx="143" cy="110" r="9" fill="#E8B85F"/>
+    <circle cx="97" cy="111" r="4.5" fill="#242323"/>
+    <circle cx="143" cy="111" r="4.5" fill="#242323"/>
+    <circle cx="100" cy="107" r="2" fill="#F4EBDD"/>
+    <circle cx="146" cy="107" r="2" fill="#F4EBDD"/>
+    <!-- White mask, muzzle and chin -->
+    <path d="M104 126 Q120 118 136 126 Q140 144 136 160 Q120 170 104 160 Q100 144 104 126 Z" fill="#F2E8D8"/>
+    <path d="M115 134 h10 l-5 6 Z" fill="#6A4638"/>
+    <path d="M120 140 v4 M120 144 q-6 6 -11 1 M120 144 q6 6 11 1" fill="none" stroke="#6A4638" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M100 142 L68 136 M100 150 L68 152 M140 142 L172 136 M140 150 L172 152" stroke="#9B9389" stroke-width="2" stroke-linecap="round"/>
+    <!-- White chest -->
+    <path d="M90 186 Q120 176 150 186 Q148 212 120 218 Q92 212 90 186 Z" fill="#F2E8D8"/>
+    <!-- Oreo cookie held in front -->
+    <circle cx="158" cy="198" r="16" fill="#242323"/>
+    <circle cx="158" cy="198" r="9" fill="#F2E8D8"/>
+    <circle cx="158" cy="198" r="3.5" fill="#242323"/>
+  </g>
+  <circle cx="120" cy="120" r="108" fill="none" stroke="#4A3027" stroke-width="4"/>
+</svg>
