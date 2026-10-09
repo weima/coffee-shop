@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="architecture-diagram-title architecture-diagram-desc" id="architecture-diagram-root">
+        <title id="architecture-diagram-title">Oreo system architecture</title>
+        <desc id="architecture-diagram-desc">The consumer drives an Oreo session, which exchanges requests with a provider adapter and API, reads its credential store, and calls the read, write, and execute tools.</desc>
+        <defs>
+      <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
+      #architecture-diagram-root { --paper: #f5f5f5;
+      --ink: #2d3142;
+      --muted: #4f5d75;
+      --soft: #7a8399;
+      --accent: #eb6c36;
+      --link: #2e5aa8;
+      --sans: 'Geist', system-ui, sans-serif;
+      --serif: 'Instrument Serif', serif;
+      --mono: 'Geist Mono', ui-monospace, monospace; }
+      #architecture-diagram-root { color: var(--ink); font-family: var(--sans); }
+      #architecture-diagram-root .diagram-container { width: 100%; overflow-x: auto; }
+      #architecture-diagram-root .diagram-container { overflow-x: visible; }</style>
+          <marker id="architecture-diagram-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+          <marker id="architecture-diagram-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+          <marker id="architecture-diagram-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+        </defs>
+
+        <rect width="960" height="600" fill="#f5f5f5"/>
+
+        <!-- Package-owned mascot asset, embedded so this HTML remains self-contained. -->
+        <image x="824" y="40" width="80" height="80" preserveAspectRatio="xMidYMid meet"
+          href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNDAgMjQwIiByb2xlPSJpbWciIGFyaWEtbGFiZWxsZWRieT0idGl0bGUgZGVzYyI+CiAgPHRpdGxlIGlkPSJ0aXRsZSI+T3JlbywgdGhlIGNhdDwvdGl0bGU+CiAgPGRlc2MgaWQ9ImRlc2MiPk9yZW8sIGFuIEFtZXJpY2FuIFNob3J0aGFpciB3aXRoIGEgYmxhY2sgY29hdCBhbmQgd2hpdGUgY2hlc3QgYW5kIG11enpsZSwgaG9sZGluZyBhbiBPcmVvIGNvb2tpZS4gT3Jlbywgd2hvIHBhc3NlZCBhd2F5IGF0IDEyLCBpcyByZW1lbWJlcmVkIGluIHRoZSBwcm9qZWN0LjwvZGVzYz4KICA8ZGVmcz4KICAgIDxjbGlwUGF0aCBpZD0iYmFkZ2Utb3JlbyI+PGNpcmNsZSBjeD0iMTIwIiBjeT0iMTIwIiByPSIxMDgiLz48L2NsaXBQYXRoPgogIDwvZGVmcz4KICA8Y2lyY2xlIGN4PSIxMjAiIGN5PSIxMjAiIHI9IjEwOCIgZmlsbD0iI0Y0RUJERCIvPgogIDxnIGNsaXAtcGF0aD0idXJsKCNiYWRnZS1vcmVvKSI+CiAgICA8IS0tIFNob3VsZGVycyAtLT4KICAgIDxwYXRoIGQ9Ik00MCAyNTAgUTQ2IDE5NiAxMjAgMTkyIFExOTQgMTk2IDIwMCAyNTAgWiIgZmlsbD0iIzI0MjMyMyIvPgogICAgPCEtLSBTaG9ydCwgcm91bmRlZCBlYXJzIChBbWVyaWNhbiBTaG9ydGhhaXIpIC0tPgogICAgPHBhdGggZD0iTTcyIDg2IEw3MCA1NiBROTAgNjIgMTA0IDg0IFoiIGZpbGw9IiMyNDIzMjMiLz4KICAgIDxwYXRoIGQ9Ik0xNjggODYgTDE3MCA1NiBRMTUwIDYyIDEzNiA4NCBaIiBmaWxsPSIjMjQyMzIzIi8+CiAgICA8IS0tIFJvdW5kLCBmdWxsIGhlYWQgLS0+CiAgICA8cGF0aCBkPSJNNjYgMTEwIFE2NiA2NiAxMjAgNjYgUTE3NCA2NiAxNzQgMTEwIFExNzQgMTYwIDE0NiAxNzIgUTEyMCAxODAgOTQgMTcyIFE2NiAxNjAgNjYgMTEwIFoiIGZpbGw9IiMyNDIzMjMiLz4KICAgIDwhLS0gUm91bmQgY29wcGVyLWdvbGQgZXllcyAtLT4KICAgIDxjaXJjbGUgY3g9Ijk3IiBjeT0iMTEwIiByPSI5IiBmaWxsPSIjRThCODVGIi8+CiAgICA8Y2lyY2xlIGN4PSIxNDMiIGN5PSIxMTAiIHI9IjkiIGZpbGw9IiNFOEI4NUYiLz4KICAgIDxjaXJjbGUgY3g9Ijk3IiBjeT0iMTExIiByPSI0LjUiIGZpbGw9IiMyNDIzMjMiLz4KICAgIDxjaXJjbGUgY3g9IjE0MyIgY3k9IjExMSIgcj0iNC41IiBmaWxsPSIjMjQyMzIzIi8+CiAgICA8Y2lyY2xlIGN4PSIxMDAiIGN5PSIxMDciIHI9IjIiIGZpbGw9IiNGNEVCREQiLz4KICAgIDxjaXJjbGUgY3g9IjE0NiIgY3k9IjEwNyIgcj0iMiIgZmlsbD0iI0Y0RUJERCIvPgogICAgPCEtLSBXaGl0ZSBtYXNrLCBtdXp6bGUgYW5kIGNoaW4gLS0+CiAgICA8cGF0aCBkPSJNMTA0IDEyNiBRMTIwIDExOCAxMzYgMTI2IFExNDAgMTQ0IDEzNiAxNjAgUTEyMCAxNzAgMTA0IDE2MCBRMTAwIDE0NCAxMDQgMTI2IFoiIGZpbGw9IiNGMkU4RDgiLz4KICAgIDxwYXRoIGQ9Ik0xMTUgMTM0IGgxMCBsLTUgNiBaIiBmaWxsPSIjNkE0NjM4Ii8+CiAgICA8cGF0aCBkPSJNMTIwIDE0MCB2NCBNMTIwIDE0NCBxLTYgNiAtMTEgMSBNMTIwIDE0NCBxNiA2IDExIDEiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzZBNDYzOCIgc3Ryb2tlLXdpZHRoPSIyLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogICAgPHBhdGggZD0iTTEwMCAxNDIgTDY4IDEzNiBNMTAwIDE1MCBMNjggMTUyIE0xNDAgMTQyIEwxNzIgMTM2IE0xNDAgMTUwIEwxNzIgMTUyIiBzdHJva2U9IiM5QjkzODkiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CiAgICA8IS0tIFdoaXRlIGNoZXN0IC0tPgogICAgPHBhdGggZD0iTTkwIDE4NiBRMTIwIDE3NiAxNTAgMTg2IFExNDggMjEyIDEyMCAyMTggUTkyIDIxMiA5MCAxODYgWiIgZmlsbD0iI0YyRThEOCIvPgogICAgPCEtLSBPcmVvIGNvb2tpZSBoZWxkIGluIGZyb250IC0tPgogICAgPGNpcmNsZSBjeD0iMTU4IiBjeT0iMTk4IiByPSIxNiIgZmlsbD0iIzI0MjMyMyIvPgogICAgPGNpcmNsZSBjeD0iMTU4IiBjeT0iMTk4IiByPSI5IiBmaWxsPSIjRjJFOEQ4Ii8+CiAgICA8Y2lyY2xlIGN4PSIxNTgiIGN5PSIxOTgiIHI9IjMuNSIgZmlsbD0iIzI0MjMyMyIvPgogIDwvZz4KICA8Y2lyY2xlIGN4PSIxMjAiIGN5PSIxMjAiIHI9IjEwOCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNEEzMDI3IiBzdHJva2Utd2lkdGg9IjQiLz4KPC9zdmc+Cg=="/>
+        <text x="864" y="136" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">OREO · AMERICAN SHORTHAIR</text>
+
+        <text x="40" y="72" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.16em">CALLER-OWNED CONCURRENCY</text>
+        <text x="40" y="96" fill="#2d3142" font-size="12" font-family="'Geist', sans-serif">One run call drives one session; Oreo sets no global session cap.</text>
+
+        <!-- Connections are behind the nodes. -->
+        <line x1="184" y1="228" x2="244" y2="228" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-diagram-arrow)"/>
+        <line x1="244" y1="264" x2="184" y2="264" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#architecture-diagram-arrow)"/>
+        <line x1="412" y1="228" x2="484" y2="228" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-diagram-arrow)"/>
+        <line x1="484" y1="264" x2="412" y2="264" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#architecture-diagram-arrow)"/>
+        <line x1="652" y1="228" x2="724" y2="228" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#architecture-diagram-arrow-link)"/>
+        <line x1="724" y1="264" x2="652" y2="264" stroke="#2e5aa8" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#architecture-diagram-arrow-link)"/>
+        <line x1="328" y1="288" x2="328" y2="364" stroke="#4f5d75" stroke-width="1.2" marker-start="url(#architecture-diagram-arrow)" marker-end="url(#architecture-diagram-arrow)"/>
+        <line x1="568" y1="364" x2="568" y2="288" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-diagram-arrow)"/>
+
+        <!-- Arrow labels use opaque masks and remain clear of the strokes. -->
+        <rect x="192" y="208" width="44" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="214" y="217" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">PROMPT</text>
+        <rect x="192" y="272" width="44" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="214" y="281" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">RESULT</text>
+
+        <rect x="424" y="208" width="48" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="448" y="217" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">REQUEST</text>
+        <rect x="424" y="272" width="48" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="448" y="281" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">RESPONSE</text>
+
+        <rect x="666" y="208" width="44" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="688" y="217" fill="#2e5aa8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">HTTPS</text>
+        <rect x="664" y="272" width="48" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="688" y="281" fill="#2e5aa8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">RESPONSE</text>
+
+        <rect x="340" y="322" width="64" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="372" y="331" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">TOOL I/O</text>
+        <rect x="488" y="322" width="64" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="520" y="331" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">TOKEN</text>
+
+        <!-- Nodes. -->
+        <g>
+          <rect x="40" y="208" width="144" height="80" rx="6" fill="#f5f5f5"/>
+          <rect x="40" y="208" width="144" height="80" rx="6" fill="#4f5d75" fill-opacity="0.10" stroke="#7a8399" stroke-width="1"/>
+          <rect x="48" y="216" width="44" height="12" rx="2" fill="none" stroke="#7a8399" stroke-opacity="0.40" stroke-width="0.8"/>
+          <text x="70" y="225" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CALLER</text>
+          <text x="112" y="257" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Consumer</text>
+          <text x="112" y="276" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">context · schedule</text>
+        </g>
+
+        <g>
+          <rect x="244" y="208" width="168" height="80" rx="6" fill="#f5f5f5"/>
+          <rect x="244" y="208" width="168" height="80" rx="6" fill="#eb6c36" fill-opacity="0.08" stroke="#eb6c36" stroke-width="1.2"/>
+          <rect x="252" y="216" width="36" height="12" rx="2" fill="none" stroke="#eb6c36" stroke-opacity="0.50" stroke-width="0.8"/>
+          <text x="270" y="225" fill="#eb6c36" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">OREO</text>
+          <text x="328" y="257" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Agent session</text>
+          <text x="328" y="276" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">conversation · tools</text>
+        </g>
+
+        <g>
+          <rect x="484" y="208" width="168" height="80" rx="6" fill="#f5f5f5"/>
+          <rect x="484" y="208" width="168" height="80" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+          <rect x="492" y="216" width="64" height="12" rx="2" fill="none" stroke="#2d3142" stroke-opacity="0.40" stroke-width="0.8"/>
+          <text x="524" y="225" fill="#2d3142" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PROVIDER</text>
+          <text x="568" y="257" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Provider adapter</text>
+          <text x="568" y="276" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">Codex · Copilot</text>
+        </g>
+
+        <g>
+          <rect x="724" y="208" width="176" height="80" rx="6" fill="#f5f5f5"/>
+          <rect x="724" y="208" width="176" height="80" rx="6" fill="#2d3142" fill-opacity="0.03" stroke="#2d3142" stroke-opacity="0.30" stroke-width="1"/>
+          <rect x="732" y="216" width="60" height="12" rx="2" fill="none" stroke="#2d3142" stroke-opacity="0.22" stroke-width="0.8"/>
+          <text x="762" y="225" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">EXTERNAL</text>
+          <text x="812" y="257" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Provider API</text>
+          <text x="812" y="276" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">Codex / GitHub Copilot</text>
+        </g>
+
+        <g>
+          <rect x="244" y="364" width="168" height="80" rx="6" fill="#f5f5f5"/>
+          <rect x="244" y="364" width="168" height="80" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+          <rect x="252" y="372" width="40" height="12" rx="2" fill="none" stroke="#2d3142" stroke-opacity="0.40" stroke-width="0.8"/>
+          <text x="272" y="381" fill="#2d3142" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">TOOLS</text>
+          <text x="328" y="413" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Tool set</text>
+          <text x="328" y="432" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">read · write · execute</text>
+        </g>
+
+        <g>
+          <rect x="484" y="364" width="168" height="80" rx="6" fill="#f5f5f5"/>
+          <rect x="484" y="364" width="168" height="80" rx="6" fill="#2d3142" fill-opacity="0.05" stroke="#4f5d75" stroke-width="1"/>
+          <rect x="492" y="372" width="44" height="12" rx="2" fill="none" stroke="#4f5d75" stroke-opacity="0.50" stroke-width="0.8"/>
+          <text x="514" y="381" fill="#4f5d75" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">STORE</text>
+          <text x="568" y="413" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Oreo credentials</text>
+          <text x="568" y="432" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">~/.oreo/auth.json</text>
+        </g>
+
+        <!-- Legend strip. -->
+        <line x1="40" y1="492" x2="920" y2="492" stroke="#2d3142" stroke-opacity="0.10" stroke-width="0.8"/>
+        <text x="40" y="520" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.16em">LEGEND</text>
+        <line x1="112" y1="516" x2="148" y2="516" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-diagram-arrow)"/>
+        <text x="160" y="520" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace">REQUEST / TOOL CALL</text>
+        <line x1="336" y1="516" x2="372" y2="516" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#architecture-diagram-arrow)"/>
+        <text x="384" y="520" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace">RESPONSE / RESULT</text>
+      </svg>

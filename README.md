@@ -11,7 +11,7 @@ Coffee Shop is being built as a small Odin command-line tool for dispatching par
 Coffee Shop is named for two of our family members, Coffee and Oreo.
 
 - **Coffee** is a black mix of German Shepherd and Golden Retriever. He is still with us. He is the Barista in the project's characters: the one who turns an Order into a Recipe and leads the Brew.
-- **Oreo** was an American Shorthair with a black-and-white coat. He passed away in 2025, at the age of 12, and we miss him. The review packet, the **Oreo**, carries his name, and he is drawn as the cat who reviews a finished Brew.
+- **Oreo** was an American Shorthair with a black-and-white coat. He passed away in 2025, at the age of 12, and we miss him. He is drawn as the cat who reviews a finished Brew. The final review packet is now called the **Tray**.
 
 The drawings are in [`assets/characters/`](assets/characters/): `coffee.svg` and `oreo.svg`, with the other roles in the same style.
 
@@ -37,7 +37,7 @@ To **develop** Coffee Shop you also need:
 2. Coffee Shop creates an isolated Git worktree, or **Station**, for each Shot.
 3. Coffee Shop starts each Pi **Worker** in its own tab in a Herdr workspace.
 4. Coffee Shop records progress in the **Register** and events in the **Receipt**.
-5. The Barista reviews the completed work and serves an **Oreo**: a summary, evidence, and any decision needed.
+5. The Barista reviews the completed work and serves a **Tray**: a summary, evidence, and any decision needed.
 6. A person decides whether to integrate the changes. Coffee Shop does not merge or publish them.
 
 See [the architecture](docs/architecture.md) for the diagram and boundaries. See [the plan](PLAN.md) for the proposed implementation steps. See the [vocabulary](specs/UBIQUITOUS_LANGUAGE_LATEST.md) for the coffee-shop terms.
@@ -68,7 +68,7 @@ A Recipe is strict JSON described by [`recipe.schema.json`](recipe.schema.json).
 }
 ```
 
-Use `order_file`, `prompt_file`, and `preamble_file` for long Markdown text. Paths are relative to the Recipe file and cannot escape its directory. Coffee Shop validates and snapshots text before creating Stations. A preamble is delivered to every Worker as appended system guidance; `status` and the Oreo show its filename and size, not its contents. Each Worker is instructed to read root `workers.md` and `standards.md` when present. Finish Worker reports with `CS-DONE` when complete and verified, or `CS-BLOCKED: <reason>` when blocked; Coffee Shop sends no automatic follow-up.
+Use `order_file`, `prompt_file`, and `preamble_file` for long Markdown text. Paths are relative to the Recipe file and cannot escape its directory. Coffee Shop validates and snapshots text before creating Stations. A preamble is delivered to every Worker as appended system guidance; `status` and the Tray show its filename and size, not its contents. Each Worker is instructed to read root `workers.md` and `standards.md` when present. Finish Worker reports with `CS-DONE` when complete and verified, or `CS-BLOCKED: <reason>` when blocked; Coffee Shop sends no automatic follow-up.
 
 ### Sharing installed dependencies
 
@@ -89,7 +89,7 @@ A typical session:
 
 1. The Barista writes a Recipe and runs `brew`. It blocks until every Shot is finished, so run it in the background (for example with Pi's `bg_run`) rather than in the foreground.
 2. While it runs, `status <brew-id>` shows each Shot, and `cancel <brew-id>` stops the Brew.
-3. `collect <brew-id>` produces the Oreo. Review each Station by hand, integrate the changes you want, and delete Stations and state yourself when you are done.
+3. `collect <brew-id>` produces the Tray. Review each Station by hand, integrate the changes you want, and delete Stations and state yourself when you are done.
 
 ```sh
 coffee-shop brew --repo <path> --recipe <recipe.json>
@@ -102,7 +102,7 @@ coffee-shop collect <brew-id>
 - At most two Workers run at once by default; `workers` can opt into a limit up to five.
 - `status` prints the Brew and each Shot's status. Running Shots also show elapsed time and the latest Pi activity; activity older than 12 minutes is marked quiet. Activity is only a progress hint: process identity remains the liveness authority, and quiet Workers are never killed automatically.
 - `cancel` requests cancellation; repeating it is safe.
-- `collect` prints each Shot's outcome, Worker report and Station changes, then runs the Filter once per completed Shot: a read-only Pi review against the repository's `standards.md` and the repository's own test commands. The saved evidence is reused on later collections. It ends with the decisions that need a human, and exits non-zero unless every Shot completed. See [the architecture](docs/architecture.md#filter-and-oreo).
+- `collect` prints each Shot's outcome, Worker report and Station changes, then runs the Filter once per completed Shot: a read-only Pi review against the repository's `standards.md` and the repository's own test commands. The saved evidence is reused on later collections. It ends with the decisions that need a human, and exits non-zero unless every Shot completed. See [the architecture](docs/architecture.md#filter-and-tray).
 - Brew state is stored under `$CS_STATE_DIR/<brew-id>` when `CS_STATE_DIR` is set, or `~/.coffee-shop/<brew-id>` otherwise. `CS_STATE_DIR` must be an absolute path.
 - Stations and Brew state are never deleted automatically; `collect` preserves them.
 
@@ -145,4 +145,5 @@ The implementation plan uses [Odin in Practice](https://github.com/weima/odin-in
 - [`specs/UBIQUITOUS_LANGUAGE_LATEST.md`](specs/UBIQUITOUS_LANGUAGE_LATEST.md) — canonical Coffee Shop terms and proposed software mappings.
 - [`docs/architecture.md`](docs/architecture.md) — architecture diagram, data flow, and boundaries.
 - [`PLAN.md`](PLAN.md) — implementation roadmap and verification gates.
+- [`oreo/README.md`](oreo/README.md) — the independent Oreo Odin harness and its design documents.
 - [`src/`](src/) — Odin CLI source and package tests.
