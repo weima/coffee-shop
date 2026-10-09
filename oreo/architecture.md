@@ -12,14 +12,15 @@ Oreo calls provider-owned endpoints directly and does not host a public OAuth se
 
 [PNG preview](assets/architecture-diagram.png) · [Open the self-contained HTML diagram](assets/architecture-diagram.html).
 
-Oreo is a long-lived in-process host. A session represents one top-level task or working context—for example, Coffee Shop work and Odin-book work use separate sessions. Each session can submit many subtask work items to a shared native thread pool; pool threads are reusable workers, not sessions. The user's typical example is 5 task sessions with about 5 concurrent work items each (about 25 worker jobs). The stretch target is to accept and retain 1,000 queued work items; there is no requirement to run 1,000 threads at once. The user-input wait pauses the affected work; the recommendation is to keep its state in memory and release the worker. Confirm that scheduling detail in the core API design.
+Oreo is a long-lived in-process host. A session represents one top-level task or working context—for example, Coffee Shop work and Odin-book work use separate sessions. Each session can submit many subtask work items to a shared native thread pool; pool threads are reusable workers, not sessions. The user's typical example is 5 task sessions with about 5 concurrent work items each (about 25 worker jobs). The stretch target is to accept and retain 1,000 queued work items; there is no requirement to run 1,000 threads at once. When work needs a user decision, pause it, retain its context in memory, release its worker, and resume after the caller responds.
 
 ## Session configuration and accounts
 
 - Keep work and personal subscription credentials side by side in Oreo's own credential store; logging into one must not overwrite the other.
 - A session represents one task and does not select a work or personal account. Account resolution belongs to provider configuration/authentication and remains to be specified.
-- Every work item dispatched to a pool worker must carry explicit provider, model, and thinking-level settings so a reused worker knows how to contact the provider. Resolve these from `~/.oreo/config.json`, the parent session, or a per-work-item override; precedence remains open.
-- Store defaults in `~/.oreo/config.json`; JSON is a practical format supported by Odin's `core:encoding/json`, not a format mandated by Odin.
+- Every work item must use a specific provider, model, and thinking level. The selected values must be explicit when it is dispatched; workers must not rely on settings left by a previous job.
+- To avoid copying repeated strings into work items, recommended: store immutable provider/model/thinking profiles once in a shared registry and put a compact profile ID on each work item. This is a proposed representation, not a selected database/library.
+- Store defaults in `~/.oreo/config.json`; JSON is a practical format supported by Odin's `core:encoding/json`, not a format mandated by Odin. How defaults, task-session values, and work-item choices resolve remains open.
 - The default account per provider and the config schema remain open decisions.
 
 ## Responsibilities
@@ -33,16 +34,30 @@ Oreo is a long-lived in-process host. A session represents one top-level task or
 
 Oreo coordinates execution of submitted subtask work items through its shared pool; it does not decide the top-level task decomposition or manage worktrees. Each queued work item carries its own resolved provider/model/thinking settings. Use a bounded worker count and retain at least 1,000 queued work items; worker count and overload behavior remain implementation details to benchmark.
 
-## Session flow and events
+## Session state, lifecycle, and events
 
-1. The consumer creates a session for a top-level task; it remains open across turns until `/quit` or caller closure.
-2. The session submits subtask work items. Before a worker runs one, Oreo resolves and passes explicit provider/model/thinking settings with that work item; the worker does not rely on stale thread-local provider configuration.
-3. A final answer completes a work item or turn, not necessarily the parent session.
-4. When an agent needs a user decision, Oreo emits a `Needs_Input` event identifying the session and work item, then pauses that work. Recommended: release the worker while waiting and reschedule on the caller's response. Confirm this detail in the core API design.
-5. Otherwise, the caller receives the final result and occasional progress updates. Cancellation, shutdown, and exact event/API shapes remain to be defined.
+- A session is created for one top-level task. The library exposes `close(session)`; the host's main thread receives `/quit` from the user and calls it.
+- Closing a session prevents new work and cancels all its queued and active work items. Cancellation is cooperative: active work stops and returns its OS thread to the pool; Oreo does not destroy pool threads. Release in-memory working copies after active workers stop, but preserve the database history for later retrieval.
+- When a work item needs a user decision, Oreo emits a `Needs_Input` event identifying the session and work item, pauses the work, retains its context in memory, and releases the worker. The caller's response resumes that work item through the pool.
+- A final result completes a work item or turn, not necessarily its parent session. The caller also receives occasional progress updates.
+- Work queue submissions return a clear `Queue_Full` result when capacity is reached. The queue must retain at least 1,000 pending work items. Work items also have a TTL; whether it applies to queue wait, execution time, or session idleness remains open. Expiry must not silently erase persisted session history.
+- Exact event/API shapes, cancellation delivery, and host shutdown behavior remain to be defined.
 
-The session is an in-memory logical state, not a permanently blocked OS thread. Whether `/quit` is literal CLI input or a caller API command is still open.
+## Structured context storage and database candidates
 
+- Persist session and work-item context in a structured database, not loose ad-hoc files. Completed and closed session history must remain findable after process restart.
+- `~/.oreo/sessions.db` is an acceptable database path. Use file-backed persistence by default; an in-memory mode may be useful for tests or explicitly temporary sessions, but cannot satisfy restart retrieval.
+- Store sessions, work items, ordered conversation/tool records, lifecycle state, expiry timestamps, and provider-setting profiles with stable IDs. Work items refer to profile IDs rather than copying provider/model/thinking strings. The shared profile contains those values once.
+- While running, workers may cache current context in memory; the database remains the durable source of truth. On user-input pause, persist continuation state before releasing the worker. On close, mark/cancel work but retain its history.
+- V1 retrieval is by session metadata; full-text search over conversations/tool output is out of scope. Define the exact metadata fields and indexes with the schema. Job TTL may expire pending execution, but must not delete session history by default. Whether crashed in-progress jobs resume automatically remains open.
+
+| Candidate | Strengths | Costs / fit |
+|---|---|---|
+| [SQLite](https://github.com/sqlite/sqlite) | SQL tables, transactions, indexes, and optional full-text search suit structured history and retrieval. File-backed and in-memory modes. | Selected for Oreo. Use a file-backed database by default; verify the Odin binding, build/link path, and multi-thread connection policy. |
+| [UnQLite](https://github.com/symisc/unqlite) | Embedded C database; persistent and `:mem:` modes; KV and JSON/document APIs; optional thread support; BSD-2-Clause license. | No Odin binding found. KV/document APIs mean Oreo likely owns secondary indexes and more query behavior; compile with thread support and handle write contention. |
+| [LMDB](https://github.com/LMDB/lmdb/tree/mdb.master3/libraries/liblmdb) | Compact, transactional, memory-mapped KV store; concurrent readers and one writer; OpenLDAP Public License. | No Odin binding found; persistent-file design and low-level API require Oreo-owned encoding, indexes, and query semantics; writes serialize. |
+
+**Decision:** use SQLite with the persistent database at `~/.oreo/sessions.db`; in-memory mode is for tests or explicitly temporary use. V1 retrieval is by session metadata, not full-text search. Bundle the official SQLite amalgamation so Oreo users do not need to install a system SQLite library. Write a fresh minimal Odin binding over SQLite's C API; the session store owns schema and queries. The detailed package design and test gates are in [`src/sqlite/architecture.md`](src/sqlite/architecture.md) and [`src/sqlite/PLAN.md`](src/sqlite/PLAN.md).
 ## Providers and authentication
 
 Oreo independently implements the provider-specific flows in Odin, following Pi's flow behavior while calling provider-owned endpoints with client registration authorized for Oreo. Do not assume Pi's client IDs are reusable:
@@ -88,7 +103,7 @@ Oreo starts with three tools:
 - **Pub/sub distinction:** `core:sync/chan` is a thread-safe multi-producer/multi-consumer channel, not broadcast; each message is consumed by one receiver. For caller events, use a per-session/per-caller output channel, or a dispatcher that fans out to separate subscriber queues when multiple subscribers need every event. Keep `Needs_Input` lossless; progress may be coalesced.
 - **Work-item payload:** include session ID, work-item ID, provider, model, thinking level, and task input/context. Pool workers are reused, so provider settings belong on each work item, not in persistent worker-thread state.
 - **Initial recommendation:** use only in-process Odin primitives. NATS, RabbitMQ, or Redis add a separate service and are unnecessary unless Oreo later needs cross-process/machine delivery or durable queues. Exact queue/event design remains proposed until the core contract is approved.
-- Proposed: work waiting for user input is suspended in memory and releases its worker; the caller's response schedules that work item again. Confirm this before implementation. Blocking provider I/O may still occupy a worker and must be included in scale tests.
+- Work waiting for user input is suspended in memory and releases its worker; the caller's response schedules that work item again. Closing a session cancels its child jobs cooperatively so OS threads return to the pool. Blocking provider I/O may still occupy a worker and must be included in scale tests.
 - Initial platform targets are Linux (including WSL) and macOS. Windows is out of scope.
 - No plugin system in the initial design. Add extension mechanisms only if a real consumer need justifies their API, lifecycle, loading, and security complexity.
 - Additional tools or providers are added only when a consumer needs them.

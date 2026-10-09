@@ -6,12 +6,12 @@ Oreo is a small Odin agent harness intended to be used as a library by Coffee Sh
 
 ## What Oreo will provide
 
-- A long-lived Odin host with per-task in-memory sessions and a shared worker pool for each session's work items.
+- A long-lived Odin host with per-task sessions, durable structured context storage, and a shared worker pool for each session's work items.
 - Provider authentication and model requests for OpenAI Codex and GitHub Copilot, after the provider-neutral core is established and provider contracts are verified.
 - Pi-compatible `read`, `write`, and `execute` tools, plus events for external input, progress, and final results.
 - A small Odin library API that Coffee Shop can call.
 
-A typical workload is about 5 task sessions with 5 concurrent work items each (about 25 worker jobs). The stretch target is at least 1,000 queued/retained work items; Oreo does not need 1,000 active threads. Coffee Shop owns task decomposition and worktrees. Every dispatched work item carries provider, model, and thinking-level settings. The recommended design pauses work awaiting user input and releases its worker; confirm this detail in the core API design.
+A typical workload is about 5 task sessions with 5 concurrent work items each (about 25 worker jobs). The stretch target is at least 1,000 queued/retained work items; Oreo does not need 1,000 active threads. Coffee Shop owns task decomposition and worktrees. Every work item uses explicit provider, model, and thinking-level settings. Session history lives in a structured database and remains findable after close/restart; active work may be cached in memory. User-input waits persist context and release the worker; `close(session)` cooperatively cancels that session's work but preserves its history.
 
 ## Authentication
 
@@ -22,6 +22,7 @@ Oreo will implement the provider-specific OAuth flows directly and store credent
 - [Architecture](architecture.md) — authoritative design decisions, session lifecycle, pool direction, provider boundaries, and tools.
 - [Implementation plan](PLAN.md) — staged work, open decisions, and verification gates.
 - [Roadmap](ROADMAP.md) — first usable release, Coffee Shop adoption, and future repository extraction.
+- [SQLite binding subproject](src/sqlite/README.md) — minimal Odin/C API boundary, bundled SQLite source, and real-database test plan.
 
 ## Reference implementation
 
