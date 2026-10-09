@@ -1,16 +1,24 @@
 # Oreo Architecture
 
-Oreo is a small, standalone Odin agent harness. It will begin in this repository as its own package and expose a library API that Coffee Shop can use. Its package boundary should allow the code to move into an independent repository later.
+Oreo is a small, standalone Odin agent harness. It starts as its own package in this repository, exposes a library API for Coffee Shop, and should be extractable into an independent repository.
 
-The OAuth and agent-loop reference is documented in [Oreo's README](README.md#reference-implementation). Oreo has no runtime or build dependency on that reference.
+Pi is a behavioral reference only. Oreo independently implements its auth, agent loop, and tools in Odin; it has no Pi code, runtime, executable, credential-store, or plugin dependency.
+
+Oreo calls provider-owned endpoints directly and does not host a public OAuth service. Pi reference sources are listed in [Oreo's README](README.md#reference-implementation).
 
 ## System boundary
 
 ![Oreo system architecture, including Oreo the American Shorthair mascot](assets/architecture-diagram.svg)
 
-[Open the self-contained HTML diagram](assets/architecture-diagram.html).
+[PNG preview](assets/architecture-diagram.png) · [Open the self-contained HTML diagram](assets/architecture-diagram.html).
 
 Each run call drives one session. Oreo imposes no limit on concurrent calls; the consumer supplies task context and owns scheduling and resource limits.
+
+## Session configuration and accounts
+
+- Keep work and personal subscription credentials side by side in Oreo's own credential store; logging into one must not overwrite the other.
+- A session may override provider, model, and thinking level. For omitted values, use Oreo's default configuration; session overrides do not change those defaults.
+- Credentials must support named accounts. The account selector/default-account behavior and default-config path/schema remain open implementation decisions.
 
 ## Responsibilities
 
@@ -34,14 +42,23 @@ A session belongs to its caller. The caller chooses its lifetime, runs concurren
 
 ## Providers and authentication
 
-Oreo implements provider-specific flows directly in Odin:
+Oreo independently implements the provider-specific flows in Odin, following Pi's flow behavior while calling provider-owned endpoints with client registration authorized for Oreo. Do not assume Pi's client IDs are reusable:
 
-- **OpenAI Codex:** browser OAuth with PKCE and a loopback callback, plus device-code login for headless use; refresh tokens when needed.
-- **GitHub Copilot:** GitHub device-code login, exchange the GitHub credential for a Copilot access token, then refresh that token.
+- **OpenAI Codex:** subscription OAuth with PKCE. Browser login uses a temporary callback listener bound to `127.0.0.1`; the user has approved a loopback redirect URI. Codex device-code login is the headless path, subject to provider support and Oreo's client registration.
+- **GitHub Copilot:** subscription login through GitHub's device-code flow, followed by the Copilot token exchange.
+- **Expiry:** refresh tokens when possible and provide a re-login path when refresh is rejected or credentials expire. The library's exact handoff to its caller remains to be specified.
 
-These flows are not one generic OAuth implementation. Keep each provider's endpoints, token fields, refresh rules, and error handling in its adapter. Verify provider behavior and authorization requirements before release; OAuth client identifiers or private endpoints may not be available to another application.
+These are provider-specific flows, not one generic OAuth implementation. Do not assume undocumented provider endpoints are reusable. There is no public Oreo OAuth endpoint. The loopback listener exists only during Codex browser login and closes when the flow ends.
 
-Oreo stores its own credentials under `~/.oreo/auth.json`, with owner-only permissions. It never reads or writes another agent's credential store. Tokens and authorization headers must not appear in logs, test output, or the repository. Reference source links are in [Oreo's README](README.md#reference-implementation).
+Store credentials in Oreo's separate `~/.oreo/auth.json` with owner-only permissions. It must retain both work and personal accounts. Never log tokens or authorization headers. Reference source links are in [Oreo's README](README.md#reference-implementation).
+
+### Authentication sequence
+
+![Oreo authentication sequence](assets/auth-flow.svg)
+
+[PNG preview](assets/auth-flow.png) · [Open the self-contained HTML diagram](assets/auth-flow.html).
+
+The sequence is a design sketch. Confirm Oreo's provider client registrations and endpoint support before implementation.
 
 ## Tools
 
@@ -53,12 +70,14 @@ Oreo starts with three tools:
 | `write` | Create or replace a file in that context. |
 | `execute` | Run a requested command and return its result to the model. |
 
-`execute` is Oreo's name for the command tool; it does not imply a security sandbox. Unless the consumer supplies an operating-system boundary, tool actions have the permissions of the Oreo process. The detailed input/output contracts and output handling are implementation-plan decisions.
+`execute` is Oreo's name for the command tool corresponding to Pi's `bash` tool; it does not imply a security sandbox. Unless the consumer supplies an operating-system boundary, tool actions have the permissions of the Oreo process. The three tools follow Pi's observable behavior and contracts, implemented independently; their exact schemas and output handling must be checked against the reference before coding.
 
-## Boundaries
+## Package layout and boundaries
 
+- Odin source belongs under `oreo/src/`; package-owned art and diagrams belong under `oreo/assets/`. The mascot is Oreo, the American Shorthair cat.
 - Oreo is an Odin package/library first, not a wrapper around provider command-line processes.
 - Provider clients and OAuth flows are implemented in Oreo.
 - Coffee Shop may call Oreo as a library but retains responsibility for Workers, worktrees, state, and concurrency.
 - No global resource manager, session scheduler, automatic task decomposition, or machine-wide OOM policy belongs in Oreo.
+- No plugin system in the initial design. Add extension mechanisms only if a real consumer need justifies their API, lifecycle, loading, and security complexity.
 - Additional tools or providers are added only when a consumer needs them.

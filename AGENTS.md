@@ -6,3 +6,4 @@
 - A request to make changes, commit, or open a PR does not by itself authorize a push.
 - Follow any higher-priority instructions that prescribe a different Git workflow; this file does not override them.
 - When a Shot authors or changes tests in a Beans repository, load [Taste-Driven Development](skills/taste-driven-development/SKILL.md). It uses the repository's root `standards.md` and existing test conventions; Filter separately discovers and runs the suites.
+- For diagram requests in any domain, use [Diagram Export](skills/diagram-export/SKILL.md) as the sole diagram authoring and rendering workflow; work from the user's description or named source material, then run `odin run skills/diagram-export -- <source.html>`. Keep the source and preview together.
