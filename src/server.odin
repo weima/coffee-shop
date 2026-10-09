@@ -247,7 +247,7 @@ run_server :: proc(state_root, repository: string) -> int {
 			server_api_abandon(&api)
 			return 0
 		}
-		server_api_serve_one(api, 100)
+		server_api_serve_one(&api, 100)
 		now := time.now()._nsec
 		if now - last_beat >= SERVER_HEARTBEAT_NS {
 			last_beat = now

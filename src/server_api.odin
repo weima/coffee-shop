@@ -9,7 +9,7 @@ import "core:sys/posix"
 
 SERVER_SOCKET_NAME :: "server.sock"
 SERVER_LINE_MAX :: 64 * 1024
-SERVER_IO_TIMEOUT_MS :: 2000
+SERVER_IO_TIMEOUT_MS :: 15000
 
 // One request and one response per connection, each a single JSON line. Stage 3
 // supports two operations: "snapshot" and "transition".
@@ -33,6 +33,7 @@ Server_Api :: struct {
 	state_root: string,
 	repository: string,
 	socket_path: string,
+	clients: [dynamic]Server_Client,
 }
 
 // Opens the server's socket. The caller must hold the server's election lock,
@@ -55,6 +56,7 @@ server_api_open :: proc(state_root, repository, directory: string) -> (api: Serv
 		delete(socket_path)
 		return
 	}
+	_ = posix.fcntl(fd, .SETFD, i32(posix.FD_CLOEXEC))
 	if posix.fcntl(fd, .SETFL, c.int(posix.O_Flags{.NONBLOCK})) != 0 {
 		posix.close(fd)
 		delete(socket_path)
@@ -77,41 +79,11 @@ server_api_open :: proc(state_root, repository, directory: string) -> (api: Serv
 }
 
 server_api_close :: proc(api: ^Server_Api) {
+	server_loop_close_all(api)
 	posix.close(api.listener)
 	activity_unlink(api.socket_path)
 	delete(api.socket_path)
 	api^ = Server_Api{listener = -1}
-}
-
-// Serves at most one waiting request. Returns false when none arrived in time.
-server_api_serve_one :: proc(api: Server_Api, timeout_ms: c.int) -> bool {
-	pending := posix.pollfd{fd = api.listener, events = {.IN}}
-	if posix.poll(&pending, 1, timeout_ms) <= 0 {
-		return false
-	}
-	conn := posix.accept(api.listener, nil, nil)
-	if conn < 0 {
-		return false
-	}
-	defer posix.close(conn)
-
-	response: Server_Response
-	defer destroy_struct(&response)
-	line, read_ok := server_read_line(conn)
-	defer delete(line)
-	if !read_ok {
-		response.error = strings.clone("request could not be read")
-	} else {
-		request: Server_Request
-		defer destroy_struct(&request)
-		if json.unmarshal_string(line, &request, .JSON) != nil {
-			response.error = strings.clone("request is not valid JSON")
-		} else {
-			response = server_api_handle(api, request)
-		}
-	}
-	server_write_response(conn, response)
-	return true
 }
 
 server_api_handle :: proc(api: Server_Api, request: Server_Request) -> Server_Response {
@@ -246,19 +218,6 @@ server_read_line :: proc(conn: posix.FD) -> (line: string, ok: bool) {
 	return {}, false
 }
 
-server_write_response :: proc(conn: posix.FD, response: Server_Response) {
-	data, marshal_err := json.marshal(response, json.Marshal_Options{spec = .JSON})
-	defer delete(data)
-	if marshal_err != nil {
-		return
-	}
-	framed := make([]byte, len(data) + 1)
-	defer delete(framed)
-	copy(framed, data)
-	framed[len(data)] = '\n'
-	_ = server_write_all(conn, framed)
-}
-
 server_write_all :: proc(conn: posix.FD, data: []byte) -> bool {
 	sent := uint(0)
 	for sent < uint(len(data)) {
@@ -274,6 +233,7 @@ server_write_all :: proc(conn: posix.FD, data: []byte) -> bool {
 // Stops listening without removing the socket path. Used by a stale server, whose
 // path now belongs to its successor.
 server_api_abandon :: proc(api: ^Server_Api) {
+	server_loop_close_all(api)
 	posix.close(api.listener)
 	delete(api.socket_path)
 	api^ = Server_Api{listener = -1}

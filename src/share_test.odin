@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:log"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -108,7 +109,10 @@ make_share_repo :: proc(t: ^testing.T, root: string) -> string {
 	_ = os.write_entire_file(fmt.tprintf("%s/node_modules/pkg/index.js", repo), "x\n", rw)
 	_ = os.write_entire_file(fmt.tprintf("%s/packages/web/node_modules/x/y.js", repo), "y\n", rw)
 	for args in ([][]string{{"git", "-C", repo, "add", "."}, {"git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base"}}) {
-		_, out, errout, _ := os.process_exec(os.Process_Desc{command = args}, context.allocator)
+		state, out, errout, err := os.process_exec(os.Process_Desc{command = args}, context.allocator)
+		if !(err == nil && state.success) {
+			log.errorf("make_share_repo: %v failed err=%v exit=%v stderr=%q", args, err, state.exit_code, errout)
+		}
 		delete(out)
 		delete(errout)
 	}

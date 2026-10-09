@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:log"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -115,7 +116,11 @@ make_fixture_repo :: proc(t: ^testing.T, path: string) {
 		{"git", "init", "-q", path},
 		{"git", "-C", path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"},
 	}) {
-		state, _, _, err := os.process_exec(os.Process_Desc{command = args}, context.allocator)
+		state, git_out, git_err, err := os.process_exec(os.Process_Desc{command = args}, context.allocator)
+		if !(err == nil && state.success) {
+			fd_entries, _ := os.read_all_directory_by_path("/proc/self/fd", context.temp_allocator)
+			log.errorf("make_fixture_repo: %v failed err=%v exit=%v open_fds=%d stdout=%q stderr=%q", args, err, state.exit_code, len(fd_entries), git_out, git_err)
+		}
 		testing.expect(t, err == nil && state.success)
 	}
 }
