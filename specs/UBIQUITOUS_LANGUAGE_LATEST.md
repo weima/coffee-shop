@@ -86,6 +86,26 @@ These are working mappings for the option-2 design, not a requirement to use eve
 
 *The states a Shot moves through. Source: `diagrams/shot-lifecycle.html`.*
 
+## Characters
+
+Each role has a character in the mascot's style. Coffee and Oreo are the two from our home; the other roles are regular people with their own props.
+
+| Role | Character | Drawn as |
+| --- | --- | --- |
+| **Barista** | Coffee | a black German Shepherd and Golden Retriever mix in a coffee-brown apron |
+| **Oreo** (the review packet, and the cat who reviews a finished Brew) | Oreo | a black-and-white American Shorthair holding an Oreo cookie |
+| **Worker** | a person | a brown shirt, holding a coffee cup |
+| **Cupper** | a person | a grey shirt, holding a tasting spoon |
+| **Filter** | a person | a slate-blue shirt, holding a magnifying glass |
+
+<p>
+  <img src="../assets/characters/coffee.svg" alt="Coffee, the Barista" width="120">
+  <img src="../assets/characters/oreo.svg" alt="Oreo, the cat who reviews a finished Brew" width="120">
+  <img src="../assets/characters/worker.svg" alt="Worker" width="120">
+  <img src="../assets/characters/cupper.svg" alt="Cupper" width="120">
+  <img src="../assets/characters/filter.svg" alt="Filter" width="120">
+</p>
+
 ## Example dialogue
 
 > **Developer:** “Order: fix the flaky login test and explain the cause.”
