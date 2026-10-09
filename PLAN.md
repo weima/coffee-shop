@@ -386,10 +386,27 @@ Gates still not exercised for real: item 6 with a live Pi failure, and the model
 ### 4. Five tasks at once, one commit each
 
 - A Scale limit that spans every Brew on the machine, not just one Brew, so five tasks cannot exceed the budget from item 2 together.
-- Each task's changes become their own commit, using the Blend operation from `docs/architecture.md`.
+- Each task's changes become their own commit, made by a Pull after it passes Taste (see item 5). Blend then combines a Brew's commits into one.
 - **Gate.** Five Brews for five tasks run together. Each produces one commit on its own branch, and none of them interferes with another.
 
+### 5. Research, then execute in small commits
+
+A Brew for an Order that is too large to brew in one go runs in five steps:
+
+1. **Grind.** The Barista splits the Order into very small pieces and tags each as research or execution. This is the Grinder step from the vocabulary, applied before Shots are created.
+2. **Cupping.** A Cupper is a Worker running a research Shot. It reads the repository and reports findings. It must not change any file, and the Station must be unchanged when it finishes; a Cupping Shot that changes its Station is `incomplete`, as an expected-changes failure is.
+3. **Dial-in.** The Barista summarises the Cupping notes, decides which pieces can be executed, and re-splits the parallel ones into Pulls. Dependent pieces stay in sequence.
+4. **Pull.** A Pull is an execution Shot, run by a Worker in its own Station. Before it commits, the Worker runs its verification commands and must pass them; this check is the **Taste**. Each Pull that passes Taste makes its own commit on its own branch. A Pull that fails Taste is `incomplete` and makes no commit.
+5. **Blend.** The Barista combines the commits of a Brew's Pulls into one reviewed commit, using the Blend operation. Blend changes the commit history it is given; it does not add work of its own.
+
+Names to avoid for these steps: research (use Cupping), task (use Shot), commit squash (use Blend).
+
+**Gate.** A research-plus-execution Order runs end to end. Cuppers change no files, every Pull passes Taste before its commit, and Blend produces one commit whose tree matches the combined Pulls.
+
 ### Open questions
+
+- Whether Cupping may run tools that write outside the Station, such as package caches, and how that is checked.
+- Whether Dial-in is a Barista step only, or can also be a Worker step.
 
 - Where the machine-wide limit is kept, since Brews on different repositories have separate servers.
 - Whether a budget stops running Shots or only stops new ones.
