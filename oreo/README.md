@@ -24,8 +24,11 @@ Oreo will implement the provider-specific OAuth flows directly and store credent
 
 ## Reference implementation
 
-The following Pi source files are the behavioral reference for OAuth and credential handling:
+The following Pi source files are behavioral references for OAuth, credential handling, and built-in tool contracts. Oreo will implement the behavior independently.
 
 - [OpenAI Codex OAuth](https://github.com/earendil-works/pi/blob/main/packages/ai/src/auth/oauth/openai-codex.ts)
 - [GitHub Copilot OAuth](https://github.com/earendil-works/pi/blob/main/packages/ai/src/auth/oauth/github-copilot.ts)
 - [Credential storage](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/auth-storage.ts)
+- [Read tool](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/read.ts)
+- [Write tool](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/write.ts)
+- [Bash tool (`execute` reference)](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/bash.ts)
