@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Diagram</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&family=Noto+Sans+TC:wght@400;500;600&family=Noto+Serif+TC:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f5f5;   /* white-smoke */
+      --color-ink:     #2d3142;   /* jet-black */
+      --color-muted:   #4f5d75;   /* blue-slate */
+      --color-accent:  #eb6c36;   /* atomic-tangerine */
+      --font-sans:     'Geist', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Serif', 'Noto Serif KR', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .frame { max-width: 1200px; width: 100%; }
+    /* The SVG holds its readable width (min-width == the viewBox width, so the
+       type ramp is never silently scaled down). This wrapper lets a narrow
+       screen scroll the diagram instead of the whole page. */
+    .diagram-container { width: 100%; overflow-x: auto; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+
+    svg { width: 100%; min-width: 960px; display: block; }
+    /* Paper has no scrollbar, so the local scroller would clip instead of
+       scroll. Let the diagram scale down to the sheet: smaller but whole
+       beats sharp but cut off. Must come after the svg rule above - a media
+       query adds no specificity, so a later plain rule would win. */
+    @media print {
+      .diagram-container { overflow-x: visible; }
+      svg { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Flowchart · Diagram Design</p>
+    <h1>v0.3 flow: Grind, Cupping, Dial-in, Pull, Blend</h1>
+
+    <!-- Replace v03-research-flow with a unique slug for this diagram before export. -->
+    <div class="diagram-container">
+      <svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="v03-research-flow-title v03-research-flow-desc">
+        <title id="v03-research-flow-title">v0.3 flow: Grind, Cupping, Dial-in, Pull, Blend</title>
+        <desc id="v03-research-flow-desc">Flowchart of a research-then-execute Brew: Grind splits the Order, read-only Cupping gathers findings, Dial-in re-splits into Pulls, and Blend combines their commits.</desc>
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+          <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+
+          <!-- OPTIONAL: dot-pattern background. Uncomment the <pattern> and the second <rect> below if you want the dotted paper look. -->
+          <!--
+          <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+            <circle cx="1" cy="1" r="0.9" fill="rgba(45,49,66,0.10)"/>
+          </pattern>
+          -->
+        </defs>
+
+        <rect width="100%" height="100%" fill="#f5f5f5"/>
+        <!-- <rect width="100%" height="100%" fill="url(#dots)" opacity="0.55"/> -->
+
+        <path d="M170 288 L200 288" stroke="#4f5d75" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+        <path d="M330 288 L355 288 L355 158 L380 158" stroke="#4f5d75" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+        <path d="M465 186 L465 380" stroke="#4f5d75" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+        <path d="M550 408 L600 408 L600 158 L620 158" stroke="#4f5d75" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+        <path d="M705 186 L705 380" stroke="#4f5d75" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+        <text x="472" y="290" font-size="12" fill="#4f5d75" font-family="Geist, system-ui, sans-serif">findings</text>
+        <text x="606" y="290" font-size="12" fill="#4f5d75" font-family="Geist, system-ui, sans-serif">pieces</text>
+        <text x="712" y="290" font-size="12" fill="#4f5d75" font-family="Geist, system-ui, sans-serif">commits</text>
+
+        <rect x="40" y="260" width="130" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <text x="105" y="284" text-anchor="middle" font-size="16" font-weight="600" fill="#2d3142" font-family="Geist, system-ui, sans-serif">Order</text>
+        <text x="105" y="302" text-anchor="middle" font-size="12" fill="#4f5d75" font-family="Geist, system-ui, sans-serif">developer's ask</text>
+
+        <rect x="200" y="260" width="130" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <text x="265" y="284" text-anchor="middle" font-size="16" font-weight="600" fill="#2d3142" font-family="Geist, system-ui, sans-serif">Grind</text>
+        <text x="265" y="302" text-anchor="middle" font-size="12" fill="#4f5d75" font-family="Geist, system-ui, sans-serif">tiny pieces, tagged</text>
+
+        <rect x="380" y="130" width="170" height="56" rx="6" fill="none" stroke="#2d3142" stroke-width="1" stroke-dasharray="5 4"/>
+        <text x="465" y="154" text-anchor="middle" font-size="16" font-weight="600" fill="#2d3142" font-family="Geist, system-ui, sans-serif">Cupping</text>
+        <text x="465" y="172" text-anchor="middle" font-size="12" fill="#4f5d75" font-family="Geist, system-ui, sans-serif">read-only, no side effects</text>
+
+        <rect x="380" y="380" width="170" height="56" rx="20" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+        <text x="465" y="404" text-anchor="middle" font-size="16" font-weight="600" fill="#2d3142" font-family="Geist, system-ui, sans-serif">Dial-in</text>
+        <text x="465" y="422" text-anchor="middle" font-size="12" fill="#4f5d75" font-family="Geist, system-ui, sans-serif">Barista re-splits into Pulls</text>
+
+        <rect x="620" y="130" width="170" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <text x="705" y="154" text-anchor="middle" font-size="16" font-weight="600" fill="#2d3142" font-family="Geist, system-ui, sans-serif">Pull</text>
+        <text x="705" y="172" text-anchor="middle" font-size="12" fill="#4f5d75" font-family="Geist, system-ui, sans-serif">commits only after Taste</text>
+
+        <rect x="620" y="380" width="170" height="56" rx="20" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+        <text x="705" y="404" text-anchor="middle" font-size="16" font-weight="600" fill="#2d3142" font-family="Geist, system-ui, sans-serif">Blend</text>
+        <text x="705" y="422" text-anchor="middle" font-size="12" fill="#4f5d75" font-family="Geist, system-ui, sans-serif">one reviewed commit</text>
+
+        <text x="40" y="520" font-size="12" fill="#4f5d75" font-family="Geist, system-ui, sans-serif">Dashed box: Cupping changes nothing. Accent boxes: the step that decides the plan and the step that delivers the result.</text>
+
+      </svg>
+    </div>
+  </div>
+</body>
+</html>
