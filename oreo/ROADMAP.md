@@ -4,9 +4,9 @@ Oreo grows from a provider-neutral, in-process Odin session host into a library 
 
 ## Core harness
 
-- Build a long-lived Odin host with one in-memory session per top-level task and a shared bounded worker pool for its work items.
+- Build a long-lived Odin host with one session per top-level task, persistent structured context storage, and a shared bounded worker pool for its work items.
 - Implement task-session turns, per-work-item provider/model/thinking settings, Pi-referenced agent-loop behavior, and `read`, `write`, and `execute` tools against a fake provider.
-- Emit external-input events and occasional progress updates. Recommended: suspend sessions awaiting a decision without occupying a worker; confirm this in the core contract.
+- Emit external-input events and occasional progress updates; persist context when work pauses for a decision, release the worker, and resume after caller input.
 - Support Linux (including WSL) and macOS.
 
 **Exit condition:** a caller can create sessions, run a tool round-trip, receive a final result, pause for user input and resume, and close a session without a separate process per session.
@@ -22,6 +22,7 @@ Oreo grows from a provider-neutral, in-process Odin session host into a library 
 ## Scale and Coffee Shop adoption
 
 - Measure about 25 concurrent work items as a typical workload and at least 1,000 queued/retained work items as the stretch target; there is no requirement for 1,000 simultaneously active threads.
+- Verify `Queue_Full`, work-item TTL expiry, and cooperative cancellation when a session closes.
 - Tune the bounded worker pool and event delivery based on measurements.
 - Integrate Oreo behind Coffee Shop's Worker boundary while Coffee Shop keeps task decomposition, worktrees, and durable task state.
 
@@ -37,5 +38,5 @@ Oreo grows from a provider-neutral, in-process Odin session host into a library 
 
 ## Later, only when needed
 
-- Additional providers, tools, richer session persistence, and other consumer integrations.
+- Additional providers, tools, richer session search/retention options, and other consumer integrations.
 - Resource policies beyond the bounded session worker pool only when a consumer need and measurements justify them.
