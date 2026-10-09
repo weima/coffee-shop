@@ -1,4 +1,10 @@
-# Git push policy
+# Coffee Shop Repository Instructions
+
+## Clarifying questions
+
+- When a task needs decisions or information from the user, ask concise, answerable questions in a numbered `Q1`…`Qn` list instead of open-ended prose. Preserve the numbering so the user can reply point by point.
+
+## Git push policy
 
 - For this repository, `git push` is permitted when the user explicitly asks to push.
 - Before pushing, confirm the current branch, remote, and push target; review the commits that will be sent.

@@ -1,23 +1,31 @@
 # Oreo Roadmap
 
-Oreo grows from a small, usable Odin agent loop into a library Coffee Shop can consume, then into an independently maintainable repository. The consumer—not Oreo—sets session concurrency and machine resource limits.
+Oreo grows from a provider-neutral, in-process Odin session host into a library Coffee Shop can consume, then into an independently maintainable repository. [Architecture](architecture.md) is the source of truth for confirmed design decisions.
 
-## First usable release
+## Core harness
 
-- Build a standalone Odin package with Codex and GitHub Copilot provider adapters.
-- Implement provider OAuth login and token refresh with Oreo-owned credential storage.
-- Support a single caller-owned session with `read`, `write`, and `execute` tools.
-- Verify provider behavior with fake-server tests and keep live authentication out of CI.
+- Build a long-lived Odin host with one in-memory session per top-level task and a shared bounded worker pool for its work items.
+- Implement task-session turns, per-work-item provider/model/thinking settings, Pi-referenced agent-loop behavior, and `read`, `write`, and `execute` tools against a fake provider.
+- Emit external-input events and occasional progress updates. Recommended: suspend sessions awaiting a decision without occupying a worker; confirm this in the core contract.
+- Support Linux (including WSL) and macOS.
 
-**Exit condition:** a consumer can authenticate, make a model request, handle a tool call, and receive a final answer through Oreo's public API.
+**Exit condition:** a caller can create sessions, run a tool round-trip, receive a final result, pause for user input and resume, and close a session without a separate process per session.
 
-## Coffee Shop adoption
+## Provider integration
 
-- Integrate Oreo as a library behind Coffee Shop's Worker boundary.
-- Keep Coffee Shop responsible for task scheduling, worktrees, durable state, and parallelism.
-- Compare the new path with the current Worker flow using deterministic fake-provider end-to-end tests before changing defaults.
+- Verify authorized Codex and GitHub Copilot OAuth clients, endpoints, scopes, and model APIs.
+- Add provider login/re-login with a copyable URL, token storage/refresh, and model requests only after the core harness is established.
+- Keep work and personal credentials side by side in Oreo's own store.
 
-**Exit condition:** Coffee Shop can complete and report a small local task through Oreo without launching an external provider CLI process.
+**Exit condition:** fake-server tests cover provider behavior without live credentials, and separately approved manual smoke tests prove supported login and one small task per provider.
+
+## Scale and Coffee Shop adoption
+
+- Measure about 25 concurrent work items as a typical workload and at least 1,000 queued/retained work items as the stretch target; there is no requirement for 1,000 simultaneously active threads.
+- Tune the bounded worker pool and event delivery based on measurements.
+- Integrate Oreo behind Coffee Shop's Worker boundary while Coffee Shop keeps task decomposition, worktrees, and durable task state.
+
+**Exit condition:** benchmark results record memory and scheduling behavior; Coffee Shop completes a small local task through Oreo without launching an external agent CLI per session.
 
 ## Repository extraction
 
@@ -30,4 +38,4 @@ Oreo grows from a small, usable Odin agent loop into a library Coffee Shop can c
 ## Later, only when needed
 
 - Additional providers, tools, richer session persistence, and other consumer integrations.
-- Any shared resource controls only if a consumer asks for a reusable primitive; machine-wide concurrency policy remains with that consumer.
+- Resource policies beyond the bounded session worker pool only when a consumer need and measurements justify them.
