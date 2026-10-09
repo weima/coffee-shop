@@ -6,6 +6,17 @@ Coffee Shop is being built as a small Odin command-line tool for dispatching par
 
 > **Status:** the vertical slice works on Linux and WSL. `brew`, `status`, `cancel` and `collect` are implemented, and automated end-to-end tests drive the real binary with fake Workers. See [Limitations](#limitations) before relying on it.
 
+## The story behind the names
+
+Coffee Shop is named for two of our family members, Coffee and Oreo.
+
+- **Coffee** is a black mix of German Shepherd and Golden Retriever. He is still with us. He is the Barista in the project's characters: the one who turns an Order into a Recipe and leads the Brew.
+- **Oreo** was an American Shorthair with a black-and-white coat. He passed away in 2025, at the age of 12, and we miss him. The review packet, the **Oreo**, carries his name, and he is drawn as the cat who reviews a finished Brew.
+
+The drawings are in [`assets/characters/`](assets/characters/): `coffee.svg` and `oreo.svg`, with the other roles in the same style.
+
+We want them with us in this project, and this section is how we keep them here.
+
 ## Requirements
 
 To **use** Coffee Shop you need:
