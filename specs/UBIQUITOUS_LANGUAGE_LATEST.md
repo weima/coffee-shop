@@ -88,12 +88,13 @@ These are working mappings for the option-2 design, not a requirement to use eve
 
 ## Characters
 
-Each role has a character in the mascot's style. Coffee and Oreo are the two from our home; the other roles are regular people with their own props.
+Each role has a character in the shared mascot style. Coffee, Oreo, and Rachel are family members; the other roles are regular people with their own props.
 
 | Role | Character | Drawn as |
 | --- | --- | --- |
 | **Barista** | Coffee | a black German Shepherd and Golden Retriever mix in a coffee-brown apron |
 | **Oreo** (the cat who reviews a finished Brew) | Oreo | a black-and-white American Shorthair holding an Oreo cookie |
+| **Rachel** (developer companion) | Rachel | a university student with round glasses, a laptop, and a cat-paw remembrance pin |
 | **Worker** | a person | a brown shirt, holding a coffee cup |
 | **Cupper** | a person | a grey shirt, holding a tasting spoon |
 | **Filter** | a person | a slate-blue shirt, holding a magnifying glass |
@@ -101,6 +102,7 @@ Each role has a character in the mascot's style. Coffee and Oreo are the two fro
 <p>
   <img src="../assets/characters/coffee.svg" alt="Coffee, the Barista" width="120">
   <img src="../assets/characters/oreo.svg" alt="Oreo, the cat who reviews a finished Brew" width="120">
+  <img src="../assets/characters/rachel.svg" alt="Rachel, the developer companion" width="120">
   <img src="../assets/characters/worker.svg" alt="Worker" width="120">
   <img src="../assets/characters/cupper.svg" alt="Cupper" width="120">
   <img src="../assets/characters/filter.svg" alt="Filter" width="120">
