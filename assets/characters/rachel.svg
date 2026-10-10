@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-labelledby="title desc">
+  <title id="title">Rachel, the human-in-the-loop helper</title>
+  <desc id="desc">A friendly, round-faced university student with dark hair, round glasses, a green shirt, and a small laptop. A paw pin remembers Oreo.</desc>
+  <defs>
+    <clipPath id="badge-rachel"><circle cx="120" cy="120" r="108"/></clipPath>
+  </defs>
+  <circle cx="120" cy="120" r="108" fill="#F4EBDD"/>
+  <g clip-path="url(#badge-rachel)">
+    <!-- Shoulders and campus shirt -->
+    <path d="M34 250 Q40 194 120 190 Q200 194 206 250 Z" fill="#5C8175"/>
+    <path d="M105 156h30v37h-30z" fill="#C88967"/>
+    <path d="M96 181q24 18 48 0l15 17-39 27-39-27z" fill="#F2E8D8"/>
+
+    <!-- Rounded face and hair -->
+    <path d="M72 116c0-43 19-66 48-66s48 23 48 66v31c0 39-21 62-48 62s-48-23-48-62v-31Z" fill="#C88967"/>
+    <path d="M70 122c-8-39 4-77 50-77s59 37 50 77l-12-15c-4-6-6-14-6-22-19 14-49 20-76 13-2 13-4 20-6 26Z" fill="#242323"/>
+    <path d="M72 116c-5 34-1 65 8 82-17-12-24-37-23-64 1-17 5-29 15-39Zm96 0c5 34 1 65-8 82 17-12 24-37 23-64-1-17-5-29-15-39Z" fill="#242323"/>
+    <path d="M73 126c-9 0-13 8-11 17 2 8 7 12 13 12m92-29c9 0 13 8 11 17-2 8-7 12-13 12" fill="none" stroke="#B8795D" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- Expression and round glasses -->
+    <path d="M85 119q10-7 20 0m30 0q10-7 20 0" fill="none" stroke="#4A3027" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="99" cy="132" r="3.5" fill="#242323"/>
+    <circle cx="141" cy="132" r="3.5" fill="#242323"/>
+    <path d="M120 135q-2 10-6 15 6 4 12 0" fill="none" stroke="#A96C54" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M106 161q14 12 28 0" fill="none" stroke="#6A4638" stroke-width="2.5" stroke-linecap="round"/>
+    <ellipse cx="86" cy="151" rx="7" ry="4" fill="#D89A7D" opacity=".5"/>
+    <ellipse cx="154" cy="151" rx="7" ry="4" fill="#D89A7D" opacity=".5"/>
+    <g fill="none" stroke="#4A3027" stroke-width="3.5">
+      <circle cx="99" cy="132" r="17"/>
+      <circle cx="141" cy="132" r="17"/>
+      <path d="M116 131q4-4 8 0m-42-5-8-4m84 4 8-4" stroke-linecap="round"/>
+    </g>
+
+    <!-- Laptop and Oreo remembrance pin -->
+    <rect x="139" y="178" width="38" height="28" rx="3" fill="#F2E8D8" stroke="#4A3027" stroke-width="2.5"/>
+    <rect x="144" y="182" width="28" height="18" rx="2" fill="#242323"/>
+    <path d="M148 187h11m-11 5h18m-18 5h8" stroke="#91B5A4" stroke-width="1.7" stroke-linecap="round"/>
+    <path d="M135 207h46l-4 5h-38z" fill="#D7C8B2" stroke="#4A3027" stroke-width="2" stroke-linejoin="round"/>
+    <circle cx="78" cy="199" r="9" fill="#E8B85F"/>
+    <path d="M75 200c0-2 2-3 3-2 2-1 4 0 4 2 0 3-3 4-4 5-1-1-3-2-3-5Zm-3-4c-1-2 0-3 1-3s2 2 2 3-2 2-3 0Zm7-1c0-2 1-3 2-3s2 2 1 3-2 1-3 0Z" fill="#4A3027"/>
+  </g>
+  <circle cx="120" cy="120" r="108" fill="none" stroke="#4A3027" stroke-width="4"/>
+</svg>

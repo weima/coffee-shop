@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rachel feedback loop</title>
+<style>
+  :root { color-scheme: light; font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  * { box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #f5f7fa; color: #172b4d; }
+  svg { display: block; width: 100vw; height: 100vh; background: #fff; }
+  .node { fill: #edf4ff; stroke: #4776b4; stroke-width: 2; }
+  .human { fill: #fff5dc; stroke: #c38c22; }
+  .action { fill: #e8f7f2; stroke: #2f8871; }
+  .warning { fill: #fff5dc; stroke: #c38c22; }
+  .label { font-size: 17px; font-weight: 650; text-anchor: middle; fill: #172b4d; }
+  .sub { font-size: 13px; font-weight: 400; text-anchor: middle; fill: #526581; }
+  .edge { fill: none; stroke: #627d98; stroke-width: 2.3; marker-end: url(#arrow); }
+  .edge-label { font-size: 13px; fill: #526581; text-anchor: middle; }
+  .tag { font-size: 13px; font-weight: 700; }
+</style>
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 760" role="img" aria-label="Rachel watches saved Odin files, classifies source and test files, checks packages, optionally generates tests, and reports results in the terminal.">
+  <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#627d98"/></marker></defs>
+  <rect x="32" y="30" width="1216" height="690" rx="14" fill="#fff"/>
+  <text x="58" y="61" font-size="24" font-weight="700" fill="#172b4d">Rachel: save-to-feedback loop</text>
+  <text x="58" y="86" font-size="14" fill="#526581">One foreground watcher coalesces edits, validates the Odin package, and keeps actionable status visible.</text>
+
+  <rect class="node human" x="58" y="116" width="210" height="92" rx="12"/>
+  <text class="label" x="163" y="153">Developer saves</text><text class="sub" x="163" y="178">a .odin file</text>
+  <rect class="node" x="350" y="116" width="220" height="92" rx="12"/>
+  <text class="label" x="460" y="153">Watch + debounce</text><text class="sub" x="460" y="178">coalesce rapid saves</text>
+  <rect class="node" x="652" y="116" width="230" height="92" rx="12"/>
+  <text class="label" x="767" y="153">Resolve package</text><text class="sub" x="767" y="178">classify by filename</text>
+  <path class="edge" d="M268 162 H342"/><path class="edge" d="M570 162 H644"/>
+
+  <rect class="node" x="1000" y="100" width="220" height="112" rx="12"/>
+  <text class="label" x="1110" y="140">Terminal status</text>
+  <text class="sub" x="1110" y="166">errors persist until green</text>
+  <text class="sub" x="1110" y="187">warnings stay advisory</text>
+
+  <path d="M767 240 L850 302 L767 364 L684 302 Z" fill="#f1edff" stroke="#7558a6" stroke-width="2"/>
+  <text class="label" x="767" y="298">Test source?</text><text class="sub" x="767" y="319">*_test.odin</text>
+  <path class="edge" d="M767 208 V232"/>
+
+  <rect class="node action" x="390" y="414" width="240" height="94" rx="12"/>
+  <text class="label" x="510" y="451">Package validation</text><text class="sub" x="510" y="476">odin check</text>
+  <path class="edge" d="M684 302 H510 V406"/><text class="edge-label" x="586" y="289">yes: validate only</text>
+
+  <rect class="node action" x="710" y="414" width="250" height="94" rx="12"/>
+  <text class="label" x="835" y="451">Package tests</text><text class="sub" x="835" y="476">failures + leak output</text>
+  <path class="edge" d="M630 461 H702"/><path class="edge" d="M960 461 H1090 V222"/>
+
+  <rect class="node" x="390" y="560" width="240" height="94" rx="12"/>
+  <text class="label" x="510" y="597">Package check + analysis</text><text class="sub" x="510" y="622">odin check; new procs + contract comments</text>
+  <path class="edge" d="M767 364 V382 H510 V552"/><text class="edge-label" x="651" y="378">no: production source</text>
+
+  <rect class="node warning" x="710" y="560" width="250" height="94" rx="12"/>
+  <text class="label" x="835" y="597">Warn or generate</text><text class="sub" x="835" y="622">adapter returns test; write _test.odin</text>
+  <path class="edge" d="M630 607 H702"/>
+
+  <rect class="node action" x="1000" y="560" width="220" height="94" rx="12"/>
+  <text class="label" x="1110" y="597">Validate package</text><text class="sub" x="1110" y="622">odin check + package tests</text>
+  <path class="edge" d="M960 607 H992"/><path class="edge" d="M1110 560 V222"/>
+
+  <text class="tag" x="60" y="690" fill="#bd4c47">RED: compile/test/leak failure</text>
+  <text class="tag" x="420" y="690" fill="#a57416">AMBER: missing contract or filename warning</text>
+  <text class="tag" x="900" y="690" fill="#2f8871">GREEN: latest package run clean</text>
+</svg>
+</body>
+</html>

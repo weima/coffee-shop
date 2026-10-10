@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rachel file routing rules</title>
+<style>
+  :root { color-scheme: light; font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  * { box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #f5f7fa; color: #172b4d; }
+  svg { display: block; width: 100vw; height: 100vh; background: #fff; }
+  .box { fill: #edf4ff; stroke: #4776b4; stroke-width: 2; }
+  .good { fill: #e8f7f2; stroke: #2f8871; }
+  .warn { fill: #fff5dc; stroke: #c38c22; }
+  .decision { fill: #f1edff; stroke: #7558a6; stroke-width: 2; }
+  .label { font-size: 16px; font-weight: 650; text-anchor: middle; fill: #172b4d; }
+  .sub { font-size: 13px; font-weight: 400; text-anchor: middle; fill: #526581; }
+  .edge { fill: none; stroke: #627d98; stroke-width: 2.2; marker-end: url(#arrow); }
+  .edge-label { font-size: 13px; fill: #526581; text-anchor: middle; }
+  .note { font-size: 13px; fill: #526581; }
+</style>
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 760" role="img" aria-label="Rachel routes test files to compile and test only, never generating another test file; production files are checked, analyzed for comments, and may receive generated tests.">
+  <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#627d98"/></marker></defs>
+  <rect x="32" y="30" width="1216" height="690" rx="14" fill="#fff"/>
+  <text x="58" y="61" font-size="24" font-weight="700" fill="#172b4d">Rachel: file routing and recursion guard</text>
+  <text x="58" y="86" font-size="14" fill="#526581">File suffix controls routing; procedure names do not.</text>
+
+  <rect class="box" x="60" y="110" width="200" height="88" rx="12"/>
+  <text class="label" x="160" y="147">New or changed</text><text class="sub" x="160" y="172">.odin file</text>
+  <path d="M390 90 L490 154 L390 218 L290 154 Z" class="decision"/>
+  <text class="label" x="390" y="149">Filename ends</text><text class="sub" x="390" y="171">in _test.odin?</text>
+  <path class="edge" d="M260 154 H282"/>
+
+  <rect class="good" x="570" y="70" width="270" height="105" rx="12"/>
+  <text class="label" x="705" y="108">Test-file path</text>
+  <text class="sub" x="705" y="134">odin check + package tests</text>
+  <text class="sub" x="705" y="153">include allocator-leak check</text>
+  <path class="edge" d="M490 139 H562"/><text class="edge-label" x="527" y="126">yes</text>
+
+  <rect class="warn" x="930" y="70" width="270" height="105" rx="12"/>
+  <text class="label" x="1065" y="108">Possible naming conflict</text>
+  <text class="sub" x="1065" y="134">production-looking content?</text>
+  <text class="sub" x="1065" y="153">suggest rename; never rename it</text>
+  <path class="edge" d="M840 122 H922"/><text class="edge-label" x="881" y="109">if no test declarations</text>
+
+  <rect class="box" x="300" y="330" width="230" height="100" rx="12"/>
+  <text class="label" x="415" y="369">Production source</text><text class="sub" x="415" y="393">e.g. memory_usage.odin</text><text class="sub" x="415" y="412">ensure matching test file</text>
+  <path class="edge" d="M390 218 V282 H415 V322"/><text class="edge-label" x="419" y="270">no</text>
+
+  <rect class="good" x="630" y="330" width="230" height="100" rx="12"/>
+  <text class="label" x="745" y="369">Package parses?</text><text class="sub" x="745" y="395">run odin check first</text>
+  <path class="edge" d="M530 380 H622"/>
+
+  <path d="M970 310 L1060 380 L970 450 L880 380 Z" class="decision"/>
+  <text class="label" x="970" y="374">New proc</text><text class="sub" x="970" y="396">with contract?</text>
+  <path class="edge" d="M860 380 H872"/>
+
+  <rect class="warn" x="880" y="520" width="180" height="92" rx="12"/>
+  <text class="label" x="970" y="557">Warn only</text><text class="sub" x="970" y="582">comment missing</text>
+  <path class="edge" d="M970 450 V512"/><text class="edge-label" x="994" y="484">no</text>
+
+  <rect class="good" x="1100" y="330" width="130" height="100" rx="12"/>
+  <text class="label" x="1165" y="366">Ensure _test file</text><text class="sub" x="1165" y="390">create if absent</text><text class="sub" x="1165" y="410">check proc coverage</text>
+  <path class="edge" d="M1060 380 H1092"/><text class="edge-label" x="1076" y="367">yes</text>
+
+  <rect class="good" x="1060" y="520" width="180" height="92" rx="12"/>
+  <text class="label" x="1150" y="557">Generate once</text><text class="sub" x="1150" y="582">adapter returns test source</text>
+  <path class="edge" d="M1165 430 V512"/><text class="edge-label" x="1191" y="482">missing</text>
+
+  <rect class="box" x="630" y="520" width="210" height="92" rx="12"/>
+  <text class="label" x="735" y="557">Validate output</text><text class="sub" x="735" y="582">check + test package</text>
+  <path class="edge" d="M1060 566 H848"/>
+
+  <text class="note" x="60" y="674">Recursion guard: edits to any *_test.odin file take the test-file path and never invoke test generation.</text>
+</svg>
+</body>
+</html>

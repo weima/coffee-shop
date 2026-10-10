@@ -13,9 +13,9 @@ Coffee Shop is named for two of our family members, Coffee and Oreo.
 - **Coffee** is a black mix of German Shepherd and Golden Retriever. He is still with us. He is the Barista in the project's characters: the one who turns an Order into a Recipe and leads the Brew.
 - **Oreo** was an American Shorthair with a black-and-white coat. He passed away in 2025, at the age of 12, and we miss him. He is drawn as the cat who reviews a finished Brew. The final review packet is now called the **Tray**.
 
-The drawings are in [`assets/characters/`](assets/characters/): `coffee.svg` and `oreo.svg`, with the other roles in the same style.
+Rachel is another family member and the inspiration for the human-facing Odin feedback companion in [`tools/rachel/`](tools/rachel/). Her mascot joins Coffee and Oreo in the same round-badge illustration style: Coffee leads the work, Oreo is remembered as the reviewer, and Rachel helps the developer while they code. Her glasses and laptop are part of the design; the paw pin is a small remembrance of Oreo.
 
-We want them with us in this project, and this section is how we keep them here.
+The drawings are in [`assets/characters/`](assets/characters/): `coffee.svg`, `oreo.svg`, and `rachel.svg`, alongside the other roles. We want them with us in this project, and this section is how we keep them here.
 
 ## Requirements
 
