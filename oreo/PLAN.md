@@ -49,6 +49,7 @@ The requirements above are settled. The following are implementation tasks, not 
 - Require explicit provider/model/thinking settings on submitted work items. If profiles are used internally, resolve them before dispatch.
 - Derive the relevant agent-loop behavior from Pi's reference implementation and document the independent Oreo behavior.
 - Build SQLite from a pinned official amalgamation and implement the fresh thin Odin binding. The store owns schema and SQL. Verify Linux/macOS build integration, metadata indexes, connection synchronization, and real file-backed end-to-end tests.
+- **Schema evolution:** use SQLite `PRAGMA user_version` with ordered, source-controlled, one-version-at-a-time migrations. Treat the current v1 schema as the initial migration; apply pending migrations sequentially in transactions and update the version atomically. Reject databases newer than the binary supports, preserve user data, and do not add a Rails-style migration framework or destructive reset path in v1. Test upgrades from each supported prior-version fixture, data preservation, failure rollback, and reopen/idempotency.
 - On restart, preserve all history and mark unfinished work interrupted; do not automatically repeat tool/provider actions in v1.
 - Apply TTL to pending queue work; mark expired items but retain their context/history. Do not expire completed session history by default.
 
