@@ -2,7 +2,7 @@
 
 Oreo is a small Odin agent harness intended to be used as a library by Coffee Shop and, once mature, published from its own repository. It hosts one in-memory session per top-level task; each session can submit many work items to a shared thread pool in one long-lived process. **Pi is the behavioral reference for provider authentication, agent-loop defaults, and built-in tools only; Oreo will not depend on Pi's code, executable, runtime, or credential store.**
 
-> **Status:** Oreo implementation is underway. The bundled SQLite 3.54.0 binding, including prepared statements and transactions, passes nine real-engine tests on macOS; Linux verification and the session store remain pending.
+> **Status:** Oreo implementation is underway. The bundled SQLite 3.54.0 binding and metadata store pass 13 real-engine tests on macOS. The store persists work-item transitions and session-close cancellation requests; Linux verification, worker execution, and the provider-neutral host remain pending.
 
 ## What Oreo will provide
 

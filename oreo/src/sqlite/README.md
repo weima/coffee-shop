@@ -4,7 +4,7 @@ A small, first-party Odin binding to the SQLite C API for Oreo. Oreo's session s
 
 ## Status
 
-The official SQLite 3.54.0 amalgamation is bundled. The initial binding supports connection lifecycle, fixed SQL execution, prepared statements, integer/double/text/blob/null binding, column reads, and transactions. Nine real-engine tests pass on macOS; Linux build verification and the Oreo session store remain pending.
+The official SQLite 3.54.0 amalgamation is bundled. The binding supports connection lifecycle, fixed SQL execution, prepared statements, integer/double/text/blob/null binding, column reads, and transactions. The Oreo store initializes v1 schema, persists/retrieves session, profile, work-item, and ordered-record metadata, guards work-item transitions, and persists session-close cancellation requests. Nine binding tests and four store tests pass on macOS; Linux verification and worker execution remain pending.
 
 ## Scope
 
@@ -23,7 +23,7 @@ cd oreo && just test
 
 The `test` recipe depends on `check`.
 
-The script compiles the bundled amalgamation and links it into Odin's real-SQLite tests; it does not use a mock or system SQLite library. Tests cover memory/file open and close, the bundled engine version, prepared statements, value binding and extraction, invalid SQL/binds, transaction commit/rollback, and cleanup. Store end-to-end tests will later apply the documented schema, write metadata, close/reopen the file, and verify persistence. The current binding tests are verified on macOS; run the same script on Linux before closing platform hardening.
+The `just` recipes compile the bundled amalgamation and link it into Odin's real-SQLite tests; they do not use a mock or system SQLite library. Binding tests cover memory/file open and close, the bundled engine version, prepared statements, value binding and extraction, invalid SQL/binds, transaction commit/rollback, and cleanup. Store tests apply the documented schema, verify foreign keys and ordered records, then close/reopen a temporary database to prove metadata persistence. These tests are verified on macOS; run the same recipes on Linux before closing platform hardening.
 
 ## References and attribution
 

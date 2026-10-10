@@ -75,7 +75,7 @@ run_filter :: proc(register: Register, shot: Register_Shot, pi: string) -> (evid
 	}
 
 	discovery := discover_checks(shot.station_path)
-	defer destroy_struct(&discovery)
+	defer discovery_destroy(&discovery)
 	for note in discovery.notes {
 		append(&evidence.notes, strings.clone(note))
 	}

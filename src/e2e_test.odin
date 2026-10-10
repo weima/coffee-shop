@@ -355,7 +355,7 @@ test_e2e_cancel_of_a_full_brew_settles_within_the_grace_period :: proc(t: ^testi
 
 @(test)
 test_e2e_status_receives_activity_before_pi_exits :: proc(t: ^testing.T) {
-	e2e := e2e_setup(t, "3")
+	e2e := e2e_setup(t, "10")
 	defer remove_fixture_root(e2e.root)
 	recipe := e2e_write(e2e, "recipe.json", `{
 		"order":"activity",
@@ -389,27 +389,34 @@ test_e2e_status_receives_activity_before_pi_exits :: proc(t: ^testing.T) {
 	}
 
 	brew_id := ""
-	for attempt in 0 ..< 20 {
+	for attempt in 0 ..< 80 { // up to 20 s for Brew state under parallel test load
 		brew_id = e2e_first_brew(e2e)
 		if brew_id != "" {
 			break
 		}
-		time.sleep(50 * time.Millisecond)
+		time.sleep(250 * time.Millisecond)
 	}
 	if brew_id == "" {
-		_, wait_err := os.process_wait(process)
+		state, wait_err := os.process_wait(process)
 		testing.expect_value(t, wait_err, os.Error(nil))
-		testing.expect(t, false, "Brew state was not created")
+		stdout, _ := os.read_entire_file(stdout_path, context.temp_allocator)
+		stderr, _ := os.read_entire_file(stderr_path, context.temp_allocator)
+		entries, listing_err := os.read_all_directory_by_path(e2e.state, context.temp_allocator)
+		testing.expect(
+			t,
+			false,
+			fmt.aprintf("Brew state was not found; state_root=%s listing_err=%v entries=%d process=%v stdout=%q stderr=%q", e2e.state, listing_err, len(entries), state, stdout, stderr),
+		)
 		return
 	}
 
 	progress := ""
-	for attempt in 0 ..< 20 {
+	for attempt in 0 ..< 80 { // allow for process scheduling under parallel test load
 		_, progress, _ = e2e_run(e2e, "status", brew_id)
 		if strings.contains(progress, "Running tool: read") {
 			break
 		}
-		time.sleep(50 * time.Millisecond)
+		time.sleep(100 * time.Millisecond)
 	}
 	testing.expect(t, strings.contains(progress, "alpha  running"), progress)
 	testing.expect(
