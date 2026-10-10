@@ -17,6 +17,16 @@ A typical workload is about 5 task sessions with 5 concurrent work items each (a
 
 Oreo will implement the provider-specific OAuth flows directly and store credentials separately in `~/.oreo/auth.json` with owner-only permissions. It will not read or write another harness's credential store. Provider client identifiers and endpoints must be checked for authorized use before release.
 
+## Development
+
+From the repository root, run the Oreo package tests with:
+
+```sh
+cd oreo && just test
+```
+
+`just check` is also available as a type-check-only command. The test recipe compiles and links the bundled amalgamation with the platform C compiler; it does not use system SQLite.
+
 ## Design documents
 
 - [Architecture](architecture.md) — authoritative design decisions, session lifecycle, pool direction, provider boundaries, and tools.

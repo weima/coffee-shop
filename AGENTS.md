@@ -19,3 +19,7 @@
 - Use `wt` (Worktrunk) for worktree creation, listing, switching, merging, and removal. Do not use raw `git worktree` commands when `wt` supports the operation.
 - Configure Worktrunk's user `worktree-path` as `~/.wt/{{ remote_repo | sanitize }}/{{ branch | sanitize }}` and use it. Never create worktrees as siblings under the repository's work directory.
 - Keep branch names slash-free (for example, `feat-oreo-sqlite-binding`); use hyphens for hierarchy so each worktree occupies one branch-named directory.
+
+## Development commands
+
+- Use `just` recipes for build, check, and test workflows. Do not add bespoke shell test-runner scripts when `just` can express the workflow.
