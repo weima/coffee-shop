@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-labelledby="title desc">
   <title id="title">Rachel, the human-in-the-loop helper</title>
-  <desc id="desc">A friendly university student with a rounded, slender face, warm light golden-beige skin, dark hair, large round glasses, a green shirt, and a small laptop. A paw pin remembers Oreo.</desc>
+  <desc id="desc">A friendly university student with a very round, slim face, light warm beige skin, dark hair tied back in a ponytail, large round glasses, a green shirt, and a small laptop. A paw pin remembers Oreo.</desc>
   <defs>
     <clipPath id="badge-rachel"><circle cx="120" cy="120" r="108"/></clipPath>
   </defs>
@@ -8,23 +8,25 @@
   <g clip-path="url(#badge-rachel)">
     <!-- Shoulders and campus shirt -->
     <path d="M42 250 Q47 194 120 190 Q193 194 198 250 Z" fill="#5C8175"/>
-    <path d="M105 156h30v37h-30z" fill="#DDB58F"/>
+    <path d="M105 156h30v37h-30z" fill="#EBD0AE"/>
     <path d="M96 181q24 18 48 0l15 17-39 27-39-27z" fill="#F2E8D8"/>
 
-    <!-- Rounded face and hair -->
-    <path d="M74 111c0-36 18-56 46-56s46 20 46 56v25c0 34-19 51-46 51s-46-17-46-51v-25Z" fill="#DDB58F"/>
+    <!-- Hair tied back behind a shorter, rounder face -->
+    <path d="M155 82c18-10 34 0 35 16 1 11-5 20-15 27 9 13 6 28-5 36-9-9-12-19-9-31l-13-20Z" fill="#242323"/>
+    <path d="M168 125q7 5 14-1" fill="none" stroke="#D7A753" stroke-width="4" stroke-linecap="round"/>
+    <path d="M75 109c0-30 17-49 45-49s45 19 45 49v17c0 34-18 51-45 51s-45-17-45-51v-17Z" fill="#EBD0AE"/>
     <path d="M70 122c-8-39 4-77 50-77s59 37 50 77l-12-15c-4-6-6-14-6-22-19 14-49 20-76 13-2 13-4 20-6 26Z" fill="#242323"/>
-    <path d="M72 116c-5 34-1 65 8 82-17-12-24-37-23-64 1-17 5-29 15-39Zm96 0c5 34 1 65-8 82 17-12 24-37 23-64-1-17-5-29-15-39Z" fill="#242323"/>
-    <path d="M75 124c-9 0-13 8-11 17 2 8 7 12 13 12m86-29c9 0 13 8 11 17-2 8-7 12-13 12" fill="none" stroke="#C89D7C" stroke-width="4" stroke-linecap="round"/>
+    <path d="M76 106c-8 13-8 31-2 46l6 3c-4-17-2-33 1-45Zm88 0c8 13 8 31 2 46l-6 3c4-17 2-33-1-45Z" fill="#242323"/>
+    <path d="M76 120c-9 0-13 8-11 16 2 8 7 12 13 12m84-28c9 0 13 8 11 16-2 8-7 12-13 12" fill="none" stroke="#D5B28F" stroke-width="4" stroke-linecap="round"/>
 
     <!-- Expression and round glasses -->
     <path d="M84 111q11-7 22 0m28 0q11-7 22 0" fill="none" stroke="#4A3027" stroke-width="3" stroke-linecap="round"/>
     <circle cx="99" cy="132" r="3.5" fill="#242323"/>
     <circle cx="141" cy="132" r="3.5" fill="#242323"/>
-    <path d="M120 135q-2 10-6 15 6 4 12 0" fill="none" stroke="#BE9576" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M106 158q14 12 28 0" fill="none" stroke="#6A4638" stroke-width="2.5" stroke-linecap="round"/>
-    <ellipse cx="86" cy="149" rx="7" ry="4" fill="#E3A995" opacity=".45"/>
-    <ellipse cx="154" cy="149" rx="7" ry="4" fill="#E3A995" opacity=".45"/>
+    <path d="M120 135q-2 10-6 15 6 4 12 0" fill="none" stroke="#D0AE8C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M106 157q14 12 28 0" fill="none" stroke="#6A4638" stroke-width="2.5" stroke-linecap="round"/>
+    <ellipse cx="86" cy="147" rx="7" ry="4" fill="#F0BCA4" opacity=".4"/>
+    <ellipse cx="154" cy="147" rx="7" ry="4" fill="#F0BCA4" opacity=".4"/>
     <g fill="none" stroke="#4A3027" stroke-width="3.5">
       <circle cx="99" cy="132" r="20"/>
       <circle cx="141" cy="132" r="20"/>
