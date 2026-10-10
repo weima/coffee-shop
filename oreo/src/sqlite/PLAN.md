@@ -2,6 +2,11 @@
 
 The binding is a narrow, first-party package under `oreo/src/sqlite`. The session store remains the owner of Oreo's tables and queries. The full Oreo plan is in [`oreo/PLAN.md`](../../PLAN.md).
 
+## Progress
+
+- Slice 0: SQLite 3.54.0 is pinned and bundled; provenance and checksums are in [`vendor/README.md`](vendor/README.md). The macOS arm64 C compile/link/open/close spike passes; Linux verification remains open.
+- Slice 1: the binding implements connection lifecycle, fixed SQL execution, prepared statements, integer/double/text/blob/null binding, column reads, transactions, and error reporting. With Odin `dev-2026-10`, `odin check oreo/src/sqlite -no-entry-point` and `./oreo/src/sqlite/test.sh` pass nine real-engine tests on macOS. Linux build/test verification remains open.
+
 ## Slices
 
 | Slice | Work | Acceptance gate |

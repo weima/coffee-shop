@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Provide the smallest Odin-facing boundary needed for Oreo to use the official SQLite C library. This is not an ORM and does not own Oreo's session schema.
+Provide the smallest Odin-facing boundary needed for Oreo to use the official SQLite C library. This is not an ORM and does not own Oreo's session schema; the v1 schema contract is documented in [Oreo's database schema](../../schema.md).
 
 ## Ownership boundaries
 
@@ -36,9 +36,10 @@ No reflection-based row mapping, query builder, ORM, connection pool, or broad r
 
 ## Build and distribution
 
-- Compile the official SQLite amalgamation into Oreo; do not link against a system SQLite installation.
-- Pin the release and record its source URL, checksum, build options, and notices.
-- Confirm the C compilation/linking path with the active Odin toolchain before finalizing build scripts. A native C compiler may still be a build prerequisite; SQLite itself is not a separately installed runtime dependency.
+- Compile the bundled official SQLite 3.54.0 amalgamation into Oreo; do not link against a system SQLite installation.
+- Provenance, SHA3-256 values, public-domain notice, and build flags are recorded in [`vendor/README.md`](vendor/README.md).
+- `test.sh` compiles SQLite to a temporary object with the active C compiler and links that object into Odin's real-engine tests. A native C compiler is a build prerequisite; SQLite itself is not a separately installed runtime dependency.
+- The compile/link/open/close spike passes on macOS arm64. Linux verification remains open.
 
 ## Testing
 
