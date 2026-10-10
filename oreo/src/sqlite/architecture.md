@@ -38,7 +38,7 @@ No reflection-based row mapping, query builder, ORM, connection pool, or broad r
 
 - Compile the bundled official SQLite 3.54.0 amalgamation into Oreo; do not link against a system SQLite installation.
 - Provenance, SHA3-256 values, public-domain notice, and build flags are recorded in [`vendor/README.md`](vendor/README.md).
-- `test.sh` compiles SQLite to a temporary object with the active C compiler and links that object into Odin's real-engine tests. A native C compiler is a build prerequisite; SQLite itself is not a separately installed runtime dependency.
+- The Oreo `justfile` compiles SQLite to a temporary object with the active C compiler and links that object into Odin's real-engine tests. A native C compiler is a build prerequisite; SQLite itself is not a separately installed runtime dependency.
 - The compile/link/open/close spike passes on macOS arm64. Linux verification remains open.
 
 ## Testing

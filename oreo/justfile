@@ -1,0 +1,18 @@
+set shell := ["sh", "-cu"]
+
+# Type-check the SQLite package as a library (it has no main entry point).
+check:
+    odin check src/sqlite -no-entry-point
+
+# Compile the bundled amalgamation and link it into the package tests.
+test: check
+    #!/bin/sh
+    set -eu
+    build_dir=$(mktemp -d "${TMPDIR:-/tmp}/oreo-sqlite.XXXXXX")
+    trap 'rm -rf "$build_dir"' EXIT
+    cc -O2 \
+        -DSQLITE_THREADSAFE=1 \
+        -DSQLITE_OMIT_LOAD_EXTENSION \
+        -c src/sqlite/vendor/sqlite3.c \
+        -o "$build_dir/sqlite3.o"
+    TZ=UTC odin test src/sqlite -extra-linker-flags:"$build_dir/sqlite3.o"

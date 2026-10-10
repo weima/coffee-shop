@@ -15,11 +15,13 @@ The official SQLite 3.54.0 amalgamation is bundled. The initial binding supports
 
 ## Verification
 
-Run the focused package tests from the repository root:
+Run the focused checks from the repository root:
 
 ```sh
-./oreo/src/sqlite/test.sh
+cd oreo && just test
 ```
+
+The `test` recipe depends on `check`.
 
 The script compiles the bundled amalgamation and links it into Odin's real-SQLite tests; it does not use a mock or system SQLite library. Tests cover memory/file open and close, the bundled engine version, prepared statements, value binding and extraction, invalid SQL/binds, transaction commit/rollback, and cleanup. Store end-to-end tests will later apply the documented schema, write metadata, close/reopen the file, and verify persistence. The current binding tests are verified on macOS; run the same script on Linux before closing platform hardening.
 

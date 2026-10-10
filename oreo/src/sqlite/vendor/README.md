@@ -7,4 +7,4 @@
 
 SQLite is dedicated to the public domain. The amalgamation's source notice is preserved in `sqlite3.c`; see the [official copyright page](https://sqlite.org/copyright.html).
 
-`../test.sh` compiles the amalgamation with `SQLITE_THREADSAFE=1` and `SQLITE_OMIT_LOAD_EXTENSION`, then links the resulting object into the Odin tests. It does not link or load the system SQLite library.
+`cd oreo && just test` compiles the amalgamation with `SQLITE_THREADSAFE=1` and `SQLITE_OMIT_LOAD_EXTENSION`, then links the resulting object into the Odin tests. It does not link or load the system SQLite library.
