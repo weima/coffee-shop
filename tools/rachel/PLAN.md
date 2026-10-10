@@ -56,6 +56,16 @@ Implement the smallest useful foreground watcher first. Keep generation and proc
 
 **Gate:** focused and full tests pass without allocator leak warnings on both platforms; no test contacts a live AI service.
 
+## Phase 5 — Dogfood Rachel on Oreo
+
+- Before any edit under `oreo/`, run Rachel's `just test` and `just build`, then start Rachel watching the Oreo directory in a dedicated Herdr tab. Keep a separate Herdr tab for Git operations and read Rachel's output with `herdr pane read` or `pane wait-output`.
+- Leave `RACHEL_TEST_GENERATOR` unset. The coding agent authors each focused TDD test first, observes Rachel's red result, then implements the smallest passing change.
+- Let Rachel run `odin check` and package tests after every settled save; treat leak reports as failures.
+- If Rachel herself crashes, stops watching, or reports incorrect diagnostics, stop the watcher and pause Oreo edits. Fix Rachel, pass her checks, restart the loop, and only then resume Oreo work. An ordinary Oreo test failure is feedback, not a reason to stop Rachel.
+- Keep both Herdr tabs and the worktree through review. Remove them only after human confirmation that the PR is merged into the local root checkout and the worktree is clean.
+
+**Gate:** an Oreo vertical slice passes its focused tests without allocator warnings while Rachel's diagnostics are actively observed through Herdr; Rachel's own suite/build remain green.
+
 ## Out of scope for the first release
 
 - Editor/LSP integration, background daemon, automatic production-code rewrites, Git operations, remote test execution, or an owned model/authentication client.
