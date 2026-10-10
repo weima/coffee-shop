@@ -50,6 +50,18 @@ This is a small adapter protocol, not a plugin framework. A fake executable cove
 
 **Trust boundary:** the configured executable runs with the developer's normal permissions and may access the network. Generated test code also runs as the developer when Odin tests execute; neither process is sandboxed. Configure only a generator you trust and inspect generated code when appropriate. Rachel limits its writes to the matching test file but cannot make arbitrary executable code safe.
 
+## Dogfooding Rachel while implementing Oreo
+
+For Oreo work, the coding agent follows the same test-first edit loop as a human developer; Rachel supplies the live checks rather than taking over test authoring.
+
+1. Before editing anything under `oreo/`, run Rachel's own `cd tools/rachel && just test && just build` checks. Start Rachel watching the Oreo project directory with `RACHEL_TEST_GENERATOR` unset so the coding agent authors the TDD tests and Rachel does not compete by generating them.
+2. Use the current development worktree's Herdr workspace. Keep a human Git-operations tab and a separate Rachel tab rooted at the worktree; launch Rachel on `<worktree>/oreo` in its tab.
+3. Write one failing Odin test for the next behavior under `oreo/`, save it, and wait for Rachel's check/test output before changing implementation code. The agent reads the Rachel pane with Herdr's `pane read --source recent-unwrapped` (or `pane wait-output`) so its decisions are based on Rachel's actual diagnostics, not assumptions.
+4. Implement the smallest change that makes the test pass. After each save, wait for Rachel's result. A valid Oreo compile/test/leak error means Rachel is working: keep her running and fix Oreo. If Rachel itself crashes, stops observing edits, or emits demonstrably incorrect feedback, stop the watcher and make no further Oreo edits; fix Rachel, run its own tests/build, restart it, and verify the loop before resuming Oreo.
+5. Keep the Rachel and development tabs available during the task and review. Close them and remove the worktree only after human confirmation that the PR is merged into the local root checkout and both checkouts are clean.
+
+The `RACHEL_TEST_GENERATOR` adapter is deliberately disabled in this workflow: the TDD coding agent writes tests first, while Rachel independently validates each saved change. This avoids two generators competing to edit the same test file.
+
 ## Odin file convention and recursion prevention
 
 `*_test.odin` is reserved for test source. A test source file may contain procedures whose names include `_test`; filenames, not procedure names, determine routing. Rachel must never infer that `memory_usage_test.odin` needs `memory_usage_test_test.odin`.
