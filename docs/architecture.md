@@ -260,6 +260,15 @@ Blend creates one retained integration worktree from the Brew's recorded Beans b
 
 If changes conflict or the commit fails, Blend leaves the original tabs, Stations, and state intact. The action is explicit and scoped to one Brew; it does not clean up historical or unrelated Brews.
 
+## Human development worktrees
+
+This workflow is for worktrees used by a human or coding agent to develop Coffee Shop itself. It is separate from Brew Stations, which Coffee Shop creates for Pi Workers.
+
+- Create and remove development worktrees with `wt`, using the configured `~/.wt/coffee-shop/<branch>` layout and slash-free branch names.
+- Whenever a development worktree is created, open a dedicated Herdr workspace with one human-operated tab rooted at that worktree. The tab is for the developer's Git operations and inspection, not a Pi Worker. Worktree setup is incomplete until this tab is open; if Herdr is unavailable, report the failure and leave the worktree intact.
+- Keep the tab and worktree available while the branch is under review or the PR is not confirmed merged.
+- Only after the human confirms that the PR has been merged into the local root checkout may the associated Herdr tab be closed and the worktree removed. Before cleanup, verify the root checkout contains the merged work and the worktree has no uncommitted changes. Close the tab, then remove the worktree with `wt`; if either verification fails, preserve both and ask the human. Never force-remove or silently discard changes.
+
 ## Safety boundaries
 
 - A Worker never shares a Station with another Worker in the same Brew.

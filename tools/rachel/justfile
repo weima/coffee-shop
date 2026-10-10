@@ -1,0 +1,14 @@
+set shell := ["sh", "-cu"]
+
+check:
+    odin check src
+
+test: check
+    TZ=UTC odin test src
+
+build: check
+    mkdir -p build
+    odin build src -out:build/rachel
+
+run directory:
+    odin run src -- "{{directory}}"
