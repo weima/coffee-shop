@@ -4,7 +4,7 @@
 
 Coffee Shop is being built as a small Odin command-line tool for dispatching parallel Pi workers. The active Pi session acts as the **Barista**: it turns a developer's **Order** into a **Recipe**, then asks Coffee Shop to run the work.
 
-> **Status:** the vertical slice works on Linux and WSL. `brew`, `status`, `cancel` and `collect` are implemented, and automated end-to-end tests drive the real binary with fake Workers. See [Limitations](#limitations) before relying on it.
+> **Status:** the vertical slice builds and its automated tests pass on Linux, WSL and macOS. A real one-Shot Pi/Herdr smoke Brew also passed on macOS with Pi `1.1.0` and Herdr `0.9.3`; it produced a completed report and `status`/`collect` succeeded. The smoke task was read-only and made no Station changes.
 
 ## The story behind the names
 
@@ -21,14 +21,14 @@ We want them with us in this project, and this section is how we keep them here.
 
 To **use** Coffee Shop you need:
 
-- Linux, including WSL. macOS is not supported yet: cancel and recovery identify processes through `/proc`.
+- Linux (including WSL) or macOS. Linux process identity uses `/proc`; macOS uses Darwin's process-usage API. Native Windows is not supported.
 - [Git](https://git-scm.com/).
 - [Herdr](https://herdr.dev) `0.9.3` and [Pi](https://pi.dev) `1.1.0` on your `PATH`, with Pi already authenticated. A Herdr server must be running, but you do not need to run Coffee Shop inside a Herdr pane: from a plain terminal the Herdr CLI uses its default socket. If no server is reachable, `brew` records the Brew, exits 1, and reports Herdr's message (for example `no herdr server is running ...; run herdr to start or attach it`). Start Herdr, then run a new Brew.
 - Whatever the Beans repository's own tests need (for example `npm` or `make`), because the Filter runs them.
 
 To **develop** Coffee Shop you also need:
 
-- The Odin compiler, official monthly release `dev-2026-10`. Odin has no semver-stable release; it publishes one `dev-YYYY-MM` release a month, and Coffee Shop pins one. The compiler reports it as `dev-2026-10-nightly:84bc3fc`, because Odin's version string always says "nightly". Download the Linux archive from the [`dev-2026-10` release](https://github.com/odin-lang/Odin/releases/tag/dev-2026-10) and check it against SHA-256 `c3c8b095621fd0c75f7f73e3a0829f1b4d45324225f20ba11ed8dc4da310a8ab`.
+- The Odin compiler, official monthly release `dev-2026-10`. Odin has no semver-stable release; it publishes one `dev-YYYY-MM` release a month, and Coffee Shop pins one. The compiler reports it as `dev-2026-10-nightly:84bc3fc`, because Odin's version string always says "nightly". Download the archive for your platform from the [`dev-2026-10` release](https://github.com/odin-lang/Odin/releases/tag/dev-2026-10) and verify it against that archive's published SHA-256.
 - [`just`](https://github.com/casey/just), the command runner for the project's checks. Install it with `cargo install just --locked` or your package manager. `just test`, `just check` and `just build` are the supported entry points.
 
 ## How it works
@@ -110,7 +110,7 @@ coffee-shop collect <brew-id>
 
 These are the behaviours observed while building and dogfooding Coffee Shop, not future plans.
 
-- **Linux and WSL only.** Keep `CS_STATE_DIR` on the Linux filesystem, not under `/mnt/c`.
+- **Linux, WSL and macOS.** On WSL, keep `CS_STATE_DIR` on the Linux filesystem, not under `/mnt/c`. Native Windows is not supported.
 - **Stations start from the Beans' `HEAD` commit.** Uncommitted changes in the Beans repository are invisible to Workers, so commit first.
 - **Two Workers by default, five maximum, no timeout.** A Worker that never finishes stays `running` until you `cancel` the Brew.
 - **Explicit completion.** v0.2 Recipes complete only when the final response ends with `CS-DONE`; missing markers and `CS-BLOCKED` become `incomplete`.

@@ -13,8 +13,8 @@ Process_Identity :: struct {
 	start_time: u64,
 }
 
-// What reading /proc says about a saved identity. Only evidence of absence may
-// say Gone: a read that failed or text that does not parse proves nothing, so it
+// What the operating system says about a saved identity. Only evidence of
+// absence may say Gone: an unreadable or malformed record proves nothing, so it
 // is Unknown, and Unknown must never be recorded as an exit.
 Liveness :: enum {
 	Alive,
@@ -22,8 +22,8 @@ Liveness :: enum {
 	Unknown,
 }
 
-// The identity of this process, or false if its own /proc entry cannot be read. A
-// guessed start time would later read as "a different process", i.e. dead.
+// The identity of this process, or false if its OS process record cannot be read.
+// A guessed start time would later look like a different process.
 current_identity :: proc() -> (identity: Process_Identity, ok: bool) {
 	pid := os.get_pid()
 	start_time, found := process_start_time(pid)
@@ -53,8 +53,12 @@ classify_proc_stat :: proc(identity: Process_Identity, data: []byte, read_err: o
 }
 
 identity_liveness :: proc(identity: Process_Identity) -> Liveness {
-	data, err := os.read_entire_file(fmt.tprintf("/proc/%d/stat", identity.pid), context.temp_allocator)
-	return classify_proc_stat(identity, data, err)
+	when ODIN_OS == .Darwin {
+		return darwin_identity_liveness(identity)
+	} else {
+		data, err := os.read_entire_file(fmt.tprintf("/proc/%d/stat", identity.pid), context.temp_allocator)
+		return classify_proc_stat(identity, data, err)
+	}
 }
 
 identity_alive :: proc(identity: Process_Identity) -> bool {
@@ -62,8 +66,12 @@ identity_alive :: proc(identity: Process_Identity) -> bool {
 }
 
 process_start_time :: proc(pid: $T) -> (start_time: u64, ok: bool) {
-	start_time, _, ok = read_proc_stat(int(pid))
-	return
+	when ODIN_OS == .Darwin {
+		return darwin_process_start_time(int(pid))
+	} else {
+		start_time, _, ok = read_proc_stat(int(pid))
+		return
+	}
 }
 
 // Reads /proc/<pid>/stat.

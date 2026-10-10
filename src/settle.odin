@@ -67,8 +67,8 @@ write_supervisor :: proc(directory: string) -> bool {
 
 // A missing supervisor file means a Brew with no supervisor to record Worker
 // outcomes (a Brew from before the file existed, or one that crashed early), so
-// that is Gone. A file that cannot be understood, or a /proc entry that cannot
-// be read, is Unknown: it must not be taken as proof that the supervisor died.
+// that is Gone. A file that cannot be understood, or an OS process record that
+// cannot be read, is Unknown: it must not prove that the supervisor died.
 supervisor_liveness :: proc(directory: string) -> Liveness {
 	path := supervisor_path(directory)
 	defer delete(path)
@@ -89,7 +89,7 @@ supervisor_gone :: proc(directory: string) -> bool {
 }
 
 // `liveness` decides whether a Worker's process is still there; tests substitute
-// a stand-in to simulate a /proc entry that cannot be read.
+// a stand-in to simulate an unreadable process record.
 Liveness_Proc :: proc(identity: Process_Identity) -> Liveness
 
 settle_brew :: proc(directory: string, register: ^Register, herdr: string, mode: Settle_Mode, grace := CANCEL_GRACE, liveness: Liveness_Proc = identity_liveness) -> State_Error {

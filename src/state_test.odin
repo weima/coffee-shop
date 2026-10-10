@@ -231,7 +231,7 @@ make_test_register :: proc(t: ^testing.T) -> Register {
 }
 
 make_test_state_directory :: proc(t: ^testing.T) -> string {
-	directory, err := os.make_directory_temp("", "coffee-shop-state-*", context.allocator)
+	directory, err := os.make_directory_temp(TEMP_DIR, "cs-state-*", context.allocator)
 	testing.expect_value(t, err, os.Error(nil))
 	return directory
 }

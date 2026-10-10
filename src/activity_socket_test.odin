@@ -9,7 +9,7 @@ import "core:testing"
 
 @(test)
 test_activity_socket_round_trips_multiple_worker_streams :: proc(t: ^testing.T) {
-	directory, err := os.make_directory_temp("", "coffee-shop-activity-*", context.allocator)
+	directory, err := os.make_directory_temp(TEMP_DIR, "coffee-shop-activity-*", context.allocator)
 	testing.expect_value(t, err, os.Error(nil))
 	defer os.remove_all(directory)
 	defer delete(directory)
@@ -51,7 +51,7 @@ test_activity_socket_round_trips_multiple_worker_streams :: proc(t: ^testing.T) 
 
 @(test)
 test_activity_socket_rejects_invalid_and_oversize_messages :: proc(t: ^testing.T) {
-	directory, err := os.make_directory_temp("", "coffee-shop-activity-*", context.allocator)
+	directory, err := os.make_directory_temp(TEMP_DIR, "coffee-shop-activity-*", context.allocator)
 	testing.expect_value(t, err, os.Error(nil))
 	defer os.remove_all(directory)
 	defer delete(directory)
@@ -114,7 +114,7 @@ test_activity_socket_failed_open_returns_safe_closed_handles :: proc(t: ^testing
 
 @(test)
 test_activity_socket_absent_receiver_and_client_disconnect :: proc(t: ^testing.T) {
-	directory, err := os.make_directory_temp("", "coffee-shop-activity-*", context.allocator)
+	directory, err := os.make_directory_temp(TEMP_DIR, "coffee-shop-activity-*", context.allocator)
 	testing.expect_value(t, err, os.Error(nil))
 	defer os.remove_all(directory)
 	defer delete(directory)
@@ -148,10 +148,8 @@ test_activity_socket_absent_receiver_and_client_disconnect :: proc(t: ^testing.T
 activity_test_connect_raw :: proc(t: ^testing.T, path: string) -> posix.FD {
 	fd := posix.socket(.UNIX, .STREAM)
 	testing.expect(t, fd >= 0)
-	address: posix.sockaddr_un
-	address.sun_family = .UNIX
-	copy(address.sun_path[:], path)
-	address_len := posix.socklen_t(size_of(address.sun_family) + len(path) + 1)
+	address := activity_socket_address(path)
+	address_len := activity_socket_address_len(path)
 	testing.expect(t, posix.connect(fd, (^posix.sockaddr)(&address), address_len) == .OK)
 	return fd
 }

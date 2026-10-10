@@ -5,7 +5,7 @@ import "core:testing"
 
 @(test)
 test_activity_state_round_trips_record_and_worker_start_time :: proc(t: ^testing.T) {
-	directory, err := os.make_directory_temp("", "coffee-shop-activity-state-*", context.allocator)
+	directory, err := os.make_directory_temp(TEMP_DIR, "coffee-shop-activity-state-*", context.allocator)
 	testing.expect_value(t, err, os.Error(nil))
 	defer os.remove_all(directory)
 	defer delete(directory)

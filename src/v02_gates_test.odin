@@ -39,7 +39,7 @@ test_recipe_schema_and_parser_declare_the_same_keys :: proc(t: ^testing.T) {
 // refused with an error, and no text comes back.
 @(test)
 test_recipe_text_files_reject_empty_non_utf8_and_oversized_content :: proc(t: ^testing.T) {
-	directory, make_err := os.make_directory_temp("", "cs-text-*", context.allocator)
+	directory, make_err := os.make_directory_temp(TEMP_DIR, "cs-text-*", context.allocator)
 	testing.expect(t, make_err == nil, "a temporary directory is needed")
 	defer {
 		_ = os.remove_all(directory)
@@ -65,7 +65,7 @@ test_recipe_text_files_reject_empty_non_utf8_and_oversized_content :: proc(t: ^t
 // A path may not go through a symbolic link, even one inside the Recipe directory.
 @(test)
 test_recipe_text_refuses_to_traverse_a_symbolic_link :: proc(t: ^testing.T) {
-	directory, make_err := os.make_directory_temp("", "cs-link-*", context.allocator)
+	directory, make_err := os.make_directory_temp(TEMP_DIR, "cs-link-*", context.allocator)
 	testing.expect(t, make_err == nil, "a temporary directory is needed")
 	defer {
 		_ = os.remove_all(directory)
@@ -85,7 +85,7 @@ test_recipe_text_refuses_to_traverse_a_symbolic_link :: proc(t: ^testing.T) {
 // Each Worker prompt names each root rule file it has, once, and nothing else.
 @(test)
 test_worker_guidance_names_each_root_rule_file_once :: proc(t: ^testing.T) {
-	station, make_err := os.make_directory_temp("", "cs-guidance-*", context.allocator)
+	station, make_err := os.make_directory_temp(TEMP_DIR, "cs-guidance-*", context.allocator)
 	testing.expect(t, make_err == nil, "a temporary directory is needed")
 	defer {
 		_ = os.remove_all(station)
