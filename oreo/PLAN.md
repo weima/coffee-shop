@@ -17,6 +17,12 @@ Oreo's first milestone is a provider-neutral, long-lived in-process host for tas
 | 6. Integrate with Coffee Shop | Consume Oreo through its library boundary while Coffee Shop retains task decomposition, worktrees, and durable task state. | Fake-provider end-to-end tests pass; adoption does not require an external agent CLI process per session. |
 | 7. Prepare extraction | Make package paths, build instructions, notices, and tests independent of Coffee Shop-specific code. | Oreo builds and tests from its own repository and Coffee Shop consumes only the public API. |
 
+## Current progress
+
+- The SQLite amalgamation and binding are implemented; the session store initializes schema v1, persists/retrieves metadata and ordered records, validates work-item state transitions, and coordinates persisted session-close cancellation.
+- `cd oreo && just test` passes nine binding tests and four store tests against bundled SQLite on macOS. Linux verification and worker execution remain pending.
+- The full Coffee Shop test suite passes after extending an E2E activity readiness window for parallel test load. The provider-neutral host, worker pool, and task lifecycle are the next implementation slices.
+
 ## Confirmed requirements
 
 - **Providers:** Codex and GitHub Copilot are first. Implement the provider-neutral core before live auth; live auth remains gated on authorized client/API contracts.

@@ -19,6 +19,18 @@ Discovery :: struct {
 	notes: [dynamic]string,
 }
 
+discovery_destroy :: proc(discovery: ^Discovery, allocator := context.allocator) {
+	for &command in discovery.commands {
+		for arg in command.argv do delete(arg, allocator)
+		delete(command.argv, allocator)
+		delete(command.source, allocator)
+	}
+	delete(discovery.commands)
+	for note in discovery.notes do delete(note, allocator)
+	delete(discovery.notes)
+	discovery^ = Discovery{}
+}
+
 discover_candidate :: struct {
 	kind: Check_Kind,
 	argv: []string,

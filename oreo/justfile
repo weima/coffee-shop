@@ -3,6 +3,7 @@ set shell := ["sh", "-cu"]
 # Type-check the SQLite package as a library (it has no main entry point).
 check:
     odin check src/sqlite -no-entry-point
+    odin check src/store -collection:oreo=src -no-entry-point
 
 # Compile the bundled amalgamation and link it into the package tests.
 test: check
@@ -16,3 +17,4 @@ test: check
         -c src/sqlite/vendor/sqlite3.c \
         -o "$build_dir/sqlite3.o"
     TZ=UTC odin test src/sqlite -extra-linker-flags:"$build_dir/sqlite3.o"
+    TZ=UTC odin test src/store -collection:oreo=src -extra-linker-flags:"$build_dir/sqlite3.o"

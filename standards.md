@@ -25,6 +25,7 @@ This file defines the coding and test standards for the Coffee Shop repository. 
 
 - Test observable behavior through public interfaces. Do not test implementation text or private details.
 - Use Odin's test runner for package behavior. Cover input validation, state transitions, process failures, recovery, and result collection as those features are implemented.
+- Treat allocator leak warnings as test failures, even if Odin exits with code 0. A suite is clean only when it passes without leak warnings; investigate and fix leaks, especially in long-running code.
 - Test Git and process boundaries with temporary repositories and fake Pi executables. Tests must not contact GitHub or an AI service.
 - Run the repository's existing test and build commands without replacing or silently narrowing them. If a required command or test setup is unclear, report the gap instead of inventing project configuration.
 - For behavior changes, use Taste-Driven Development: write a focused failing test first, make the smallest change that passes, then refactor while tests stay green.
