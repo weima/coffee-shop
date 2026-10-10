@@ -97,11 +97,13 @@ exit 3
 
 // Names must be unique across tests in one process: a removed root can otherwise be
 // recreated under the same path while a server from the earlier test still uses it.
+TEMP_DIR :: "/private/tmp" when ODIN_OS == .Darwin else "/tmp"
+
 fixture_sequence: int
 
 make_fixture_root :: proc(t: ^testing.T) -> string {
 	sequence := sync.atomic_add(&fixture_sequence, 1)
-	root, err := os.make_directory_temp("", fmt.tprintf("coffee-shop-dispatch-%d-%d-*", os.get_pid(), sequence), context.allocator)
+	root, err := os.make_directory_temp(TEMP_DIR, fmt.tprintf("cs-%d-%d-*", os.get_pid(), sequence), context.allocator)
 	testing.expect_value(t, err, os.Error(nil))
 	return root
 }
@@ -179,6 +181,7 @@ printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant",'\
 			break
 		case .Malformed, .Failed:
 			testing.expect(t, false, "Pi activity message should be valid")
+			return
 		}
 		if received.kind == .Unavailable {
 			break

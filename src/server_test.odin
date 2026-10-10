@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -50,13 +51,15 @@ test_server_restart_keeps_id_and_increments_generation :: proc(t: ^testing.T) {
 	defer delete(id)
 	directory := server_directory(root, id)
 	defer delete(directory)
+	socket_path := fmt.aprintf("%s/gac.sock", TEMP_DIR)
+	defer delete(socket_path)
 
-	first_lock, first, first_ok := server_start(directory, id, "/work/gac", "/tmp/gac.sock")
+	first_lock, first, first_ok := server_start(directory, id, "/work/gac", socket_path)
 	testing.expect(t, first_ok, "the first start must succeed")
 	testing.expect_value(t, first.generation, 1)
 	file_lock_release(first_lock)
 
-	second_lock, second, second_ok := server_start(directory, id, "/work/gac", "/tmp/gac.sock")
+	second_lock, second, second_ok := server_start(directory, id, "/work/gac", socket_path)
 	testing.expect(t, second_ok, "a restart must succeed once the first has gone")
 	testing.expect_value(t, second.generation, 2)
 	testing.expect(t, second.id == first.id, "a restart keeps the server id")
@@ -91,8 +94,10 @@ test_server_heartbeat_updates_the_stored_record :: proc(t: ^testing.T) {
 	defer delete(id)
 	directory := server_directory(root, id)
 	defer delete(directory)
+	socket_path := fmt.aprintf("%s/gac.sock", TEMP_DIR)
+	defer delete(socket_path)
 
-	lock, record, ok := server_start(directory, id, "/work/gac", "/tmp/gac.sock")
+	lock, record, ok := server_start(directory, id, "/work/gac", socket_path)
 	testing.expect(t, ok, "the start must succeed")
 	defer file_lock_release(lock)
 	before := record.heartbeat_ns

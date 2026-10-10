@@ -27,7 +27,8 @@ case "$1 $2" in
   # Like a real pane: a session of its own, so closing the tab can end the Worker
   # and everything it started.
   pane="$3"; shift 3
-  setsid sh -c "exec $*" >"$d/worker-$pane.log" 2>&1 &
+  set -m
+  sh -c "exec $*" >"$d/worker-$pane.log" 2>&1 &
   echo $! > "$d/pid-$pane"
   echo '{}' ;;
 "tab close")
@@ -501,10 +502,11 @@ e2e_setup :: proc(t: ^testing.T, pi_sleep: string) -> E2E {
 	append(&env, fmt.tprintf("FAKE_HERDR_DIR=%s", fake_dir))
 	append(&env, fmt.tprintf("FAKE_PI_SLEEP=%s", pi_sleep))
 	// Every process in the test writes debug messages to one file per fixture, kept after the test.
-	_ = os.make_directory_all("/tmp/cs-e2e-logs", os.Permissions{.Read_User, .Write_User, .Execute_User})
+	log_dir := fmt.tprintf("%s/cs-e2e-logs", TEMP_DIR)
+	_ = os.make_directory_all(log_dir, os.Permissions{.Read_User, .Write_User, .Execute_User})
 	log_name := root[strings.last_index_byte(root, '/')+1:]
 	append(&env, "CS_LOG_LEVEL=debug")
-	append(&env, fmt.tprintf("CS_LOG_FILE=/tmp/cs-e2e-logs/%s.log", log_name))
+	append(&env, fmt.tprintf("CS_LOG_FILE=%s/%s.log", log_dir, log_name))
 	return E2E{root = root, repo = repo, state = state, binary = binary, env = env[:]}
 }
 

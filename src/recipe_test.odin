@@ -67,7 +67,7 @@ test_load_recipe_rejects_missing_file :: proc(t: ^testing.T) {
 
 @(test)
 test_recipe_text_files_resolve_relative_to_recipe_and_are_loaded :: proc(t: ^testing.T) {
-	root, _ := os.make_directory_temp("", "coffee-shop-recipe-*", context.allocator)
+	root, _ := os.make_directory_temp(TEMP_DIR, "coffee-shop-recipe-*", context.allocator)
 	defer os.remove_all(root); defer delete(root)
 	_ = os.make_directory_all(fmt.tprintf("%s/prompts", root))
 	_ = os.write_entire_file(fmt.tprintf("%s/order.md", root), "order from file", os.Permissions{.Read_User, .Write_User})
@@ -86,7 +86,7 @@ test_recipe_text_files_resolve_relative_to_recipe_and_are_loaded :: proc(t: ^tes
 @(test)
 test_recipe_rejects_unknown_fields_and_file_escape :: proc(t: ^testing.T) {
 	reject_recipe(t, `{"order":"o","thinkng":"high","shots":[{"id":"a","prompt":"p"}]}`)
-	root, _ := os.make_directory_temp("", "coffee-shop-recipe-*", context.allocator)
+	root, _ := os.make_directory_temp(TEMP_DIR, "coffee-shop-recipe-*", context.allocator)
 	defer os.remove_all(root); defer delete(root)
 	path := fmt.tprintf("%s/recipe.json", root)
 	_ = os.write_entire_file(path, `{"order_file":"../outside","shots":[{"id":"a","prompt":"p"}]}`, os.Permissions{.Read_User, .Write_User})
@@ -105,7 +105,7 @@ test_validates_git_repository_path :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, "")
 	testing.expect(t, valid)
 
-	valid, err = is_git_repository("/tmp")
+	valid, err = is_git_repository(TEMP_DIR)
 	testing.expect_value(t, err, "")
 	testing.expect(t, !valid)
 }

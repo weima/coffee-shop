@@ -1,6 +1,7 @@
 package main
 
 import "core:encoding/json"
+import "core:c"
 import "core:fmt"
 import "core:log"
 import "core:hash"
@@ -9,9 +10,21 @@ import "core:strings"
 import "core:sys/linux"
 import "core:time"
 
+when ODIN_OS == .Darwin {
+	foreign import server_lock_lib "system:System"
+	foreign server_lock_lib {
+		@(link_name="flock")
+		darwin_flock :: proc(fd: c.int, operation: c.int) -> c.int ---
+	}
+}
+
 SERVER_DIRECTORY_NAME :: "servers"
 SERVER_LOCK_FILE_NAME :: "server.lock"
 SERVER_RECORD_FILE_NAME :: "server.json"
+
+SERVER_LOCK_EXCLUSIVE :: c.int(2)
+SERVER_LOCK_NONBLOCK :: c.int(4)
+SERVER_LOCK_UNLOCK :: c.int(8)
 
 // Server_Record is what server.json holds. The id comes from the repository, so a
 // restart keeps it; generation only counts starts. Nothing else depends on it.
@@ -49,7 +62,7 @@ server_acquire :: proc(directory: string) -> (file: ^os.File, ok: bool) {
 	if open_err != nil {
 		return nil, false
 	}
-	if linux.flock(linux.Fd(os.fd(opened)), {.EX, .NB}) != .NONE {
+	if !server_lock_try(opened) {
 		_ = os.close(opened)
 		return nil, false
 	}
@@ -89,12 +102,11 @@ server_running :: proc(directory: string) -> bool {
 	if open_err != nil {
 		return false
 	}
-	fd := linux.Fd(os.fd(opened))
-	if linux.flock(fd, {.EX, .NB}) != .NONE {
+	if !server_lock_try(opened) {
 		_ = os.close(opened)
 		return true
 	}
-	_ = linux.flock(fd, {.UN})
+	server_lock_release(opened)
 	_ = os.close(opened)
 	return false
 }
@@ -165,8 +177,24 @@ server_write_record :: proc(directory: string, record: Server_Record) -> bool {
 
 // Releases the election lock. Closing the file is what lets a new server start.
 file_lock_release :: proc(file: ^os.File) {
-	_ = linux.flock(linux.Fd(os.fd(file)), {.UN})
+	server_lock_release(file)
 	_ = os.close(file)
+}
+
+server_lock_try :: proc(file: ^os.File) -> bool {
+	when ODIN_OS == .Darwin {
+		return darwin_flock(c.int(os.fd(file)), SERVER_LOCK_EXCLUSIVE|SERVER_LOCK_NONBLOCK) == 0
+	} else {
+		return linux.flock(linux.Fd(os.fd(file)), {.EX, .NB}) == .NONE
+	}
+}
+
+server_lock_release :: proc(file: ^os.File) {
+	when ODIN_OS == .Darwin {
+		_ = darwin_flock(c.int(os.fd(file)), SERVER_LOCK_UNLOCK)
+	} else {
+		_ = linux.flock(linux.Fd(os.fd(file)), {.UN})
+	}
 }
 
 // True while some Brew on this repository has a Shot that has not finished.

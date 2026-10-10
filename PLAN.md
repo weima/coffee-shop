@@ -114,9 +114,11 @@ Slices 0–7 are implemented. `just test` runs 93 tests, including four end-to-e
 | The Tray contains check evidence | End-to-end test: review text, a passing `make test`, the failing Shot's reason, and the decisions list. A repeat `collect` is byte-identical. |
 | Documentation matches observed behaviour | README requirements, usage and limitations were written from the runs above. |
 
+**macOS arm64 verification (2026-10-10).** `odin check src`, `odin build src`, and `TZ=UTC odin test src -define:ODIN_TEST_THREADS=1` pass with the pinned Odin `dev-2026-10` compiler; all 160 tests passed. A real, read-only Pi/Herdr smoke Brew (`brew-20261010T024929Z-4106`) passed with Pi `1.1.0` and Herdr `0.9.3`: its Shot completed, `status` and `collect` succeeded, and it made no Station changes. Filter correctly reported that there were no changes to review and no test configuration in the fixture. The temporary smoke repository and retained Brew state remain under `/private/tmp/csmr` and `/private/tmp/csms` for inspection.
+
 Known gaps, deliberately not hidden:
 
-- Only Linux and WSL are supported; macOS needs a `ps`-based process-identity fallback.
+- Linux, WSL and macOS are supported. Linux process identity uses `/proc`; macOS uses Darwin's process-usage API. Native Windows is unsupported.
 - Task decomposition, merging, publishing and cleanup stay manual by design.
 
 ## Verification and implementation references

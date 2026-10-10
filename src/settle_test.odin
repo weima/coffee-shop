@@ -13,6 +13,9 @@ test_process_identity_distinguishes_live_reused_and_missing_processes :: proc(t:
 	me, me_ok := current_identity()
 	testing.expect(t, me_ok)
 	testing.expect(t, me.start_time != 0)
+	testing.expect_value(t, identity_liveness(me), Liveness.Alive)
+	testing.expect_value(t, identity_liveness(Process_Identity{pid = me.pid, start_time = me.start_time + 1}), Liveness.Gone)
+	testing.expect_value(t, identity_liveness(DEAD_IDENTITY), Liveness.Gone)
 	testing.expect(t, identity_alive(me))
 	testing.expect(t, !identity_alive(Process_Identity{pid = me.pid, start_time = me.start_time + 1}), "a reused PID has a different start time")
 	testing.expect(t, !identity_alive(DEAD_IDENTITY))
@@ -217,8 +220,8 @@ write_test_result :: proc(brew_dir, shot_id: string, success: bool) {
 	_ = write_worker_result(path, Worker_Result{brew_id = "brew-test", shot_id = shot_id, started = true, success = success, detail = "Pi exited with code 0"})
 }
 
-// A /proc entry that cannot be read says nothing about whether the process is
-// running. Only evidence of absence may say Gone.
+// A process record that cannot be read says nothing about whether it is running.
+// Only evidence of absence may say Gone.
 @(test)
 test_liveness_separates_gone_from_unknown :: proc(t: ^testing.T) {
 	identity := Process_Identity{pid = 77, start_time = 4242}
@@ -256,7 +259,7 @@ test_observe_does_not_declare_a_worker_dead_when_liveness_is_unknown :: proc(t: 
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
 	defer destroy_struct(&register)
-	// The Worker started, left no result, and its /proc entry cannot be read.
+	// The Worker started, left no result, and its process record cannot be read.
 	write_test_started(brew_dir, "shot-a", DEAD_IDENTITY)
 
 	err := settle_brew(brew_dir, &register, "unused", .Observe, liveness = unknown_liveness)
@@ -264,7 +267,7 @@ test_observe_does_not_declare_a_worker_dead_when_liveness_is_unknown :: proc(t: 
 	// It must not be recorded as interrupted: nobody has shown it is gone.
 	testing.expect_value(t, register.shots[0].status, SHOT_RUNNING)
 
-	// The same Worker is interrupted when /proc does show it is gone.
+	// The same Worker is interrupted once the OS confirms it is gone.
 	err = settle_brew(brew_dir, &register, "unused", .Observe)
 	testing.expect_value(t, err.kind, State_Error_Kind.None)
 	testing.expect_value(t, register.shots[0].status, SHOT_INTERRUPTED)

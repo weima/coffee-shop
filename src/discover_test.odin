@@ -180,7 +180,7 @@ discover_expect_lock_manager :: proc(t: ^testing.T, manager, lockfile: string) {
 }
 
 discover_test_root :: proc(t: ^testing.T) -> string {
-	root, err := os.make_directory_temp("", "coffee-shop-discover-*", context.allocator)
+	root, err := os.make_directory_temp(TEMP_DIR, "coffee-shop-discover-*", context.allocator)
 	testing.expect_value(t, err, os.Error(nil))
 	return root
 }
@@ -227,11 +227,18 @@ test_discover_justfile_unit_and_e2e_recipes_under_every_accepted_name :: proc(t:
 		root := discover_test_root(t)
 		defer discover_remove_root(root)
 		discover_write(root, name, "test: build\n    odin test src\ne2e:\n    echo e2e\n")
+		source_name := name
+		if name == "Justfile" {
+			lowercase_path := fmt.tprintf("%s/justfile", root)
+			if os.exists(lowercase_path) {
+				source_name = "justfile"
+			}
+		}
 		result := discover_checks(root)
 		defer destroy_struct(&result)
 		testing.expect_value(t, len(result.commands), 2)
-		discover_expect_command(t, result.commands[:], Check_Kind.Unit, []string{"just", "test"}, fmt.tprintf("%s test", name))
-		discover_expect_command(t, result.commands[:], Check_Kind.E2E, []string{"just", "e2e"}, fmt.tprintf("%s e2e", name))
+		discover_expect_command(t, result.commands[:], Check_Kind.Unit, []string{"just", "test"}, fmt.tprintf("%s test", source_name))
+		discover_expect_command(t, result.commands[:], Check_Kind.E2E, []string{"just", "e2e"}, fmt.tprintf("%s e2e", source_name))
 	}
 }
 

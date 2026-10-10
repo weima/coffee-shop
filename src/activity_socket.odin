@@ -278,6 +278,9 @@ activity_valid_socket_path :: proc(path: string) -> bool {
 activity_socket_address :: proc(path: string) -> posix.sockaddr_un {
 	address: posix.sockaddr_un
 	address.sun_family = .UNIX
+	when ODIN_OS == .Darwin {
+		address.sun_len = c.uchar(activity_socket_address_len(path))
+	}
 	copy(address.sun_path[:], path)
 	return address
 }
@@ -290,5 +293,12 @@ activity_unlink :: proc(path: string) {
 }
 
 activity_socket_address_len :: proc(path: string) -> posix.socklen_t {
-	return posix.socklen_t(size_of(posix.sockaddr_un{}.sun_family) + len(path) + 1)
+	when ODIN_OS == .Darwin {
+		return posix.socklen_t(
+			size_of(posix.sockaddr_un{}.sun_len) +
+				size_of(posix.sockaddr_un{}.sun_family) + len(path) + 1,
+		)
+	} else {
+		return posix.socklen_t(size_of(posix.sockaddr_un{}.sun_family) + len(path) + 1)
+	}
 }
