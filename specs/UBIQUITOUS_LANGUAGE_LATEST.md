@@ -92,7 +92,7 @@ Each role has a character in the shared mascot style. Coffee, Oreo, and Rachel a
 
 | Role | Character | Drawn as |
 | --- | --- | --- |
-| **Barista** | Coffee | a black German Shepherd and Golden Retriever mix in a coffee-brown apron |
+| **Barista** | Coffee | a black German Shepherd and Golden Retriever mix with floppy ears and a charcoal muzzle, in a coffee-brown apron |
 | **Oreo** (the cat who reviews a finished Brew) | Oreo | a black-and-white American Shorthair holding an Oreo cookie |
 | **Rachel** (developer companion) | Rachel | a university student with round glasses, a laptop, and a cat-paw remembrance pin |
 | **Worker** | a person | a brown shirt, holding a coffee cup |

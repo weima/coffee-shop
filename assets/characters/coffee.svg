@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-labelledby="title desc">
   <title id="title">Coffee, the black dog</title>
-  <desc id="desc">Coffee, a black German Shepherd and Golden Retriever mix in a coffee-brown apron with a cup badge. Coffee leads the Barista's work.</desc>
+  <desc id="desc">Coffee, a black dog with relaxed floppy ears and a long charcoal-grey muzzle, wearing a coffee-brown apron with a cup badge. Coffee leads the Barista's work.</desc>
   <defs>
     <clipPath id="badge-coffee"><circle cx="120" cy="120" r="108"/></clipPath>
   </defs>
@@ -8,23 +8,26 @@
   <g clip-path="url(#badge-coffee)">
     <!-- Shoulders with a feathered ruff -->
     <path d="M36 250 Q42 194 120 190 Q198 194 204 250 Z" fill="#242323"/>
-    <!-- Semi-erect ears with folded tips (shepherd) -->
-    <path d="M72 84 Q56 56 74 36 Q90 52 96 84 Z" fill="#242323"/>
-    <path d="M168 84 Q184 56 166 36 Q150 52 144 84 Z" fill="#242323"/>
+    <!-- Relaxed floppy ears, following Coffee's photo -->
+    <path d="M76 82 Q50 66 40 87 Q32 111 54 136 Q68 138 80 116 Z" fill="#242323"/>
+    <path d="M164 82 Q190 66 200 87 Q208 111 186 136 Q172 138 160 116 Z" fill="#242323"/>
     <!-- Head: longer shepherd skull and muzzle -->
     <path d="M72 96 Q74 58 120 56 Q166 58 168 96 L170 132 Q170 150 146 160 L138 178 Q120 186 102 178 L94 160 Q70 150 70 132 Z" fill="#242323"/>
     <!-- Eyes -->
-    <ellipse cx="98" cy="108" rx="7" ry="8" fill="#B86F3A"/>
-    <ellipse cx="142" cy="108" rx="7" ry="8" fill="#B86F3A"/>
+    <ellipse cx="98" cy="108" rx="7" ry="8" fill="#725A48"/>
+    <ellipse cx="142" cy="108" rx="7" ry="8" fill="#725A48"/>
     <circle cx="98" cy="108" r="3.5" fill="#242323"/>
     <circle cx="142" cy="108" r="3.5" fill="#242323"/>
     <circle cx="100" cy="106" r="1.6" fill="#F4EBDD"/>
     <circle cx="144" cy="106" r="1.6" fill="#F4EBDD"/>
-    <!-- Long muzzle, black nose, smile, tongue -->
-    <path d="M96 138 Q120 128 144 138 L140 164 Q120 176 100 164 Z" fill="#F2E8D8"/>
-    <path d="M110 138 h20 l-10 8 Z" fill="#242323"/>
-    <path d="M120 146 v5 M120 151 q-7 6 -13 1 M120 151 q7 6 13 1" fill="none" stroke="#6A4638" stroke-width="2.5" stroke-linecap="round"/>
-    <path d="M115 164 q5 9 10 0 Z" fill="#D98C7A"/>
+    <!-- Long charcoal muzzle and broad black nose -->
+    <path d="M94 132 Q120 124 146 132 L140 171 Q120 181 100 171 Z" fill="#8D8984"/>
+    <path d="M106 131 Q120 123 134 131 L130 142 Q120 149 110 142 Z" fill="#242323"/>
+    <path d="M120 145 v7 M120 152 q-8 6 -15 0 M120 152 q8 6 15 0" fill="none" stroke="#4A3027" stroke-width="2.5" stroke-linecap="round"/>
+    <circle cx="108" cy="155" r="1.5" fill="#4A3027"/>
+    <circle cx="115" cy="159" r="1.5" fill="#4A3027"/>
+    <circle cx="125" cy="159" r="1.5" fill="#4A3027"/>
+    <circle cx="132" cy="155" r="1.5" fill="#4A3027"/>
     <!-- Apron and neck band -->
     <path d="M90 180 L150 180 L156 232 L84 232 Z" fill="#C88748"/>
     <path d="M94 184 Q120 192 146 184" fill="none" stroke="#4A3027" stroke-width="4" stroke-linecap="round"/>
