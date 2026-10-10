@@ -4,7 +4,7 @@ A small, first-party Odin binding to the SQLite C API for Oreo. Oreo's session s
 
 ## Status
 
-Design and implementation plan approved. The binding and its real-SQLite end-to-end tests are not implemented yet.
+The official SQLite 3.54.0 amalgamation is bundled. The initial binding supports connection lifecycle, fixed SQL execution, prepared statements, integer/double/text/blob/null binding, column reads, and transactions. Nine real-engine tests pass on macOS; Linux build verification and the Oreo session store remain pending.
 
 ## Scope
 
@@ -15,9 +15,13 @@ Design and implementation plan approved. The binding and its real-SQLite end-to-
 
 ## Verification
 
-Tests will use the bundled SQLite engine, not a mock. Unit tests may use an in-memory database. End-to-end tests will create a temporary file-backed database, exercise the Oreo store, close and reopen the database, and verify that session metadata persists.
+Run the focused package tests from the repository root:
 
-The exact build/test commands will be added after the Odin-to-C build integration is verified on Linux and macOS.
+```sh
+./oreo/src/sqlite/test.sh
+```
+
+The script compiles the bundled amalgamation and links it into Odin's real-SQLite tests; it does not use a mock or system SQLite library. Tests cover memory/file open and close, the bundled engine version, prepared statements, value binding and extraction, invalid SQL/binds, transaction commit/rollback, and cleanup. Store end-to-end tests will later apply the documented schema, write metadata, close/reopen the file, and verify persistence. The current binding tests are verified on macOS; run the same script on Linux before closing platform hardening.
 
 ## References and attribution
 

@@ -49,7 +49,7 @@ Oreo coordinates execution of submitted subtask work items through its shared po
 - `~/.oreo/sessions.db` is an acceptable database path. Use file-backed persistence by default; an in-memory mode may be useful for tests or explicitly temporary sessions, but cannot satisfy restart retrieval.
 - Store sessions, work items, ordered conversation/tool records, lifecycle state, expiry timestamps, and provider-setting profiles with stable IDs. Work items refer to profile IDs rather than copying provider/model/thinking strings. The shared profile contains those values once.
 - While running, workers may cache current context in memory; the database remains the durable source of truth. On user-input pause, persist continuation state before releasing the worker. On close, mark/cancel work but retain its history.
-- V1 retrieval is by session metadata; full-text search over conversations/tool output is out of scope. Define the exact metadata fields and indexes with the schema. Job TTL may expire pending execution, but must not delete session history by default. Whether crashed in-progress jobs resume automatically remains open.
+- V1 retrieval is by session metadata; full-text search over conversations/tool output is out of scope. The exact v1 fields, lifecycle constraints, and indexes are defined in [schema.md](schema.md). Job TTL may expire pending execution, but must not delete session history by default. On restart, unfinished work is interrupted rather than replayed.
 
 | Candidate | Strengths | Costs / fit |
 |---|---|---|
