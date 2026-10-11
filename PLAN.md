@@ -38,6 +38,8 @@ A **Station** is a `coffee-shop station` process that runs in a Herdr pane for o
 2. It reports each completed turn to the parent Coffee Shop over the activity socket (`turn_done`, then `agent_exited`).
 3. Lines typed into the Station's pane are replies. The Station sends each one to the agent as a follow-up prompt. Closing the pane's stdin ends the agent and the Station.
 
+Each Station runs `pi --mode rpc -e <coffee-shop extension>` next to the user's installed extensions. The extension (`extensions/coffee-shop.ts`) is compiled into the binary and written to `<state>/host/extensions/` at host start. It adds the `coffee_shop_ask` tool, which raises a `select` dialog that reaches the main agent as `needs_input`.
+
 The host relays Station reports to the main agent. Replies go to the Station, never to the host.
 
 Implemented: the `station` command and its fake-agent test (`src/station.odin`); the host listener on `<state>/host/activity.sock`, which relays Station reports to stdout as `station_report` events (`src/host.odin`); and Station panes launched by dispatch in place of raw `pi`. Still to do: replies routed from the host to a Station, `needs_input`, and the report size limit (currently truncated to the activity limit).

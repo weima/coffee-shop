@@ -11,11 +11,15 @@ import "core:thread"
 import "core:time"
 
 HOST_PROTOCOL :: 1
+
+// Compiled into the binary, so a Station can load it from any install location.
+HOST_EXTENSION_SOURCE :: #load("../extensions/coffee-shop.ts", string)
 HOST_RELAY_POLL :: 20 * time.Millisecond
 
 // Set once by run_host and read by dispatch when it launches Station panes.
 host_report_socket: string
 host_station_executable: string
+host_extension_path: string
 
 // The stdin loop and the relay thread both write events; one lock keeps lines whole.
 host_output_mutex: sync.Mutex
@@ -56,6 +60,17 @@ run_host :: proc() -> int {
 		host_write_line(`{"type":"error","reason":"could not create the host directory"}`)
 		return 1
 	}
+	extension_dir, _ := filepath.join({host_dir, "extensions"}, context.allocator)
+	if os.make_directory_all(extension_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
+		host_write_line(`{"type":"error","reason":"could not create the extension directory"}`)
+		return 1
+	}
+	extension_path, _ := filepath.join({extension_dir, "coffee-shop.ts"}, context.allocator)
+	if os.write_entire_file(extension_path, HOST_EXTENSION_SOURCE, os.Permissions{.Read_User, .Write_User}) != nil {
+		host_write_line(`{"type":"error","reason":"could not write the Coffee Shop extension"}`)
+		return 1
+	}
+	host_extension_path = extension_path
 	socket_path, _ := filepath.join({host_dir, "activity.sock"}, context.allocator)
 	listener, listener_ok := activity_listener_open(socket_path)
 	if !listener_ok {
@@ -251,7 +266,7 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts: []string) {
 			pane_id = tab.result.root_pane.pane_id
 		}
 
-		command := host_station_command(host_station_executable, host_report_socket, id, request_id, prompts[i])
+		command := host_station_command(host_station_executable, host_report_socket, host_extension_path, id, request_id, prompts[i])
 		if run_err := herdr_run_worker(herdr, pane_id, command); run_err != "" {
 			host_session_failed(request_id, id, fmt.tprintf("could not start the Station: %s", run_err))
 			continue
@@ -290,14 +305,16 @@ host_reply :: proc(root: json.Object, request_id: string) {
 
 // The Station runs in the Herdr pane and launches the agent. Only the prompt and
 // the report path are quoted; the IDs are already restricted to safe characters.
-host_station_command :: proc(executable, report, shot_id, request_id, prompt: string) -> string {
+host_station_command :: proc(executable, report, extension, shot_id, request_id, prompt: string) -> string {
 	quoted_executable := shell_quote(executable)
 	defer delete(quoted_executable)
 	quoted_report := shell_quote(report)
 	defer delete(quoted_report)
+	quoted_extension := shell_quote(extension)
+	defer delete(quoted_extension)
 	quoted_prompt := shell_quote(prompt)
 	defer delete(quoted_prompt)
-	return fmt.tprintf("%s station --report %s --station %s --brew %s --prompt %s -- pi --mode rpc", quoted_executable, quoted_report, shot_id, request_id, quoted_prompt)
+	return fmt.tprintf("%s station --report %s --station %s --brew %s --prompt %s -- pi --mode rpc -e %s", quoted_executable, quoted_report, shot_id, request_id, quoted_prompt, quoted_extension)
 }
 
 host_session_failed :: proc(request_id, shot_id, reason: string) {
