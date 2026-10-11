@@ -397,36 +397,51 @@ Gates still not exercised for real: item 6 with a live Pi failure, and the model
 - `status` works with the server absent.
 - The full suite passes three times in a row without a flake.
 
-## Deferred roadmap: v0.3.0
+## Roadmap: v0.3.0 (Station model)
 
-After the interactive workflow is verified, Coffee Shop may act as a human manager: a developer delegates several tasks at once, each Brew produces its own reviewable commit, and five tasks run side by side. That needs two things. It must stay fast enough that the machine does not stall with five Workers running, and it must stay cheap enough that a day of running does not run up a model bill. Both need measurements before anything is tuned, so profiling comes first.
+This section targets the Station model: interactive Stations in Herdr panes, one per Shot, run in parallel. It does not target the one-shot `brew` model.
+
+After the interactive workflow is verified, Coffee Shop may act as a human manager: a developer delegates several tasks at once, each Station produces its own reviewable change, and five Stations run side by side. The developer reviews and commits each change. That needs two things. It must stay fast enough that the machine does not stall with five Stations running, and it must stay cheap enough that a day of running does not run up a model bill. Both need measurements before anything is tuned, so profiling comes first.
 
 ### 1. Profile the code with Spall
 
-- Use `core:prof/spall` (Odin's Spall trace format) to span: CLI commands, Brew dispatch, server request handling, Register and Receipt writes, the Worker loop, Pi JSON parsing, settle, Filter checks, Git worktree creation, and Herdr calls.
+- Use `core:prof/spall` (Odin's Spall trace format) to span: the host, dispatch, Station startup, the report relay, and the Herdr calls.
 - Off by default with no cost when off. A `CS_SPALL_FILE` environment variable names the trace file, as `CS_LOG_LEVEL` does for logs.
 - **Gate.** A trace of a five-Shot Brew opens in the Spall viewer, and the top spans are recorded in this section with their share of wall time.
 
 ### 2. Profile the resource use
 
-- Sample each process of a Brew (supervisor, server, Workers, Pi children): CPU time, resident memory, open file descriptors, and child process count, from `/proc`.
-- Show them with `status --usage`, with per-Brew totals.
-- **Gate.** Five concurrent Shots run on this machine with a recorded peak CPU and memory budget, and the default concurrency is chosen from those numbers, not guessed.
+- Sample each Station and each pi child process: CPU time, resident memory, open file descriptors, and child process count, from `/proc`.
+- Show them with `status --usage`, with per-Station rows and totals.
+- Known starting figure: pi is about 100 MB per process, so five Stations need about 500 MB. The gate uses measured numbers.
+- **Gate.** Five Stations run on this machine with a recorded peak CPU and memory budget, and the default concurrency is chosen from those numbers, not guessed.
 
 ### 3. Account for tokens and cost
 
-- Confirm which usage fields Pi 1.1.0 reports in its JSON events before relying on them.
-- Record per Shot: model, input, output and cache tokens, and estimated cost. Keep these in the Register and Receipt, and show running totals in `status` and in the Tray.
-- Optional Recipe budget, in tokens or estimated cost. A Brew launches no new Shot once it is reached. Whether running Shots finish or are cancelled is an open question.
-- **Gate.** For a real Brew, the recorded tokens match the provider's usage for the same run, within a stated tolerance.
+- Confirm which usage fields Pi 1.1.0 reports in its RPC events before relying on them.
+- Record per Station: model, input, output and cache tokens, and estimated cost. Keep these in the Register and Receipt, and show running totals in `status` and in the Tray.
+- Optional budget, in tokens or estimated cost. Coffee Shop launches no new Station once it is reached. Whether running Stations finish or are cancelled is an open question.
+- **Gate.** For a real Station, the recorded tokens match the provider's usage for the same run, within a stated tolerance.
 
-### 4. Five tasks at once, one commit each
+### 4. Five Stations at once
 
-- A Scale limit that spans every Brew on the machine, not just one Brew, so five tasks cannot exceed the budget from item 2 together.
-- Each task's changes become their own commit, made by a Pull after it passes Taste (see item 5). Blend then combines a Brew's commits into one.
-- **Gate.** Five Brews for five tasks run together. Each produces one commit on its own branch, and none of them interferes with another.
+- A machine-wide limit that spans all Brews and Stations on the machine, so five Stations cannot exceed the budget from item 2 together.
+- Five Stations run together, each in its own Git worktree and its own Herdr tab. None of them interferes with another.
+- Coffee Shop does not commit. The developer reviews and commits, as now.
+- **Gate.** Five Stations for five tasks run together with no interference.
 
-### 5. Research, then execute in small commits
+### Open questions
+
+- Where the machine-wide limit is kept, since Stations on different repositories have separate servers.
+- Whether a budget stops running Stations or only stops new ones.
+
+## Roadmap: v0.4.0
+
+The high-automation flow. It is not part of v0.3.
+
+- Per-task commits: each task's changes become their own commit, made by a Pull after it passes Taste (see item 1 below). Blend then combines a Brew's commits into one.
+
+### 1. Research, then execute in small commits
 
 A Brew for an Order that is too large to brew in one go runs in five steps:
 
@@ -443,9 +458,6 @@ Names to avoid for these steps: research (use Cupping), task (use Shot), commit 
 ### Open questions
 
 - Whether Dial-in is a Barista step only, or can also be a Worker step.
-- Where the machine-wide limit is kept, since Brews on different repositories have separate servers.
-- Whether a budget stops running Shots or only stops new ones.
-- Whether Blend is part of v0.3, since per-task commits depend on it.
 
 ## Scope guardrails
 
