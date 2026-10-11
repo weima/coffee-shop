@@ -40,7 +40,7 @@ A **Station** is a `coffee-shop station` process that runs in a Herdr pane for o
 
 The host relays Station reports to the main agent. Replies go to the Station, never to the host.
 
-Implemented so far: the `station` command and its fake-agent test (`src/station.odin`). Still to do: host listener and relay, Herdr launch of Station panes instead of raw `pi`, and the report size limit (currently truncated to the activity limit).
+Implemented: the `station` command and its fake-agent test (`src/station.odin`); the host listener on `<state>/host/activity.sock`, which relays Station reports to stdout as `station_report` events (`src/host.odin`); and Station panes launched by dispatch in place of raw `pi`. Still to do: replies routed from the host to a Station, `needs_input`, and the report size limit (currently truncated to the activity limit).
 
 ## Completed one-shot foundation
 

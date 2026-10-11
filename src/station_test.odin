@@ -6,6 +6,19 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
+// Each test builds its own binary: parallel `odin run` calls share one output path
+// and can run each other's build. The caller owns the returned path.
+build_test_binary :: proc(t: ^testing.T, root: string) -> string {
+	binary, _ := filepath.join({root, "coffee-shop"})
+	build_state, _, build_stderr, build_err := os.process_exec(os.Process_Desc{
+		command = {"odin", "build", "src", fmt.tprintf("-out:%s", binary)},
+	}, context.allocator)
+	defer delete(build_stderr)
+	testing.expect_value(t, build_err, os.Error(nil))
+	testing.expect(t, build_state.success, string(build_stderr))
+	return binary
+}
+
 // Fake agent: logs each stdin line, then answers every prompt with one agent_end
 // whose text counts the turns. It exits when its stdin closes.
 FAKE_STATION_AGENT :: `#!/bin/sh
@@ -36,13 +49,15 @@ test_station_reports_each_turn_and_relays_replies :: proc(t: ^testing.T) {
 	write_err := os.write_entire_file(agent, FAKE_STATION_AGENT, os.Permissions{.Read_User, .Write_User, .Execute_User})
 	testing.expect_value(t, write_err, os.Error(nil))
 
+	binary := build_test_binary(t, root)
+	defer delete(binary)
 	listener, listener_ok := activity_listener_open(socket)
 	testing.expect(t, listener_ok)
 	defer activity_listener_close(&listener)
 
 	// The reply reaches the Station on stdin; closing stdin then ends the session.
 	state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `printf '%s\n' "second question" | odin run src -- station --report "$1" --station shot-a --brew order-1 --prompt "first question" -- sh "$2" "$3"`, "station-test", socket, agent, received},
+		command = {"sh", "-c", `printf '%s\n' "second question" | "$4" station --report "$1" --station shot-a --brew order-1 --prompt "first question" -- sh "$2" "$3"`, "station-test", socket, agent, received, binary},
 	}, context.allocator)
 	defer delete(stdout)
 	defer delete(stderr)
