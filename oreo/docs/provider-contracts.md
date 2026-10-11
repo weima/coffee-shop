@@ -5,6 +5,8 @@ Slice 3 research output for [PLAN.md](../PLAN.md) ("Verify provider contracts").
 - Read date for every source below: **2026-10-10** (system date of this research pass).
 - Status values: `documented`, `undocumented`, `needs developer registration`. A `documented` row always cites a source ID from the source log.
 
+> **Scope (2026-10-10, second round, items 1 and 5).** Codex and GitHub Copilot are the first providers to test. Oreo's provider list is no longer limited to them: providers come from pi's ecosystem, and login and model calls go through pi. The contracts below remain the reference for these two. See [architecture](../architecture.md#decisions-2026-10-10-second-round).
+
 ## Summary
 
 - **Codex.** The only documented route for a third-party app to use a ChatGPT plan is OpenAI's open-source "Sign in with ChatGPT" flow (SIWC, sources C1–C2). It uses dynamic client registration (no developer-owned client ID, no secret), PKCE, and a `127.0.0.1` loopback callback. Inference then goes directly to `https://api.openai.com/v1/responses`. Eligibility for Oreo is not confirmed. No documented device-code route exists for third-party clients.
