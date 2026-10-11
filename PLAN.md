@@ -473,6 +473,27 @@ Names to avoid for these steps: research (use Cupping), task (use Shot), commit 
 - Whether Dial-in is a Barista step only, or can also be a Worker step.
 - Which Oreo v0.1 gate must pass before v0.4 switches runtime.
 
+## Roadmap: v0.5.0
+
+**Priority: Oreo code mode.** The script-based execution model specified in [oreo/code-mode.md](oreo/code-mode.md).
+
+### 1. Oreo code mode
+
+Cost is driven by turn count, not prompt size. In the v0.4 dogfood runs, 95% of 18.0M tokens were `cacheRead` — the conversation re-sent on every turn — and one Station spent 96 requests on a single failing assertion. Code mode collapses N tool-call turns into one script and keeps tool results out of the model's context, which attacks both terms of that product.
+
+- **Odin is the script language**, compiled and run as a short-lived process. No embedded engine: a standing runtime would tax every session's idle footprint, and the spike measured that footprint at about 0.22 MB per session. Measured compile cost is 0.15 s, so there is no standing engine to amortize.
+- **`core/odin` is the static gate.** Parse the generated script and refuse imports outside an allowlist, `foreign` blocks, and `#load` before anything runs. This is a static capability check in place of a runtime sandbox.
+- **No service and no threadpool.** A threadpool gives scheduling, not containment. The containment unit is a process, because a process can be killed and its memory can be accounted.
+- **Containment is platform-dependent.** macOS does not enforce `RLIMIT_AS`, so a per-script memory ceiling cannot be assumed to work the same way on Linux and macOS; it must be verified on each.
+- **The assumption to test is model competence.** Odin is stricter than JavaScript, and every rejected script costs a model turn, which is the cost this feature exists to reduce.
+
+**Gate.** On a repeated task, the Odin script path reduces total tokens materially against the same task without it, with a working output cap and wall-clock deadline on both platforms. Before any of it is built, measure Pi's own `codemode` on real Stations through the per-Station usage report from v0.3; if that delta is small, the feature is not worth building in any language.
+
+### Open questions
+
+- Whether the Odin script path can match an embedded JS engine on model competence.
+- What replaces `RLIMIT_AS` on macOS, and whether a sampling watchdog is fast enough to be worth having.
+
 ## Scope guardrails
 
 The target is one machine, a main-agent/Barista session (Pi first), a foreground Coffee Shop host, and Herdr. Pi is required for the first usable path. Oreo may take the main or worker agent role after the Pi-based flow is usable and Oreo is stable; Rachel is an optional developer aid. Neither is a core dependency. Keep task decomposition with the Barista and integration decisions with the developer. The foreground host is in scope; a detached daemon is not. Do not add remote workers, unrelated agent harnesses, tmux or zmx backends, Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.
