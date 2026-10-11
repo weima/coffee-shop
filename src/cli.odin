@@ -26,6 +26,8 @@ Command :: struct {
 	prompt: string,
 	prompt_file: string,
 	shot_kind: string,
+	taste: string,
+	message: string,
 	agent: []string,
 }
 
@@ -50,6 +52,8 @@ Station_Arguments :: struct {
 	prompt:      string `usage:"First prompt for the agent."`,
 	prompt_file: string `usage:"File containing the first prompt for the agent."`,
 	kind:        string `usage:"Shot kind: execute (default) or research."`,
+	taste:       string `usage:"Taste command a Pull must pass before it commits."`,
+	message:     string `usage:"Commit message for a Pull that passes its Taste."`,
 }
 
 Worker_Arguments :: struct {
@@ -154,7 +158,12 @@ parse_station_args :: proc(args: []string) -> (command: Command, err: string) {
 	if !valid_shot_kind(options.kind) {
 		return Command{kind = .Help}, "station kind must be execute or research"
 	}
-	return Command{kind = .Station, report_path = options.report, shot_id = options.station, brew_id = options.brew, prompt = options.prompt, prompt_file = options.prompt_file, shot_kind = options.kind, agent = args[split+1:]}, ""
+	if options.taste != "" || options.message != "" {
+		if options.kind != SHOT_KIND_EXECUTE || !valid_shot_taste(options.taste) || !valid_commit_message(options.message) {
+			return Command{kind = .Help}, "station taste needs an execute kind, a taste, and a message"
+		}
+	}
+	return Command{kind = .Station, report_path = options.report, shot_id = options.station, brew_id = options.brew, prompt = options.prompt, prompt_file = options.prompt_file, shot_kind = options.kind, taste = options.taste, message = options.message, agent = args[split+1:]}, ""
 }
 
 has_help_flag :: proc(args: []string) -> bool {

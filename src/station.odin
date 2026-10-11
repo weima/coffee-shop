@@ -61,7 +61,7 @@ Station_Relay :: struct {
 	display: ^Station_Display,
 }
 
-run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_kind: string, agent: []string) -> int {
+run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_kind, taste, message: string, agent: []string) -> int {
 	first_prompt := prompt
 	prompt_data: []byte
 	if prompt_file != "" {
@@ -140,6 +140,65 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 	if wait_err != nil || !state.success {
 		return 1
 	}
+	if taste == "" {
+		return 0
+	}
+	return station_pull(&sender, brew_id, station_id, taste, message)
+}
+
+// A Pull commits only after its Taste passes. The Taste's output stays on the
+// Station's stdout; reports carry the outcome, never the output.
+station_pull :: proc(sender: ^Activity_Sender, brew_id, station_id, taste, message: string) -> int {
+	exit_code, ran := station_run_taste(taste)
+	if !ran {
+		station_report(sender, brew_id, station_id, "taste_failed", "Taste could not run")
+		return 1
+	}
+	if exit_code != 0 {
+		station_report(sender, brew_id, station_id, "taste_failed", fmt.tprintf("Taste exited with code %d", exit_code))
+		return 1
+	}
+	state, changes, _, status_err := os.process_exec(os.Process_Desc{command = {"git", "status", "--porcelain"}}, context.temp_allocator)
+	if status_err != nil || !state.success {
+		station_report(sender, brew_id, station_id, "taste_failed", "Taste could not check the changes")
+		return 1
+	}
+	if len(changes) == 0 {
+		station_report(sender, brew_id, station_id, "taste_passed", "Taste passed with no changes")
+		return 0
+	}
+	return station_commit(sender, brew_id, station_id, message)
+}
+
+// The taste runs through sh in the Station's directory. Its stdin is closed so it
+// cannot take lines typed into the Station's pane.
+station_run_taste :: proc(taste: string) -> (exit_code: int, ran: bool) {
+	process, start_err := os.process_start(os.Process_Desc{command = {"sh", "-c", taste}, stdout = os.stdout, stderr = os.stderr})
+	if start_err != nil {
+		return 0, false
+	}
+	state, wait_err := os.process_wait(process)
+	if wait_err != nil {
+		return 0, false
+	}
+	return state.exit_code, true
+}
+
+// Stages every change and commits it with the Pull's message, using the repository's
+// Git configuration. The report carries the short hash of the new commit.
+station_commit :: proc(sender: ^Activity_Sender, brew_id, station_id, message: string) -> int {
+	add_state, _, _, add_err := os.process_exec(os.Process_Desc{command = {"git", "add", "-A"}}, context.temp_allocator)
+	commit_state, _, _, commit_err := os.process_exec(os.Process_Desc{command = {"git", "commit", "-m", message}}, context.temp_allocator)
+	if add_err != nil || !add_state.success || commit_err != nil || !commit_state.success {
+		station_report(sender, brew_id, station_id, "taste_failed", "commit failed")
+		return 1
+	}
+	hash_state, hash_stdout, _, hash_err := os.process_exec(os.Process_Desc{command = {"git", "rev-parse", "--short", "HEAD"}}, context.temp_allocator)
+	description := "Committed; the commit hash is unavailable"
+	if hash_err == nil && hash_state.success {
+		description = strings.trim_space(string(hash_stdout))
+	}
+	station_report(sender, brew_id, station_id, "pulled", description)
 	return 0
 }
 
