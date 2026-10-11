@@ -23,7 +23,7 @@ Host_Sessions_Event :: struct {
 
 host_history_event :: proc(event: Host_Event) -> bool {
 	switch event.type {
-	case "dispatch_accepted", "session_started", "session_failed", "station_report", "reply_sent":
+	case "dispatch_accepted", "session_started", "session_failed", "station_report", "reply_sent", "blended", "blend_failed":
 		return true
 	}
 	return false
