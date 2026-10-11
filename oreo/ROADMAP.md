@@ -1,11 +1,11 @@
 # Oreo Roadmap
 
-Oreo grows from a provider-neutral, in-process Odin session host into a library Coffee Shop can consume, then into an independently maintainable repository. [Architecture](architecture.md) is the source of truth for confirmed design decisions.
+Oreo grows from a provider-neutral Odin session host, run as a separate process started by the pi extension, into a pi extension Coffee Shop can use now. Library and executable delivery follow later, and then extraction into an independently maintainable repository. [Architecture](architecture.md) is the source of truth for confirmed design decisions.
 
 ## Core harness
 
-- Build a long-lived Odin host with one session per top-level task, persistent structured context storage, and a shared bounded worker pool for its work items.
-- Implement task-session turns, per-work-item provider/model/thinking settings, Pi-referenced agent-loop behavior, and `read`, `write`, and `execute` tools against a fake provider.
+- Build a long-lived Odin host process, started by the pi extension as a separate OS process, with one session per top-level task, persistent structured context storage, and a shared bounded worker pool for its work items.
+- Implement task-session turns, per-work-item provider/model/thinking settings given as a prompt instruction, Pi-referenced agent-loop behavior, and `read`, `write`, and `execute` tools running in Odin, against a fake provider.
 - Emit external-input events and occasional progress updates; persist context when work pauses for a decision, release the worker, and resume after caller input.
 - Support Linux (including WSL) and macOS.
 
@@ -13,11 +13,10 @@ Oreo grows from a provider-neutral, in-process Odin session host into a library 
 
 ## Provider integration
 
-- Verify authorized Codex and GitHub Copilot OAuth clients, endpoints, scopes, and model APIs.
-- Add provider login/re-login with a copyable URL, token storage/refresh, and model requests only after the core harness is established.
-- Keep work and personal credentials side by side in Oreo's own store.
+- Confirm model requests through pi for the first providers to test, OpenAI Codex and GitHub Copilot, including the model APIs pi exposes. Login, token handling, and client registration are pi's responsibility (fourth round, F2); Oreo performs none of them.
+- Send model requests through pi's model layer after the core harness is established. Login, re-login, and token storage stay in pi (pi's responsibility); the end user chooses the default account in the Coffee Shop config.
 
-**Exit condition:** fake-server tests cover provider behavior without live credentials, and separately approved manual smoke tests prove supported login and one small task per provider.
+**Exit condition:** fake-server tests cover provider behavior without live credentials, and separately approved manual smoke tests prove one model request and one small task per provider through pi.
 
 ## Scale and Coffee Shop adoption
 
