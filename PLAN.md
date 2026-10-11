@@ -1,23 +1,40 @@
 # Coffee Shop Implementation Plan
 
-Build Coffee Shop as a local Odin CLI that dispatches explicit work to parallel Pi Workers. The Barista prepares a Recipe; Coffee Shop creates an isolated Station for each Shot, runs Workers in Herdr tabs, records their state, and returns a Tray for human review. This plan turns [the architecture](docs/architecture.md) into ordered implementation slices. It does not authorize code changes by itself.
+**Reason for existence:** plan and verify Coffee Shop's end-to-end workflow: a main-agent/Barista session receives natural-language Orders (Pi first; Oreo may take this role once stable); a foreground Coffee Shop host starts interactive agent sessions in isolated Herdr workspaces and relays completion or input requests back to the Barista. This plan follows [the architecture](docs/architecture.md) and does not authorize code changes by itself.
 
-## Delivery path
+## Target user workflow
 
-Implement the slices in order. Each slice has a concrete result and a gate; do not start the next slice until the current gate passes. Resolve the open contracts in Slice 0 before choosing file formats or process behavior.
+1. For the first usable path, the developer starts Pi from `~/work/coffee-shop`; this main agent session is the user-facing Barista. Oreo may take this role later once stable.
+2. The active main-agent harness starts Coffee Shop from the `coffee-shop` executable or `odin run src`. The foreground controller stays ready for structured dispatch and control requests; it is not a detached daemon.
+3. The developer gives the main agent a natural-language task for a repository.
+4. The Barista interprets and decomposes the Order, then sends Coffee Shop an explicit Recipe/dispatch request.
+5. Coffee Shop creates a Herdr workspace and isolated Git worktree(s), then starts an interactive Pi worker session. Oreo may be evaluated as an alternative only after the Pi-based Coffee Shop flow is usable.
+6. The worker changes only its worktree. The developer can follow up in the Herdr pane. `needs_input` and completion events return through Coffee Shop to the main agent; user replies route to the same session.
+7. The Barista reports the outcome. A person reviews and controls integration.
 
-| Slice | Result | Depends on |
+**Input boundary:** The active main-agent window receives raw user text. Coffee Shop waits for structured dispatch/control requests and does not interpret Orders. The local transport is still to be selected.
+
+## Current state and gap
+
+The implemented `brew`/`status`/`cancel`/`collect` CLI is one-shot. `brew` accepts a prepared Recipe, runs `pi --mode json --print --no-session` Workers, waits for terminal Shots, and exits. The current activity socket carries best-effort progress only; there is no interactive Worker, persistent foreground control loop, or live `needs_input`/completion bridge to the main agent. The completed slices below are the compatibility foundation, not proof that the target workflow is implemented. Oreo's separate Host/Session work may support a later main or worker harness, but Coffee Shop's first usable path must work with Pi alone and must not depend on Oreo or Rachel.
+
+## Next interactive-workflow phases
+
+| Slice | Result | Gate |
 | --- | --- | --- |
-| 0. Lock contracts | Decisions for CLI, Recipe, state, concurrency, and lifecycle | Architecture review |
-| 1. Project and CLI shell | Buildable Odin CLI with help and validation | 0 |
-| 2. Recipe and input validation | Validated Recipe/Shot inputs and Beans repository | 1 |
-| 3. Durable state | Register and Receipt with tested transitions | 2 |
-| 4. Station and Worker dispatch | Isolated worktrees and Herdr Pi workers | 3 |
-| 5. Status and recovery | Honest state after process restarts | 4 |
-| 6. Collection and Tray | Reviewable results with Filter evidence | 5 |
-| 7. End-to-end dogfood | Verified local workflow and accurate docs | 1–6 |
+| A. Lock the interactive contract | Structured dispatch, session identity, input/result events, transport, and shutdown rules | The main agent can issue a request and address a reply to the correct session without parsing terminal text |
+| B. Add the foreground host | Coffee Shop starts from Pi as an executable or `odin run src`, handles multiple requests, and exits cleanly | Fake-client test proves it remains ready between requests; it never daemonizes |
+| C. Start interactive Pi sessions | Herdr worker sessions remain open for follow-up and work only in isolated Stations | Fake harness verifies session startup, input, and output without an AI service |
+| D. Bridge events and replies | Deliver `needs_input`, progress, and completion to the Barista; route replies back to the same worker | Tests cover pause/reply/resume, completion, duplicate events, and failed delivery |
+| E. Persist and recover sessions | Preserve history across host/session close and reopen; report unfinished work honestly | Reopen tests retrieve closed sessions and never replay side effects automatically |
+| F. Verify the full workflow | Main-agent Order → Coffee Shop → Herdr → interactive Pi worker → main agent | Full E2E passes on Linux and macOS after phases A–E are green; no allocator-leak warnings |
+| G. Optional improvements | Evaluate Oreo for the main or worker agent role, or Rachel as a developer aid, only after the core flow is usable and Oreo is stable | Neither is needed to pass the Coffee Shop usability gate; treat each as a separately approved enhancement |
 
-## Slice 0 — Lock contracts before coding
+## Completed one-shot foundation
+
+The slices below document the existing CLI behavior and its regression gates. All are implemented; retain them for compatibility while the interactive flow is built.
+
+### Slice 0 — Lock contracts before coding
 
 Record the decisions in [the architecture](docs/architecture.md) or this plan. Prefer the smallest contract that supports the initial single-machine workflow.
 
@@ -31,9 +48,9 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 - Require a root-level `standards.md` in the Beans repository for code review and test-authoring guidance. Supply the Taste-Driven Development skill to test-authoring Workers without installing it into Beans.
 - Filter uses a separate one-shot Pi reviewer against `standards.md`, then discovers unit/component and end-to-end test commands from existing manifests and test configuration. It preserves scripts and configuration; ambiguous discovery is reported, not guessed.
 
-**Gate:** The input, CLI, state location and format, lifecycle, cancellation, concurrency, Herdr launch, retention, and Filter contracts above are fixed. Slice 1 is complete on the toolchain recorded in the README; proceed to Recipe validation. Preserve the boundaries: one local machine, Pi, Herdr, no daemon, no automatic merge, and no publishing.
+**Gate (passed for the one-shot baseline):** The input, CLI, state location and format, lifecycle, cancellation, concurrency, Herdr launch, retention, and Filter contracts above were fixed. These contracts describe the legacy CLI foundation and remain regression requirements; they do not replace the interactive target workflow at the top. Preserve the boundaries: one local machine, Pi, Herdr, no detached daemon, no automatic merge, and no publishing.
 
-## Slice 1 — Establish the Odin CLI shell
+### Slice 1 — Establish the Odin CLI shell
 
 - Confirm the Odin compiler and local Pi/Herdr prerequisites needed for development and document the supported environment.
 - Create the smallest buildable Odin program and CLI entry point.
@@ -42,7 +59,7 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 
 **Gate:** The program builds; help lists the supported commands; invalid or incomplete arguments fail before creating files, worktrees, or processes.
 
-## Slice 2 — Validate Recipes and model work
+### Slice 2 — Validate Recipes and model work
 
 - Implement the Recipe format and validation from Slice 0.
 - Keep the validated Recipe as ordered Shot specifications; add Brew identity and Station paths in the later persistence and worktree slices.
@@ -51,7 +68,7 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 
 **Gate:** Tests cover a valid Recipe and malformed, incomplete, duplicate, and unsafe path inputs. No invalid Recipe creates a Station or starts a Worker.
 
-## Slice 3 — Add durable Brew state
+### Slice 3 — Add durable Brew state
 
 - Implement the Register as current Brew and Shot status, and the Receipt as append-only status events.
 - Centralize allowed state transitions and record each transition with enough context to diagnose failures.
@@ -60,7 +77,7 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 
 **Gate:** Tests cover every allowed transition, reject invalid transitions, reload state in a fresh process, and verify malformed or interrupted writes do not erase valid evidence.
 
-## Slice 4 — Create Stations and dispatch Workers
+### Slice 4 — Create Stations and dispatch Workers
 
 - Create one Git worktree per Shot, with no shared Station between Workers in a Brew.
 - Create one Herdr workspace per Brew and one tab per Shot; start each Pi Worker in its Station.
@@ -73,7 +90,7 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 
 **Gate:** A local test with a temporary Git repository and fake Pi executable proves two Shots use distinct worktrees and Herdr tabs. Tests cover missing executables, Herdr launch failure, and non-zero Worker exit without contacting GitHub or an AI service.
 
-## Slice 5 — Report status and recover
+### Slice 5 — Report status and recover
 
 - Implement `status` using Register/Receipt records plus available Herdr/process evidence.
 - On restart, reconcile persisted state with observable Worker state; mark uncertain work interrupted or unknown, never completed without evidence.
@@ -82,7 +99,7 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 
 **Gate:** Tests simulate restart, missing sessions, stale records, and repeated cancellation. Status distinguishes completed, failed, active, and uncertain Workers correctly.
 
-## Slice 6 — Collect results and prepare the Tray
+### Slice 6 — Collect results and prepare the Tray
 
 - Implement `collect` to gather each Shot's report and Filter evidence.
 - Run a separate one-shot, read-only Pi review of the selected changes against the Beans repository's root `standards.md`.
@@ -93,7 +110,7 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 
 **Gate:** Tests cover successful, failed, and missing reports; review against `standards.md`; test discovery without command overrides; failing or unavailable test evidence; and repeated collection. The Tray reports every Shot outcome, evidence, and unresolved decision.
 
-## Slice 7 — Verify the vertical slice and dogfood
+### Slice 7 — Verify the vertical slice and dogfood
 
 - Run Odin compiler checks and the focused tests for input validation, state transitions, process boundaries, recovery, and collection.
 - Run a local end-to-end Brew with fake Workers in a temporary repository. Verify status after restart and collect a Tray.
@@ -104,7 +121,7 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 
 ## Verification status
 
-Slices 0–7 are implemented. `just test` runs 93 tests, including four end-to-end tests (`src/e2e_test.odin`) that drive the real binary with fake `herdr` and `pi`. Everything below was also run by hand against real Herdr and Pi, with up to three Shots and two Workers in parallel, from inside a Herdr pane and from a plain terminal with every `HERDR_*` variable removed.
+Slices 0–7 are implemented. `just test` runs 93 tests, including four end-to-end tests (`src/e2e_test.odin`) that drive the real binary with fake `herdr` and `pi`. The interactive workflow at the top of this plan is not implemented or verified; the evidence below applies to the one-shot foundation. Everything below was also run by hand against real Herdr and Pi, with up to three Shots and two Workers in parallel, from inside a Herdr pane and from a plain terminal with every `HERDR_*` variable removed.
 
 | Release gate | Evidence |
 | --- | --- |
@@ -134,7 +151,7 @@ Pass child-process arguments as an argument vector. Distinguish a launch error f
 
 ## Roadmap: v0.2.0
 
-These items came from dogfooding v0.1 on the [Odin in Practice](https://github.com/weima/odin-in-practice) book. Items 2–7 are implemented in this Station; acceptance gates not run are explicitly marked pending below. Blend remains a separate proposal and is out of scope.
+These items document the one-shot v0.2 foundation built by dogfooding v0.1 on the [Odin in Practice](https://github.com/weima/odin-in-practice) book. They are compatibility contracts, not the target interactive loop above. Items 2–7 are implemented in this Station; acceptance gates not run are explicitly marked pending below. Blend remains a separate proposal and is out of scope.
 
 ### 1. Show that a Worker is alive — implemented
 
@@ -273,7 +290,7 @@ Both were recorded `completed`, and the Tray's decisions list said nothing. Only
 - **`workers.md`** (new): how an automated Worker must behave in this repository: its scope and the files it must not touch, the commands that verify its work, and the report to give.
 - **Automatic delivery.** When a Station contains `workers.md` or `standards.md`, Coffee Shop adds an instruction to every Worker prompt to read them first. The files come from the Station, which is the Beans' base commit, so the rules a Brew ran under are reproducible and a later edit cannot change them.
 - **Why not `AGENTS.md`.** Pi already loads `AGENTS.md` from the Station, so it reaches Workers today. But it also governs interactive sessions in the repository, and Worker-only rules such as "never ask for confirmation, nobody will answer" are wrong for a person who is in the loop.
-- **Three layers, each with one owner.** The repository owns `standards.md` and `workers.md`. The Brew owns the order, the prompts and the shared preamble of item 5, which describe this piece of work. Coffee Shop owns behaviour that is true for every Worker everywhere (the completion marker of item 6, and "you are not interactive"), so a repository need not repeat it. Until item 6 exists, a repository's `workers.md` carries those two rules itself, as the book's does.
+- **Three layers, each with one owner.** The repository owns `standards.md` and `workers.md`. The Brew owns the order, prompts, and shared preamble of item 5. The legacy one-shot Worker contract owns the completion marker of item 6 and has no mid-run input channel. This rule does not apply to target interactive sessions: they must surface `needs_input` and accept a routed reply.
 
 **Open questions.**
 
@@ -362,9 +379,9 @@ Gates still not exercised for real: item 6 with a live Pi failure, and the model
 - `status` works with the server absent.
 - The full suite passes three times in a row without a flake.
 
-## Roadmap: v0.3.0
+## Deferred roadmap: v0.3.0
 
-**Goal.** Coffee Shop acts as a human manager: a developer delegates several tasks at once, each Brew produces its own reviewable commit, and five tasks run side by side. That needs two things. It must stay fast enough that the machine does not stall with five Workers running, and it must stay cheap enough that a day of running does not run up a model bill. Both need measurements before anything is tuned, so profiling comes first.
+After the interactive workflow is verified, Coffee Shop may act as a human manager: a developer delegates several tasks at once, each Brew produces its own reviewable commit, and five tasks run side by side. That needs two things. It must stay fast enough that the machine does not stall with five Workers running, and it must stay cheap enough that a day of running does not run up a model bill. Both need measurements before anything is tuned, so profiling comes first.
 
 ### 1. Profile the code with Spall
 
@@ -414,4 +431,4 @@ Names to avoid for these steps: research (use Cupping), task (use Shot), commit 
 
 ## Scope guardrails
 
-The first release targets one machine, Pi, and Herdr. Keep task decomposition with the Barista and integration decisions with the developer. Do not add remote workers, other agent harnesses, tmux or zmx backends, a daemon or watcher (except the per-repository server in item 8, which exits when idle), Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.
+The target is one machine, a main-agent/Barista session (Pi first), a foreground Coffee Shop host, and Herdr. Pi is required for the first usable path. Oreo may take the main or worker agent role after the Pi-based flow is usable and Oreo is stable; Rachel is an optional developer aid. Neither is a core dependency. Keep task decomposition with the Barista and integration decisions with the developer. The foreground host is in scope; a detached daemon is not. Do not add remote workers, unrelated agent harnesses, tmux or zmx backends, Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.

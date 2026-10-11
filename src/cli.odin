@@ -10,6 +10,7 @@ Command_Kind :: enum {
 	Cancel,
 	Collect,
 	Worker,
+	Host,
 }
 
 Command :: struct {
@@ -50,6 +51,7 @@ Usage:
   coffee-shop status <brew-id>
   coffee-shop cancel <brew-id>
   coffee-shop collect <brew-id>
+  coffee-shop host
   coffee-shop --help
 `
 
@@ -70,6 +72,8 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 			return Command{kind = .Help}, "invalid brew arguments"
 		}
 		return Command{kind = .Brew, repo = options.repo, recipe = options.recipe}, ""
+	case "host":
+		return Command{kind = .Host}, ""
 	case "__server":
 		options: Server_Arguments
 		if flags.parse(&options, args[1:], .Unix) != nil {
