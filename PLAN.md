@@ -407,11 +407,14 @@ After the interactive workflow is verified, Coffee Shop may act as a human manag
 
 - Use `core:prof/spall` (Odin's Spall trace format) to span: the host, dispatch, Station startup, the report relay, and the Herdr calls.
 - Off by default with no cost when off. A `CS_SPALL_FILE` environment variable names the trace file, as `CS_LOG_LEVEL` does for logs.
-- **Gate.** A trace of a five-Shot Brew opens in the Spall viewer, and the top spans are recorded in this section with their share of wall time.
+- **Gate.** A trace of a five-Station run opens in the Spall viewer, and the top spans are recorded in this section with their share of wall time.
 
 ### 2. Profile the resource use
 
-- Sample each Station and each pi child process: CPU time, resident memory, open file descriptors, and child process count, from `/proc`.
+- Sample each Station and each pi child process: CPU time, resident memory, open file descriptors, and child process count, by platform:
+  - Linux and WSL: from `/proc`.
+  - macOS: from Darwin process APIs (for example `proc_pid_rusage`, which the code already uses for process identity). Fields that Darwin does not expose the same way (open file descriptors, child count) must be marked "to be verified on macOS in the gate".
+  - Native Windows is unsupported, as the v0.2 section already says.
 - Show them with `status --usage`, with per-Station rows and totals.
 - Known starting figure: pi is about 100 MB per process, so five Stations need about 500 MB. The gate uses measured numbers.
 - **Gate.** Five Stations run on this machine with a recorded peak CPU and memory budget, and the default concurrency is chosen from those numbers, not guessed.
@@ -419,7 +422,7 @@ After the interactive workflow is verified, Coffee Shop may act as a human manag
 ### 3. Account for tokens and cost
 
 - Confirm which usage fields Pi 1.1.0 reports in its RPC events before relying on them.
-- Record per Station: model, input, output and cache tokens, and estimated cost. Keep these in the Register and Receipt, and show running totals in `status` and in the Tray.
+- Record per Station: model, input, output and cache tokens, and estimated cost. Keep these in the Register and Receipt, and show running totals in `status`.
 - Optional budget, in tokens or estimated cost. Coffee Shop launches no new Station once it is reached. Whether running Stations finish or are cancelled is an open question.
 - **Gate.** For a real Station, the recorded tokens match the provider's usage for the same run, within a stated tolerance.
 
@@ -434,6 +437,7 @@ After the interactive workflow is verified, Coffee Shop may act as a human manag
 
 - Where the machine-wide limit is kept, since Stations on different repositories have separate servers.
 - Whether a budget stops running Stations or only stops new ones.
+- Whether the Tray shows Station usage.
 
 ## Roadmap: v0.4.0
 
