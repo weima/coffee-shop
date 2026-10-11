@@ -332,6 +332,7 @@ station_report :: proc(sender: ^Activity_Sender, brew_id, station_id, kind, desc
 		text = text[:ACTIVITY_MAX_DESCRIPTION]
 		if path, ok := station_write_report_file(sender.path, brew_id, station_id, kind, description); ok {
 			text = fmt.tprintf("%s%s", STATION_FILE_PREFIX, path)
+			delete(path, context.allocator)
 		}
 	}
 	_ = activity_sender_send(sender, Activity_Message{
@@ -365,10 +366,15 @@ station_write_report_file :: proc(socket_path, brew_id, station_id, kind, text: 
 		return "", false
 	}
 	name := fmt.tprintf("%s-%s-%s-%s.txt", brew_id, station_id, kind, random_token(context.temp_allocator))
-	path, _ = filepath.join({reports_dir, name}, context.temp_allocator)
-	if err := write_all_to_file(path, transmute([]byte)text, os.O_WRONLY|os.O_CREATE|os.O_EXCL); err.kind != .None {
-		_ = os.remove(path)
+	temp_path, _ := filepath.join({reports_dir, name}, context.temp_allocator)
+	if err := write_all_to_file(temp_path, transmute([]byte)text, os.O_WRONLY|os.O_CREATE|os.O_EXCL); err.kind != .None {
+		_ = os.remove(temp_path)
 		return "", false
 	}
-	return path, true
+	owned_path, clone_err := strings.clone(temp_path, context.allocator)
+	if clone_err != nil {
+		_ = os.remove(temp_path)
+		return "", false
+	}
+	return owned_path, true
 }

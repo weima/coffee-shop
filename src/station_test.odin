@@ -237,9 +237,20 @@ test_station_report_paths_include_unique_names :: proc(t: ^testing.T) {
 	defer delete(first)
 	second, second_ok := station_write_report_file(socket, "order-1", "shot-a", "turn_done", "second")
 	defer delete(second)
-	fmt.println(fmt.tprintf("DEBUG first=%v %s second=%v %s", first_ok, first, second_ok, second))
 	testing.expect(t, first_ok && second_ok, "both reports should be written")
 	testing.expect(t, first != second, "report paths must be unique")
+	if first_ok {
+		first_data, first_err := os.read_entire_file(first, context.allocator)
+		defer delete(first_data)
+		testing.expect_value(t, first_err, os.Error(nil))
+		testing.expect_value(t, string(first_data), "first")
+	}
+	if second_ok {
+		second_data, second_err := os.read_entire_file(second, context.allocator)
+		defer delete(second_data)
+		testing.expect_value(t, second_err, os.Error(nil))
+		testing.expect_value(t, string(second_data), "second")
+	}
 }
 
 @(test)
