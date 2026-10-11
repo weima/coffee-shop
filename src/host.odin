@@ -6,25 +6,65 @@ import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "core:sync"
+import "core:thread"
+import "core:time"
 
 HOST_PROTOCOL :: 1
-HOST_REQUEST_ID_MAX :: 128
+HOST_RELAY_POLL :: 20 * time.Millisecond
+
+// Set once by run_host and read by dispatch when it launches Station panes.
+host_report_socket: string
+host_station_executable: string
+
+// The stdin loop and the relay thread both write events; one lock keeps lines whole.
+host_output_mutex: sync.Mutex
 
 // One line on stdout per event. Encoded with json.marshal so that free-form
 // reasons from Git or Herdr cannot break the framing.
 Host_Event :: struct {
-	type:       string `json:"type"`,
-	request_id: string `json:"request_id"`,
-	shot_id:    string `json:"shot_id,omitempty"`,
-	pane_id:    string `json:"pane_id,omitempty"`,
-	reason:     string `json:"reason,omitempty"`,
+	type:        string `json:"type"`,
+	request_id:  string `json:"request_id"`,
+	shot_id:     string `json:"shot_id,omitempty"`,
+	pane_id:     string `json:"pane_id,omitempty"`,
+	kind:        string `json:"kind,omitempty"`,
+	description: string `json:"description,omitempty"`,
+	reason:      string `json:"reason,omitempty"`,
 }
 
 // Foreground host: reads one JSON request per line from stdin and answers on
-// stdout. It exits on shutdown or end of input; it never daemonizes.
+// stdout. It exits on shutdown or end of input; it never daemonizes. While it
+// runs, a relay thread forwards Station reports to stdout as station_report.
 run_host :: proc() -> int {
-	fmt.printfln(`{{"type":"ready","protocol":%d}}`, HOST_PROTOCOL)
+	state_root, state_err := default_state_root(context.temp_allocator)
+	if state_err != "" {
+		host_write_line(fmt.tprintf(`{{"type":"error","reason":"%s"}}`, state_err))
+		return 1
+	}
+	host_dir, _ := filepath.join({state_root, "host"}, context.temp_allocator)
+	if os.make_directory_all(host_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
+		host_write_line(`{"type":"error","reason":"could not create the host directory"}`)
+		return 1
+	}
+	socket_path, _ := filepath.join({host_dir, "activity.sock"}, context.allocator)
+	listener, listener_ok := activity_listener_open(socket_path)
+	if !listener_ok {
+		host_write_line(`{"type":"error","reason":"could not open the host report socket"}`)
+		return 1
+	}
+	executable_info, info_err := os.current_process_info({.Executable_Path}, context.allocator)
+	if info_err != nil || executable_info.executable_path == "" {
+		host_write_line(`{"type":"error","reason":"could not locate the Coffee Shop executable"}`)
+		return 1
+	}
+	host_report_socket = socket_path
+	host_station_executable = executable_info.executable_path
 
+	relay := new(Host_Relay)
+	relay.listener = listener
+	_ = thread.create_and_start_with_data(relay, host_relay_reports, self_cleanup = true)
+
+	host_write_line(fmt.tprintf(`{{"type":"ready","protocol":%d}}`, HOST_PROTOCOL))
 	scanner: bufio.Scanner
 	bufio.scanner_init(&scanner, os.to_reader(os.stdin))
 	defer bufio.scanner_destroy(&scanner)
@@ -38,24 +78,54 @@ run_host :: proc() -> int {
 	return 0
 }
 
+Host_Relay :: struct {
+	listener: Activity_Listener,
+}
+
+// Owns the listener: only this thread reads it. Polls because the listener is
+// non-blocking and must not hold up the stdin loop.
+host_relay_reports :: proc(data: rawptr) {
+	relay := (^Host_Relay)(data)
+	for {
+		result := activity_listener_receive(&relay.listener)
+		switch result.kind {
+		case .Message:
+			host_emit(Host_Event{
+				type = "station_report",
+				request_id = result.message.brew_id,
+				shot_id = result.message.shot_id,
+				kind = result.message.kind,
+				description = result.message.description,
+			})
+			destroy_struct(&result.message)
+		case .Unavailable:
+			time.sleep(HOST_RELAY_POLL)
+		case .Malformed:
+		case .Failed:
+			return
+		}
+		free_all(context.temp_allocator)
+	}
+}
+
 // Returns true when the host must stop.
 host_handle_line :: proc(line: string) -> bool {
 	value, parse_err := json.parse_string(line, .JSON, false, context.temp_allocator)
 	if parse_err != .None {
-		fmt.println(`{"type":"error","reason":"invalid json"}`)
+		host_write_line(`{"type":"error","reason":"invalid json"}`)
 		return false
 	}
 	defer json.destroy_value(value, context.temp_allocator)
 
 	root, is_object := value.(json.Object)
 	if !is_object {
-		fmt.println(`{"type":"error","reason":"request must be an object"}`)
+		host_write_line(`{"type":"error","reason":"request must be an object"}`)
 		return false
 	}
 
 	request_id := host_request_id(root)
 	if request_id == "" {
-		fmt.println(`{"type":"error","reason":"request_id must be 1-128 characters of [A-Za-z0-9._-]"}`)
+		host_write_line(`{"type":"error","reason":"request_id must be a valid shot-style identifier (letters, digits, - or _, up to 64)"}`)
 		return false
 	}
 
@@ -64,7 +134,7 @@ host_handle_line :: proc(line: string) -> bool {
 	case "dispatch":
 		host_dispatch(root, request_id)
 	case "shutdown":
-		fmt.printfln(`{{"type":"stopped","request_id":"%s"}}`, request_id)
+		host_write_line(fmt.tprintf(`{{"type":"stopped","request_id":"%s"}}`, request_id))
 		return true
 	case:
 		host_emit(Host_Event{type = "error", request_id = request_id, reason = "unknown request type"})
@@ -75,8 +145,8 @@ host_handle_line :: proc(line: string) -> bool {
 // Validates the dispatch, then starts one interactive Pi session per Shot: a
 // Station (Git worktree) and a Herdr tab, with the Shot's prompt typed into the
 // pane. Each Shot ends in session_started or session_failed.
-// shortcut: the host blocks while sessions start, and it does not yet read pane
-// output or relay needs_input/completion; phases D and E add those.
+// shortcut: the host blocks while sessions start; phase D relays reports but
+// replies are not yet routed back from the host.
 host_dispatch :: proc(root: json.Object, request_id: string) {
 	repo, repo_ok := host_string(root, "repo")
 	if !repo_ok || !filepath.is_abs(repo) {
@@ -117,7 +187,7 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 		append(&prompts, prompt)
 	}
 
-	fmt.printfln(`{{"type":"dispatch_accepted","request_id":"%s"}}`, request_id)
+	host_write_line(fmt.tprintf(`{{"type":"dispatch_accepted","request_id":"%s"}}`, request_id))
 	host_start_sessions(repo, request_id, ids[:], prompts[:])
 }
 
@@ -169,15 +239,25 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts: []string) {
 			pane_id = tab.result.root_pane.pane_id
 		}
 
-		quoted := shell_quote(prompts[i])
-		command := fmt.tprintf("pi %s", quoted)
-		delete(quoted)
+		command := host_station_command(host_station_executable, host_report_socket, id, request_id, prompts[i])
 		if run_err := herdr_run_worker(herdr, pane_id, command); run_err != "" {
-			host_session_failed(request_id, id, fmt.tprintf("could not start Pi: %s", run_err))
+			host_session_failed(request_id, id, fmt.tprintf("could not start the Station: %s", run_err))
 			continue
 		}
 		host_emit(Host_Event{type = "session_started", request_id = request_id, shot_id = id, pane_id = pane_id})
 	}
+}
+
+// The Station runs in the Herdr pane and launches the agent. Only the prompt and
+// the report path are quoted; the IDs are already restricted to safe characters.
+host_station_command :: proc(executable, report, shot_id, request_id, prompt: string) -> string {
+	quoted_executable := shell_quote(executable)
+	defer delete(quoted_executable)
+	quoted_report := shell_quote(report)
+	defer delete(quoted_report)
+	quoted_prompt := shell_quote(prompt)
+	defer delete(quoted_prompt)
+	return fmt.tprintf("%s station --report %s --station %s --brew %s --prompt %s -- pi --mode rpc", quoted_executable, quoted_report, shot_id, request_id, quoted_prompt)
 }
 
 host_session_failed :: proc(request_id, shot_id, reason: string) {
@@ -187,10 +267,16 @@ host_session_failed :: proc(request_id, shot_id, reason: string) {
 host_emit :: proc(event: Host_Event) {
 	data, err := json.marshal(event, {}, context.temp_allocator)
 	if err != nil {
-		fmt.println(`{"type":"error","reason":"could not encode event"}`)
+		host_write_line(`{"type":"error","reason":"could not encode event"}`)
 		return
 	}
-	fmt.println(string(data))
+	host_write_line(string(data))
+}
+
+host_write_line :: proc(line: string) {
+	sync.mutex_lock(&host_output_mutex)
+	defer sync.mutex_unlock(&host_output_mutex)
+	fmt.println(line)
 }
 
 host_string :: proc(object: json.Object, key: string) -> (string, bool) {
@@ -202,17 +288,12 @@ host_string :: proc(object: json.Object, key: string) -> (string, bool) {
 	return text, is_string
 }
 
-// The ID becomes part of a branch name and a path, so only a restricted character
-// set is accepted.
+// The ID becomes a branch name, a path and an activity-socket field, so it uses
+// the same rules as Shot IDs. Hyphens and underscores are allowed; dots are not.
 host_request_id :: proc(root: json.Object) -> string {
 	id, ok := host_string(root, "request_id")
-	if !ok || len(id) == 0 || len(id) > HOST_REQUEST_ID_MAX {
+	if !ok || !valid_shot_id(id) {
 		return ""
-	}
-	for c in id {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-') {
-			return ""
-		}
 	}
 	return id
 }

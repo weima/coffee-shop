@@ -51,8 +51,10 @@ test_foreground_host_accepts_dispatches_and_starts_sessions :: proc(t: ^testing.
 		return
 	}
 
+	binary := build_test_binary(t, root)
+	defer delete(binary)
 	state_run, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `export PATH="$2:$PATH" CS_STATE_DIR="$3" FAKE_HERDR_DIR="$4"; cat "$1" | odin run src -- host`, "host-test", input_path, bin, state, root},
+		command = {"sh", "-c", `export PATH="$2:$PATH" CS_STATE_DIR="$3" FAKE_HERDR_DIR="$4"; cat "$1" | "$5" host`, "host-test", input_path, bin, state, root, binary},
 	}, context.allocator)
 	defer delete(stdout)
 	defer delete(stderr)
@@ -73,8 +75,8 @@ test_foreground_host_accepts_dispatches_and_starts_sessions :: proc(t: ^testing.
 	defer delete(calls_data)
 	testing.expect_value(t, calls_err, os.Error(nil))
 	calls := string(calls_data)
-	testing.expect(t, strings.contains(calls, "pane run p0 pi 'inspect the repository'"), calls)
-	testing.expect(t, strings.contains(calls, "pane run p0 pi 'inspect the tests'"), calls)
+	testing.expect(t, strings.contains(calls, "--station shot-a --brew order-1 --prompt 'inspect the repository' -- pi --mode rpc"), calls)
+	testing.expect(t, strings.contains(calls, "--station shot-b --brew order-2 --prompt 'inspect the tests' -- pi --mode rpc"), calls)
 	testing.expect(t, strings.contains(calls, "/state/host/order-1/stations/shot-a"), calls)
 	testing.expect(t, strings.contains(calls, "/state/host/order-2/stations/shot-b"), calls)
 }
