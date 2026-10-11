@@ -22,6 +22,8 @@ host_station_executable: string
 host_extension_path: string
 host_history_root: string
 
+HOST_LOCK_FILE_NAME :: "host.lock"
+
 // The stdin loop and the relay thread both write events; one lock keeps lines whole.
 host_output_mutex: sync.Mutex
 
@@ -73,9 +75,15 @@ run_host :: proc() -> int {
 	}
 	host_extension_path = extension_path
 	host_history_root = strings.clone(host_dir, context.allocator)
+	host_lock, lock_ok := host_acquire_lock(host_dir)
+	if !lock_ok {
+		write_error("another host is already running")
+		return 1
+	}
+	defer file_lock_release(host_lock)
 	socket_path, _ := filepath.join({host_dir, "activity.sock"}, context.allocator)
 	// A host that was killed leaves its socket behind, and bind would refuse it.
-	// One host runs per state directory, so the leftover file is ours to remove.
+	// The host lock proves that a leftover socket cannot belong to a live host.
 	activity_unlink(socket_path)
 	listener, listener_ok := activity_listener_open(socket_path)
 	if !listener_ok {
@@ -139,23 +147,43 @@ host_relay_reports :: proc(data: rawptr) {
 	}
 }
 
-// A Station sends a long report as "file:<path>". Only files under this host's
-// reports directory are read; anything else is reported as unavailable.
+// A Station sends a long report as "file:<path>". Only regular files resolved
+// under this host's real reports directory are read; anything else is refused.
 host_report_text :: proc(description: string) -> string {
 	if !strings.has_prefix(description, STATION_FILE_PREFIX) {
 		return description
 	}
 	path := description[len(STATION_FILE_PREFIX):]
 	reports_dir, _ := filepath.join({host_history_root, "reports"}, context.temp_allocator)
-	inside := strings.has_prefix(path, reports_dir) && len(path) > len(reports_dir) && path[len(reports_dir)] == '/'
+	reports_real, reports_err := os.get_absolute_path(reports_dir, context.temp_allocator)
+	file_info, info_err := os.lstat(path, context.temp_allocator)
+	if reports_err != nil || info_err != nil || file_info.type != .Regular {
+		return fmt.tprintf("Report location refused: %s", path)
+	}
+	resolved, resolve_err := os.get_absolute_path(path, context.temp_allocator)
+	inside := resolve_err == nil && strings.has_prefix(resolved, reports_real) &&
+		len(resolved) > len(reports_real) && resolved[len(reports_real)] == '/'
 	if !inside || strings.contains(path, "..") {
 		return fmt.tprintf("Report location refused: %s", path)
 	}
-	data, err := os.read_entire_file(path, context.temp_allocator)
+	data, err := os.read_entire_file(resolved, context.temp_allocator)
 	if err != nil {
 		return fmt.tprintf("Report file could not be read: %s", path)
 	}
 	return string(data)
+}
+
+host_acquire_lock :: proc(directory: string) -> (file: ^os.File, ok: bool) {
+	path := state_file_path(directory, HOST_LOCK_FILE_NAME, context.temp_allocator)
+	opened, open_err := os.open(path, os.O_RDWR|os.O_CREATE, private_file_permissions())
+	if open_err != nil {
+		return nil, false
+	}
+	if !server_lock_try(opened) {
+		_ = os.close(opened)
+		return nil, false
+	}
+	return opened, true
 }
 
 // Returns true when the host must stop.

@@ -27,6 +27,48 @@ wait $pid
 `
 
 @(test)
+test_host_report_refuses_symlinks_and_prefix_escapes :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-report-path-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	host_dir, _ := filepath.join({root, "host"})
+	reports_dir, _ := filepath.join({host_dir, "reports"})
+	outside, _ := filepath.join({root, "outside"})
+	prefix_dir, _ := filepath.join({root, "reports-other"})
+	inside_path, _ := filepath.join({reports_dir, "ok.txt"})
+	leak_path, _ := filepath.join({reports_dir, "leak"})
+	prefix_path, _ := filepath.join({prefix_dir, "x"})
+	defer delete(host_dir)
+	defer delete(reports_dir)
+	defer delete(outside)
+	defer delete(prefix_dir)
+	defer delete(inside_path)
+	defer delete(leak_path)
+	defer delete(prefix_path)
+
+	testing.expect_value(t, os.make_directory_all(reports_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
+	testing.expect_value(t, os.make_directory_all(prefix_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
+	testing.expect_value(t, os.write_entire_file(outside, "secret", os.Permissions{.Read_User, .Write_User}), os.Error(nil))
+	testing.expect_value(t, os.write_entire_file(inside_path, "safe", os.Permissions{.Read_User, .Write_User}), os.Error(nil))
+	testing.expect_value(t, os.write_entire_file(prefix_path, "wrong", os.Permissions{.Read_User, .Write_User}), os.Error(nil))
+	testing.expect_value(t, os.symlink(outside, leak_path), os.Error(nil))
+
+	host_history_root = strings.clone(host_dir, context.allocator)
+	defer {
+		delete(host_history_root)
+		host_history_root = ""
+	}
+	testing.expect_value(t, host_report_text(fmt.tprintf("%s%s", STATION_FILE_PREFIX, inside_path)), "safe")
+	testing.expect(t, strings.contains(host_report_text(fmt.tprintf("%s%s", STATION_FILE_PREFIX, leak_path)), "Report location refused"), "symlink report must be refused")
+	testing.expect(t, strings.contains(host_report_text(fmt.tprintf("%s%s", STATION_FILE_PREFIX, prefix_path)), "Report location refused"), "reports-other prefix must be refused")
+}
+
+@(test)
 test_host_relays_station_reports_to_stdout :: proc(t: ^testing.T) {
 	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-relay-*", context.allocator)
 	testing.expect_value(t, make_err, os.Error(nil))
@@ -116,6 +158,72 @@ test_host_relays_full_long_station_report :: proc(t: ^testing.T) {
 	full := strings.repeat("x", 3000, context.temp_allocator)
 	expected := strings.concatenate({`"kind":"turn_done","description":"`, full, `"}`}, context.temp_allocator)
 	testing.expect(t, strings.contains(out, expected), out[:min(len(out), 400)])
+}
+
+// Two hosts must not evict each other's socket.
+HOST_LOCK_SCRIPT :: `set -eu
+state="$1"; fifo="$2"; out="$3"; err="$4"; second_out="$5"; second_err="$6"; bin="$7"
+export CS_STATE_DIR="$state"
+mkfifo "$fifo"
+"$bin" host < "$fifo" > "$out" 2> "$err" &
+pid=$!
+exec 3> "$fifo"
+sock="$state/host/activity.sock"
+i=0
+while [ ! -S "$sock" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i+1)); done
+set +e
+printf '%s\n' '{"type":"shutdown","request_id":"second"}' | CS_STATE_DIR="$state" "$bin" host > "$second_out" 2> "$second_err"
+second_status=$?
+set -e
+test "$second_status" -ne 0
+printf '%s\n' '{"type":"sessions"}' >&3
+sleep 0.2
+printf '%s\n' '{"type":"shutdown","request_id":"first"}' >&3
+exec 3>&-
+wait "$pid"
+`
+
+@(test)
+test_second_host_keeps_first_host_socket_alive :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-host-lock-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	state, _ := filepath.join({root, "state"})
+	fifo, _ := filepath.join({root, "in.fifo"})
+	out_path, _ := filepath.join({root, "host.out"})
+	err_path, _ := filepath.join({root, "host.err"})
+	second_out, _ := filepath.join({root, "second.out"})
+	second_err, _ := filepath.join({root, "second.err"})
+	defer delete(state)
+	defer delete(fifo)
+	defer delete(out_path)
+	defer delete(err_path)
+	defer delete(second_out)
+	defer delete(second_err)
+
+	binary := build_test_binary(t, root)
+	defer delete(binary)
+	script_state, script_out, script_err, exec_err := os.process_exec(os.Process_Desc{
+		command = {"sh", "-c", HOST_LOCK_SCRIPT, "host-lock-test", state, fifo, out_path, err_path, second_out, second_err, binary},
+	}, context.allocator)
+	defer delete(script_out)
+	defer delete(script_err)
+	testing.expect_value(t, exec_err, os.Error(nil))
+	testing.expect(t, script_state.success, string(script_err))
+
+	out_data, out_err := os.read_entire_file(out_path, context.allocator)
+	defer delete(out_data)
+	second_data, second_read_err := os.read_entire_file(second_err, context.allocator)
+	defer delete(second_data)
+	testing.expect_value(t, out_err, os.Error(nil))
+	testing.expect_value(t, second_read_err, os.Error(nil))
+	testing.expect(t, strings.contains(string(out_data), `{"type":"sessions","sessions":[]}`), string(out_data))
+	testing.expect(t, strings.contains(string(second_data), "another host is already running"), string(second_data))
 }
 
 // A killed host leaves its socket file behind; the next host must still start.

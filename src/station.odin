@@ -330,7 +330,7 @@ station_report :: proc(sender: ^Activity_Sender, brew_id, station_id, kind, desc
 	text := description
 	if len(text) > ACTIVITY_MAX_DESCRIPTION {
 		text = text[:ACTIVITY_MAX_DESCRIPTION]
-		if path, ok := station_write_report_file(sender.path, station_id, kind, description); ok {
+		if path, ok := station_write_report_file(sender.path, brew_id, station_id, kind, description); ok {
 			text = fmt.tprintf("%s%s", STATION_FILE_PREFIX, path)
 		}
 	}
@@ -345,19 +345,29 @@ station_report :: proc(sender: ^Activity_Sender, brew_id, station_id, kind, desc
 
 STATION_FILE_PREFIX :: "file:"
 
-station_write_report_file :: proc(socket_path, station_id, kind, text: string) -> (path: string, ok: bool) {
+station_write_report_file :: proc(socket_path, brew_id, station_id, kind, text: string) -> (path: string, ok: bool) {
+	if !valid_shot_id(station_id) || !valid_shot_id(brew_id) {
+		return "", false
+	}
+	switch kind {
+	case "turn_done", "needs_input", "agent_exited":
+	case:
+		return "", false
+	}
+
 	slash := strings.last_index_byte(socket_path, '/')
 	if slash < 0 {
 		return "", false
 	}
 	host_dir := socket_path[:slash]
 	reports_dir, _ := filepath.join({host_dir, "reports"}, context.temp_allocator)
-	if os.make_directory_all(reports_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
+	if !os.is_directory(reports_dir) && os.make_directory_all(reports_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
 		return "", false
 	}
-	name := fmt.tprintf("%s-%s-%d.txt", station_id, kind, time.now()._nsec)
+	name := fmt.tprintf("%s-%s-%s-%s.txt", brew_id, station_id, kind, random_token(context.temp_allocator))
 	path, _ = filepath.join({reports_dir, name}, context.temp_allocator)
-	if os.write_entire_file(path, text, os.Permissions{.Read_User, .Write_User}) != nil {
+	if err := write_all_to_file(path, transmute([]byte)text, os.O_WRONLY|os.O_CREATE|os.O_EXCL); err.kind != .None {
+		_ = os.remove(path)
 		return "", false
 	}
 	return path, true
