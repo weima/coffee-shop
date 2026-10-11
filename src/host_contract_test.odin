@@ -37,13 +37,18 @@ test_foreground_host_accepts_dispatches_and_starts_sessions :: proc(t: ^testing.
 	testing.expect_value(t, git_err, os.Error(nil))
 	testing.expect(t, git_state.success, string(git_stderr))
 
+	long_prompt := fmt.aprintf("first line\nit's a long prompt\n%s", strings.repeat("x", 5000, context.temp_allocator))
+	defer delete(long_prompt)
+	json_prompt, _ := strings.replace_all(long_prompt, "\n", "\\n", context.allocator)
+	defer delete(json_prompt)
 	input_path := fmt.aprintf("%s/requests.ndjson", root)
 	defer delete(input_path)
-	input := fmt.aprintf(`{{"type":"dispatch","request_id":"order-1","repo":"%s","recipe":{{"order":"first order","shots":[{{"id":"shot-a","prompt":"inspect the repository"}}]}}}}
+	input := fmt.aprintf(`{{"type":"dispatch","request_id":"order-1","repo":"%s","recipe":{{"order":"first order","shots":[{{"id":"shot-a","prompt":"%s","model":"github-copilot/claude-haiku-5.5"}}]}}}}
 {{"type":"dispatch","request_id":"order-2","repo":"%s","recipe":{{"order":"second order","shots":[{{"id":"shot-b","prompt":"inspect the tests"}}]}}}}
 {{"type":"dispatch","request_id":"order-3","repo":"%s","recipe":{{"order":"bad order","shots":[{{"id":"../escape","prompt":"x"}}]}}}}
+{{"type":"dispatch","request_id":"order-4","repo":"%s","recipe":{{"order":"bad model","shots":[{{"id":"shot-c","prompt":"x","model":"bad model;"}}]}}}}
 {{"type":"shutdown","request_id":"shutdown-1"}}
-`, repo, repo, repo)
+`, repo, json_prompt, repo, repo, repo)
 	defer delete(input)
 	write_err := os.write_entire_file(input_path, input, rwx)
 	testing.expect_value(t, write_err, os.Error(nil))
@@ -69,16 +74,47 @@ test_foreground_host_accepts_dispatches_and_starts_sessions :: proc(t: ^testing.
 	testing.expect(t, strings.contains(out, `{"type":"session_started","request_id":"order-2","shot_id":"shot-b","pane_id":"p0"}`), out)
 	testing.expect(t, strings.contains(out, `"request_id":"order-3"`) && strings.contains(out, `each shot needs a valid id and a prompt`), out)
 	testing.expect(t, !strings.contains(out, `{"type":"dispatch_accepted","request_id":"order-3"}`), out)
+	testing.expect(t, strings.contains(out, `"request_id":"order-4","shot_id":"shot-c"`) && strings.contains(out, `shot model must be`), out)
+	testing.expect(t, !strings.contains(out, `{"type":"dispatch_accepted","request_id":"order-4"}`), out)
 	testing.expect(t, strings.contains(out, `{"type":"stopped","request_id":"shutdown-1"}`), out)
+
+	prompt_path := fmt.aprintf("%s/host/order-1/prompts/shot-a.md", state)
+	defer delete(prompt_path)
+	prompt_data, prompt_err := os.read_entire_file(prompt_path, context.allocator)
+	defer delete(prompt_data)
+	testing.expect_value(t, prompt_err, os.Error(nil))
+	testing.expect_value(t, string(prompt_data), long_prompt)
 
 	calls_data, calls_err := os.read_entire_file(fmt.tprintf("%s/calls.log", root), context.allocator)
 	defer delete(calls_data)
 	testing.expect_value(t, calls_err, os.Error(nil))
 	calls := string(calls_data)
-	testing.expect(t, strings.contains(calls, "--station shot-a --brew order-1 --prompt 'inspect the repository' -- pi --mode rpc"), calls)
-	testing.expect(t, strings.contains(calls, "--station shot-b --brew order-2 --prompt 'inspect the tests' -- pi --mode rpc"), calls)
-	testing.expect(t, strings.contains(calls, "/state/host/order-1/stations/shot-a"), calls)
-	testing.expect(t, strings.contains(calls, "/state/host/order-2/stations/shot-b"), calls)
+	testing.expect(t, strings.contains(calls, "--station shot-a --brew order-1 --prompt-file '") && strings.contains(calls, "-- pi --mode rpc --model 'github-copilot/claude-haiku-5.5' -e"), calls)
+	prompt_command_at := strings.index(calls, "--station shot-a")
+	prompt_command_start := strings.last_index_byte(calls[:prompt_command_at], '\n') + 1
+	prompt_command_end := strings.index_byte(calls[prompt_command_at:], '\n')
+	if prompt_command_end < 0 {
+		prompt_command_end = len(calls) - prompt_command_at
+	} else {
+		prompt_command_end = prompt_command_at + prompt_command_end - prompt_command_start
+	}
+	prompt_command := calls[prompt_command_start : prompt_command_start+prompt_command_end]
+	testing.expect(t, len(prompt_command) < 512, fmt.tprintf("command length: %d\n%s", len(prompt_command), prompt_command))
+	shot_b_path := fmt.aprintf("%s/host/order-2/prompts/shot-b.md", state)
+	defer delete(shot_b_path)
+	shot_b_marker := strings.index(calls, "--station shot-b")
+	shot_b_start := strings.last_index_byte(calls[:shot_b_marker], '\n') + 1
+	shot_b_end := strings.index_byte(calls[shot_b_marker:], '\n')
+	if shot_b_end < 0 {
+		shot_b_end = len(calls) - shot_b_marker
+	} else {
+		shot_b_end = shot_b_marker + shot_b_end - shot_b_start
+	}
+	shot_b_command := calls[shot_b_start : shot_b_start+shot_b_end]
+	testing.expect(t, strings.contains(shot_b_command, fmt.tprintf("--station shot-b --brew order-2 --prompt-file '%s' -- pi --mode rpc -e", shot_b_path)), shot_b_command)
+	testing.expect(t, !strings.contains(shot_b_command, "--model"), shot_b_command)
+	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-4/stations/shot-c", state)), "invalid model must not create a worktree")
+	testing.expect(t, !strings.contains(calls, "shot-c"), "invalid model must not call Herdr")
 }
 
 HOST_TEST_TEMP_DIR :: "/private/tmp" when ODIN_OS == .Darwin else "/tmp"

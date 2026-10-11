@@ -228,8 +228,8 @@ host_handle_line :: proc(line: string) -> bool {
 }
 
 // Validates the dispatch, then starts one interactive Pi session per Shot: a
-// Station (Git worktree) and a Herdr tab, with the Shot's prompt typed into the
-// pane. Each Shot ends in session_started or session_failed.
+// Station (Git worktree) and a Herdr tab, with the Shot's prompt read from a
+// file by the Station. Each Shot ends in session_started or session_failed.
 // shortcut: the host blocks while sessions start; phase D relays reports but
 // replies are not yet routed back from the host.
 host_dispatch :: proc(root: json.Object, request_id: string) {
@@ -254,6 +254,7 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 
 	ids := make([dynamic]string, context.temp_allocator)
 	prompts := make([dynamic]string, context.temp_allocator)
+	models := make([dynamic]string, context.temp_allocator)
 	for shot_value in shots {
 		shot, is_shot := shot_value.(json.Object)
 		id, id_ok := host_string(shot, "id")
@@ -268,19 +269,36 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 				return
 			}
 		}
+		model := ""
+		if model_value, model_found := shot["model"]; model_found {
+			model_ok := false
+			model, model_ok = model_value.(json.String)
+			if !model_ok || !valid_host_model(model) {
+				host_emit(Host_Event{type = "error", request_id = request_id, shot_id = id, reason = "shot model must be 1 to 80 characters using letters, digits, /, ., -, _, or :"})
+				return
+			}
+		}
 		append(&ids, id)
 		append(&prompts, prompt)
+		append(&models, model)
 	}
 
 	host_emit(Host_Event{type = "dispatch_accepted", request_id = request_id})
-	host_start_sessions(repo, request_id, ids[:], prompts[:])
+	host_start_sessions(repo, request_id, ids[:], prompts[:], models[:])
 }
 
-host_start_sessions :: proc(repo, request_id: string, ids, prompts: []string) {
+host_start_sessions :: proc(repo, request_id: string, ids, prompts, models: []string) {
 	state_root, state_err := default_state_root(context.temp_allocator)
 	if state_err != "" {
 		for id in ids {
 			host_session_failed(request_id, id, state_err)
+		}
+		return
+	}
+	prompts_dir, _ := filepath.join({state_root, "host", request_id, "prompts"}, context.temp_allocator)
+	if os.make_directory_all(prompts_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
+		for id in ids {
+			host_session_failed(request_id, id, "could not create the prompts directory")
 		}
 		return
 	}
@@ -295,6 +313,11 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts: []string) {
 	herdr := "herdr"
 	workspace_id := ""
 	for id, i in ids {
+		prompt_path, _ := filepath.join({prompts_dir, fmt.tprintf("%s.md", id)}, context.temp_allocator)
+		if os.write_entire_file(prompt_path, prompts[i], private_file_permissions()) != nil {
+			host_session_failed(request_id, id, "could not write the prompt file")
+			continue
+		}
 		station, _ := filepath.join({stations_dir, id}, context.temp_allocator)
 		branch := fmt.tprintf("cs-host-%s-%s", request_id, id)
 		if git_err := create_git_worktree(repo, branch, station, context.temp_allocator); git_err != "" {
@@ -324,7 +347,7 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts: []string) {
 			pane_id = tab.result.root_pane.pane_id
 		}
 
-		command := host_station_command(host_station_executable, host_report_socket, host_extension_path, id, request_id, prompts[i])
+		command := host_station_command(host_station_executable, host_report_socket, host_extension_path, id, request_id, prompt_path, models[i])
 		if run_err := herdr_run_worker(herdr, pane_id, command); run_err != "" {
 			host_session_failed(request_id, id, fmt.tprintf("could not start the Station: %s", run_err))
 			continue
@@ -361,26 +384,41 @@ host_reply :: proc(root: json.Object, request_id: string) {
 	host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = "no Station is running for that shot"})
 }
 
-// The Station runs in the Herdr pane and launches the agent. Only the prompt and
-// the report path are quoted; the IDs are already restricted to safe characters.
-host_station_command :: proc(executable, report, extension, shot_id, request_id, prompt: string) -> string {
+// The Station runs in the Herdr pane and launches the agent. Paths and the
+// optional model are quoted; the IDs are already restricted to safe characters.
+host_station_command :: proc(executable, report, extension, shot_id, request_id, prompt_file, model: string) -> string {
 	quoted_executable := shell_quote(executable)
 	defer delete(quoted_executable)
 	quoted_report := shell_quote(report)
 	defer delete(quoted_report)
 	quoted_extension := shell_quote(extension)
 	defer delete(quoted_extension)
-	// A newline in the command would be typed as Enter into the pane's shell and
-	// split the command, so the prompt travels as one line.
-	one_line, _ := strings.replace_all(prompt, "\n", " ", context.temp_allocator)
-	one_line, _ = strings.replace_all(one_line, "\r", " ", context.temp_allocator)
-	quoted_prompt := shell_quote(one_line)
-	defer delete(quoted_prompt)
-	return fmt.tprintf("%s station --report %s --station %s --brew %s --prompt %s -- pi --mode rpc -e %s", quoted_executable, quoted_report, shot_id, request_id, quoted_prompt, quoted_extension)
+	quoted_prompt_file := shell_quote(prompt_file)
+	defer delete(quoted_prompt_file)
+	model_argument := ""
+	if model != "" {
+		quoted_model := shell_quote(model)
+		defer delete(quoted_model)
+		model_argument = fmt.tprintf(" --model %s", quoted_model)
+	}
+	return fmt.tprintf("%s station --report %s --station %s --brew %s --prompt-file %s -- pi --mode rpc%s -e %s", quoted_executable, quoted_report, shot_id, request_id, quoted_prompt_file, model_argument, quoted_extension)
 }
 
 host_session_failed :: proc(request_id, shot_id, reason: string) {
 	host_emit(Host_Event{type = "session_failed", request_id = request_id, shot_id = shot_id, reason = reason})
+}
+
+valid_host_model :: proc(model: string) -> bool {
+	if len(model) < 1 || len(model) > 80 {
+		return false
+	}
+	for c in model {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '/' || c == '.' || c == '-' || c == '_' || c == ':' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 host_emit :: proc(event: Host_Event) {

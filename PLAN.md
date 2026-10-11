@@ -42,6 +42,8 @@ A **Station** is a `coffee-shop station` process that runs in a Herdr pane for o
 
 Each Station runs `pi --mode rpc -e <coffee-shop extension>` next to the user's installed extensions. The extension (`extensions/coffee-shop.ts`) is compiled into the binary and written to `<state>/host/extensions/` at host start. It adds the `coffee_shop_ask` tool, which raises a `select` dialog that reaches the main agent as `needs_input`.
 
+Long prompts travel in per-Shot files, and a Shot may choose a model.
+
 The host relays Station reports to the main agent. Replies go to the Station, never to the host.
 
 Implemented: the `station` command and its fake-agent test (`src/station.odin`); the host listener on `<state>/host/activity.sock`, which relays Station reports to stdout as `station_report` events (`src/host.odin`); and Station panes launched by dispatch in place of raw `pi`. Reports longer than the activity limit are written to `<state>/host/reports/` and relayed in full; the socket carries only the `file:` path. Still to do: dialog timeouts.

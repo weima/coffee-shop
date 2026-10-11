@@ -48,7 +48,7 @@ run_cli :: proc(args: []string) -> int {
 		return run_host()
 	}
 	if command.kind == .Station {
-		return run_station(command.report_path, command.shot_id, command.brew_id, command.prompt, command.agent)
+		return run_station(command.report_path, command.shot_id, command.brew_id, command.prompt, command.prompt_file, command.agent)
 	}
 	if command.kind == .Server {
 		return run_server(command.state_root, command.repo)

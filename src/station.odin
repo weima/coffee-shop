@@ -61,7 +61,19 @@ Station_Relay :: struct {
 	display: ^Station_Display,
 }
 
-run_station :: proc(report_path, station_id, brew_id, prompt: string, agent: []string) -> int {
+run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file: string, agent: []string) -> int {
+	first_prompt := prompt
+	prompt_data: []byte
+	if prompt_file != "" {
+		read_err: os.Error
+		prompt_data, read_err = os.read_entire_file(prompt_file, context.allocator)
+		if read_err != nil {
+			write_error("could not read the prompt file")
+			return 1
+		}
+		first_prompt = string(prompt_data)
+	}
+	defer delete(prompt_data)
 	sender, sender_ok := activity_sender_open(report_path)
 	if !sender_ok {
 		write_error("could not reach the parent Coffee Shop")
@@ -92,7 +104,7 @@ run_station :: proc(report_path, station_id, brew_id, prompt: string, agent: []s
 		write_error("could not start the agent")
 		return 1
 	}
-	if !station_write_prompt(agent_in_write, prompt, "") {
+	if !station_write_prompt(agent_in_write, first_prompt, "") {
 		write_error("could not send the first prompt to the agent")
 		return 1
 	}
