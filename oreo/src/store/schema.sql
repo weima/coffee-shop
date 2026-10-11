@@ -1,4 +1,4 @@
--- Oreo database schema version 1. See ../../schema.md for the contract.
+-- Initial Oreo schema migration (version 1). See ../../schema.md for the contract.
 -- The store enables foreign_keys before applying this file.
 
 CREATE TABLE provider_profiles (

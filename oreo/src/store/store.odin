@@ -11,6 +11,15 @@ import sqlite "oreo:sqlite"
 SCHEMA_VERSION :: 1
 SCHEMA_V1 :: #load("schema.sql", string)
 
+@(private)
+Schema_Migration :: struct {
+	version: i64,
+	sql: string,
+}
+
+@(private)
+SCHEMA_MIGRATIONS :: [1]Schema_Migration{{version = 1, sql = SCHEMA_V1}}
+
 SESSION_OPEN :: "open"
 SESSION_CLOSING :: "closing"
 SESSION_CLOSED :: "closed"
@@ -120,19 +129,9 @@ open :: proc(path: string, allocator := context.allocator) -> (Store, Store_Erro
 	}
 	sqlite.error_destroy(&foreign_keys_err, allocator)
 
-	version, version_err := read_schema_version(database, allocator)
-	if version_err.kind != .None {
+	if err := install_schema(database, allocator); err.kind != .None {
 		close_store_database(&database, allocator)
-		return Store(nil), version_err
-	}
-	if version == 0 {
-		if err := install_schema(database, allocator); err.kind != .None {
-			close_store_database(&database, allocator)
-			return Store(nil), err
-		}
-	} else if version != SCHEMA_VERSION {
-		close_store_database(&database, allocator)
-		return Store(nil), store_error(.Unsupported_Schema, "unsupported Oreo database schema version", allocator)
+		return Store(nil), err
 	}
 
 	state, alloc_err := new(Store_State, allocator)
@@ -1052,33 +1051,76 @@ read_schema_version :: proc(database: sqlite.Database, allocator: runtime.Alloca
 }
 
 install_schema :: proc(database: sqlite.Database, allocator: runtime.Allocator) -> Store_Error {
-	database_copy := database
-	if err := store_sqlite_error(sqlite.begin(database, allocator), allocator); err.kind != .None {
+	migrations := SCHEMA_MIGRATIONS
+	return apply_schema_migrations(database, migrations[:], SCHEMA_VERSION, allocator)
+}
+
+@(private)
+apply_schema_migrations :: proc(
+	database: sqlite.Database,
+	migrations: []Schema_Migration,
+	supported_version: i64,
+	allocator := context.allocator,
+) -> Store_Error {
+	if err := validate_schema_migrations(migrations, supported_version, allocator); err.kind != .None {
 		return err
+	}
+	version, err := read_schema_version(database, allocator)
+	if err.kind != .None {
+		return err
+	}
+	if version < 0 || version > supported_version {
+		return store_error(.Unsupported_Schema, "unsupported Oreo database schema version", allocator)
+	}
+	for migration in migrations {
+		if migration.version > version {
+			if err := apply_schema_migration(database, migration, allocator); err.kind != .None {
+				return err
+			}
+			version = migration.version
+		}
+	}
+	if version != supported_version {
+		return store_error(.Corrupt_Data, "schema migration registry did not reach the supported version", allocator)
+	}
+	return Store_Error{}
+}
+
+@(private)
+validate_schema_migrations :: proc(migrations: []Schema_Migration, supported_version: i64, allocator: runtime.Allocator) -> Store_Error {
+	for migration, index in migrations {
+		if migration.version != i64(index+1) {
+			return store_error(.Corrupt_Data, "schema migrations must be ordered and contiguous from version 1", allocator)
+		}
+	}
+	if len(migrations) == 0 || i64(len(migrations)) != supported_version {
+		return store_error(.Corrupt_Data, "schema migration registry does not match the supported version", allocator)
+	}
+	return Store_Error{}
+}
+
+@(private)
+apply_schema_migration :: proc(database: sqlite.Database, migration: Schema_Migration, allocator: runtime.Allocator) -> Store_Error {
+	database_copy := database
+	if begin_err := store_sqlite_error(sqlite.begin(database, allocator), allocator); begin_err.kind != .None {
+		return begin_err
+	}
+	if execute_err := store_sqlite_error(sqlite.execute(database, migration.sql, allocator), allocator); execute_err.kind != .None {
+		store_rollback(&database_copy, allocator)
+		return execute_err
 	}
 	version, version_err := read_schema_version(database, allocator)
 	if version_err.kind != .None {
 		store_rollback(&database_copy, allocator)
 		return version_err
 	}
-	if version == SCHEMA_VERSION {
-		if err := store_sqlite_error(sqlite.commit(database, allocator), allocator); err.kind != .None {
-			store_rollback(&database_copy, allocator)
-			return err
-		}
-		return Store_Error{}
-	}
-	if version != 0 {
+	if version != migration.version {
 		store_rollback(&database_copy, allocator)
-		return store_error(.Unsupported_Schema, "unsupported Oreo database schema version", allocator)
+		return store_error(.Corrupt_Data, "schema migration did not set its declared user_version", allocator)
 	}
-	if err := store_sqlite_error(sqlite.execute(database, SCHEMA_V1, allocator), allocator); err.kind != .None {
+	if commit_err := store_sqlite_error(sqlite.commit(database, allocator), allocator); commit_err.kind != .None {
 		store_rollback(&database_copy, allocator)
-		return err
-	}
-	if err := store_sqlite_error(sqlite.commit(database, allocator), allocator); err.kind != .None {
-		store_rollback(&database_copy, allocator)
-		return err
+		return commit_err
 	}
 	return Store_Error{}
 }

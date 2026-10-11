@@ -5,6 +5,8 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
+TEMP_DIR :: "/private/tmp" when ODIN_OS == .Darwin else "/tmp"
+
 @(test)
 test_open_memory_uses_pinned_sqlite_and_closes_cleanly :: proc(t: ^testing.T) {
 	db, err := open_memory()
@@ -19,7 +21,7 @@ test_open_memory_uses_pinned_sqlite_and_closes_cleanly :: proc(t: ^testing.T) {
 
 @(test)
 test_open_file_creates_and_closes_database :: proc(t: ^testing.T) {
-	directory, temp_err := os.make_directory_temp("", "oreo-sqlite-*", context.allocator)
+	directory, temp_err := os.make_directory_temp(TEMP_DIR, "oreo-sqlite-*", context.allocator)
 	testing.expect_value(t, temp_err, os.Error(nil))
 	defer os.remove_all(directory)
 	defer delete(directory)
@@ -281,7 +283,7 @@ test_open_file_rejects_empty_and_nul_paths :: proc(t: ^testing.T) {
 
 @(test)
 test_open_file_failure_returns_sqlite_error :: proc(t: ^testing.T) {
-	directory, temp_err := os.make_directory_temp("", "oreo-sqlite-*", context.allocator)
+	directory, temp_err := os.make_directory_temp(TEMP_DIR, "oreo-sqlite-*", context.allocator)
 	testing.expect_value(t, temp_err, os.Error(nil))
 	defer os.remove_all(directory)
 	defer delete(directory)
