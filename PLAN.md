@@ -443,6 +443,8 @@ After the interactive workflow is verified, Coffee Shop may act as a human manag
 
 The high-automation flow. It is not part of v0.3.
 
+The plan has two steps. First, the flow is built on pi Stations, so it works at small scale now; its orchestration does not depend on the runtime. Last, Oreo is added as the runtime, once Oreo v0.1 passes its gates. Oreo makes hundreds of parallel agents cheap. Oreo has its own plan in `oreo/PLAN.md`.
+
 - Per-task commits: each task's changes become their own commit, made by a Pull after it passes Taste (see item 1 below). Blend then combines a Brew's commits into one.
 
 ### 1. Research, then execute in small commits
@@ -459,9 +461,12 @@ Names to avoid for these steps: research (use Cupping), task (use Shot), commit 
 
 **Gate.** A research-plus-execution Order runs end to end. Cuppers run with read-only tools and leave the Station unchanged, every Pull passes Taste before its commit, and Blend produces one commit whose tree matches the combined Pulls.
 
+**Gate.** The flow runs end to end on Stations first. Then the same run passes with Oreo as the runtime, with the same results.
+
 ### Open questions
 
 - Whether Dial-in is a Barista step only, or can also be a Worker step.
+- Which Oreo v0.1 gate must pass before v0.4 switches runtime.
 
 ## Scope guardrails
 
