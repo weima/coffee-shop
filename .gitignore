@@ -2,3 +2,7 @@
 .pi/
 /src.bin
 /coffee-shop
+
+# Odin build outputs (Odin is a hard requirement of Coffee Shop)
+*.bin
+probe-bin
