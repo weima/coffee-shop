@@ -4,6 +4,7 @@ import "core:bufio"
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
 import "core:sync"
 import "core:terminal/ansi"
@@ -322,10 +323,17 @@ station_is_turn_end :: proc(line: string) -> bool {
 	return ok && pi_event_string(root, "type") == "agent_end"
 }
 
+// Reports that fit the activity limit travel inline. A longer report is written to
+// <host>/reports/ and the socket carries "file:" plus its path, so the host can
+// relay the whole text. If the file cannot be written, the report is truncated.
 station_report :: proc(sender: ^Activity_Sender, brew_id, station_id, kind, description: string) {
 	text := description
 	if len(text) > ACTIVITY_MAX_DESCRIPTION {
 		text = text[:ACTIVITY_MAX_DESCRIPTION]
+		if path, ok := station_write_report_file(sender.path, brew_id, station_id, kind, description); ok {
+			text = fmt.tprintf("%s%s", STATION_FILE_PREFIX, path)
+			delete(path, context.allocator)
+		}
 	}
 	_ = activity_sender_send(sender, Activity_Message{
 		brew_id = brew_id,
@@ -334,4 +342,39 @@ station_report :: proc(sender: ^Activity_Sender, brew_id, station_id, kind, desc
 		description = text,
 		timestamp_ns = time.now()._nsec,
 	})
+}
+
+STATION_FILE_PREFIX :: "file:"
+
+station_write_report_file :: proc(socket_path, brew_id, station_id, kind, text: string) -> (path: string, ok: bool) {
+	if !valid_shot_id(station_id) || !valid_shot_id(brew_id) {
+		return "", false
+	}
+	switch kind {
+	case "turn_done", "needs_input", "agent_exited":
+	case:
+		return "", false
+	}
+
+	slash := strings.last_index_byte(socket_path, '/')
+	if slash < 0 {
+		return "", false
+	}
+	host_dir := socket_path[:slash]
+	reports_dir, _ := filepath.join({host_dir, "reports"}, context.temp_allocator)
+	if !os.is_directory(reports_dir) && os.make_directory_all(reports_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
+		return "", false
+	}
+	name := fmt.tprintf("%s-%s-%s-%s.txt", brew_id, station_id, kind, random_token(context.temp_allocator))
+	temp_path, _ := filepath.join({reports_dir, name}, context.temp_allocator)
+	if err := write_all_to_file(temp_path, transmute([]byte)text, os.O_WRONLY|os.O_CREATE|os.O_EXCL); err.kind != .None {
+		_ = os.remove(temp_path)
+		return "", false
+	}
+	owned_path, clone_err := strings.clone(temp_path, context.allocator)
+	if clone_err != nil {
+		_ = os.remove(temp_path)
+		return "", false
+	}
+	return owned_path, true
 }
