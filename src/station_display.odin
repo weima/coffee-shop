@@ -10,7 +10,7 @@ import "core:thread"
 import "core:time"
 
 STATION_FRAME_INTERVAL :: 150 * time.Millisecond
-STATION_STATUS_MAX :: 48
+STATION_STATUS_MAX :: 120
 STATION_TRACK :: 40 // columns the cat walks across
 STATION_SPRITE_WIDTH :: 11
 STATION_BLOCK_ROWS :: 5 // steam, ears, face with mug, legs, status
@@ -32,11 +32,15 @@ Station_Display :: struct {
 	mutex:   sync.Mutex,
 	live:    bool,
 	running: bool,
-	status:  string,
-	x:       int,
-	dir:     int,
-	step:    int,
-	drawn:   int,
+	status:          string,
+	turn_count:      int,
+	tool_count:      int,
+	active_tool_count: int,
+	started_at_ns:   i64,
+	x:               int,
+	dir:             int,
+	step:            int,
+	drawn:           int,
 }
 
 // Starts the display. When it is live, the screen is cleared and a header names the
@@ -46,7 +50,8 @@ station_display_start :: proc(display: ^Station_Display, title: string) {
 	station_styles_on = display.live
 	display.running = true
 	display.dir = 1
-	display.status = strings.clone("Starting")
+	display.started_at_ns = time.now()._nsec
+	display.status = strings.clone("thinking")
 	if display.live {
 		fmt.print(ansi.CSI + "2" + ansi.ED + ansi.CSI + ansi.CUP)
 		fmt.println(station_style(ansi.BOLD + ";" + ansi.FG_CYAN, title))
@@ -100,12 +105,14 @@ station_display_draw_locked :: proc(display: ^Station_Display) {
 	if display.drawn > 0 {
 		fmt.printf("\x1b[%dA", display.drawn)
 	}
-	lines := station_block_lines(display.x, display.step, display.dir > 0, display.status)
+	status := station_display_status_line(display, time.now()._nsec)
+	lines := station_block_lines(display.x, display.step, display.dir > 0, status)
 	// Steam is faint, the cat yellow, and the status label faint again.
 	styles := [STATION_BLOCK_ROWS]string{ansi.FAINT, ansi.FG_YELLOW, ansi.FG_YELLOW, ansi.FG_YELLOW, ansi.FAINT}
 	for line, i in lines {
 		fmt.printf("\r\x1b[2K%s\n", station_style(styles[i], line))
 	}
+	delete(status)
 	display.drawn = STATION_BLOCK_ROWS
 }
 
@@ -144,11 +151,51 @@ station_block_lines :: proc(x, step: int, facing_right: bool, status: string) ->
 	return lines
 }
 
+station_display_status_line :: proc(display: ^Station_Display, now_ns: i64) -> string {
+	elapsed := station_elapsed_label(display.started_at_ns, now_ns)
+	defer delete(elapsed)
+	return fmt.aprintf("%s · turn %d · %d tools · %s", display.status, display.turn_count, display.tool_count, elapsed)
+}
+
+station_elapsed_label :: proc(started_at_ns, now_ns: i64) -> string {
+	return activity_duration_label(activity_age_seconds(now_ns, started_at_ns))
+}
+
 station_display_status :: proc(display: ^Station_Display, text: string) {
 	sync.mutex_lock(&display.mutex)
 	defer sync.mutex_unlock(&display.mutex)
 	delete(display.status)
 	display.status = strings.clone(text)
+}
+
+station_display_progress :: proc(display: ^Station_Display, event_type, step: string) {
+	sync.mutex_lock(&display.mutex)
+	defer sync.mutex_unlock(&display.mutex)
+	switch event_type {
+	case "turn_start":
+		display.turn_count += 1
+		display.active_tool_count = 0
+		delete(display.status)
+		display.status = strings.clone("thinking")
+	case "tool_execution_start":
+		display.tool_count += 1
+		display.active_tool_count += 1
+		delete(display.status)
+		display.status = strings.clone(step)
+	case "tool_execution_end":
+		if display.active_tool_count > 0 {
+			display.active_tool_count -= 1
+		}
+		if display.active_tool_count == 0 {
+			delete(display.status)
+			display.status = strings.clone("thinking")
+		}
+	case "message_update":
+		if display.active_tool_count == 0 {
+			delete(display.status)
+			display.status = strings.clone("thinking")
+		}
+	}
 }
 
 // Prints a permanent line above the block, then draws the block again below it.
