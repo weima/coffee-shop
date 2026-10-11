@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:strings"
 import "core:testing"
 
@@ -30,6 +31,56 @@ test_station_block_truncates_long_status :: proc(t: ^testing.T) {
 	long := strings.repeat("x", STATION_STATUS_MAX + 20, context.temp_allocator)
 	lines := station_block_lines(0, 0, true, long)
 	testing.expect_value(t, len(lines[4]), STATION_STATUS_MAX)
+}
+
+@(test)
+test_station_progress_steps_describe_tool_calls :: proc(t: ^testing.T) {
+	command := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+	bash_line := fmt.tprintf(`{{"type":"tool_execution_start","toolName":"bash","args":{{"command":"%s"}}}}`, command)
+	cases := []struct{ line, want: string }{
+		{`{"type":"tool_execution_start","toolName":"read","args":{"path":"src/main.odin"}}`, "reading src/main.odin"},
+		{bash_line, fmt.tprintf("running %s", command[:STATION_BASH_COMMAND_MAX])},
+		{`{"type":"tool_execution_start","toolName":"edit","args":{"path":"src/station.odin"}}`, "editing src/station.odin"},
+		{`{"type":"tool_execution_start","toolName":"grep","args":{"pattern":"status"}}`, "searching"},
+		{`{"type":"tool_execution_start","toolName":"custom","args":{}}`, "running custom"},
+	}
+	for c in cases {
+		_, step, ok := station_progress_event(c.line)
+		testing.expect(t, ok, c.line)
+		testing.expect_value(t, step, c.want)
+	}
+}
+
+@(test)
+test_station_progress_counts_turns_and_tools :: proc(t: ^testing.T) {
+	display := Station_Display{started_at_ns = 1_000_000_000}
+	defer delete(display.status)
+	for line in ([]string{
+		`{"type":"turn_start"}`,
+		`{"type":"tool_execution_start","toolName":"read","args":{"path":"a"}}`,
+		`{"type":"tool_execution_end","toolName":"read"}`,
+		`{"type":"turn_start"}`,
+		`{"type":"tool_execution_start","toolName":"write","args":{"path":"b"}}`,
+		`{"type":"tool_execution_end","toolName":"write"}`,
+	}) {
+		event_type, step, ok := station_progress_event(line)
+		if ok {
+			station_display_progress(&display, event_type, step)
+		}
+	}
+	status := station_display_status_line(&display, 81_000_000_000)
+	defer delete(status)
+	testing.expect_value(t, display.turn_count, 2)
+	testing.expect_value(t, display.tool_count, 2)
+	testing.expect_value(t, display.active_tool_count, 0)
+	testing.expect_value(t, status, "thinking · turn 2 · 2 tools · 1m20s")
+}
+
+@(test)
+test_station_elapsed_label_formats_minutes_and_seconds :: proc(t: ^testing.T) {
+	label := station_elapsed_label(1_000_000_000, 81_000_000_000)
+	defer delete(label)
+	testing.expect_value(t, label, "1m20s")
 }
 
 @(test)

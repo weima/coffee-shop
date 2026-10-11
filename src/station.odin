@@ -140,6 +140,86 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file: strin
 	return 0
 }
 
+STATION_BASH_COMMAND_MAX :: 40
+
+// Extracts the display step before the shared Pi event parser consumes the line.
+station_progress_event :: proc(line: string) -> (event_type, step: string, ok: bool) {
+	value, parse_err := json.parse_string(line, .JSON, false, context.temp_allocator)
+	if parse_err != .None {
+		return
+	}
+	defer json.destroy_value(value, context.temp_allocator)
+	root, is_object := value.(json.Object)
+	if !is_object {
+		return
+	}
+	event_type = pi_event_string(root, "type")
+	switch event_type {
+	case "turn_start":
+		return event_type, "thinking", true
+	case "tool_execution_start":
+		step = station_tool_step(root)
+		if step == "" {
+			return "", "", false
+		}
+		return event_type, step, true
+	case "tool_execution_end", "message_update":
+		return event_type, "thinking", true
+	}
+	return "", "", false
+}
+
+station_tool_step :: proc(root: json.Object) -> string {
+	tool_name := pi_event_string(root, "toolName")
+	if tool_name == "" {
+		return ""
+	}
+	args: json.Object
+	if args_value, found := root["args"]; found {
+		if object, is_object := args_value.(json.Object); is_object {
+			args = object
+		}
+	}
+	switch tool_name {
+	case "read":
+		path := station_tool_argument(args, "path")
+		if path == "" {
+			return "reading"
+		}
+		return fmt.tprintf("reading %s", path)
+	case "edit", "write":
+		path := station_tool_argument(args, "path")
+		if path == "" {
+			return "editing"
+		}
+		return fmt.tprintf("editing %s", path)
+	case "bash":
+		command := station_tool_argument(args, "command")
+		if len(command) > STATION_BASH_COMMAND_MAX {
+			command = command[:STATION_BASH_COMMAND_MAX]
+		}
+		if command == "" {
+			return "running bash"
+		}
+		return fmt.tprintf("running %s", command)
+	case "grep", "find", "ls":
+		return "searching"
+	}
+	return fmt.tprintf("running %s", tool_name)
+}
+
+station_tool_argument :: proc(args: json.Object, key: string) -> string {
+	value, found := args[key]
+	if !found {
+		return ""
+	}
+	text, is_text := value.(json.String)
+	if !is_text {
+		return ""
+	}
+	return text
+}
+
 // UI requests are handled here. Other output updates progress, and a finished
 // turn is reported to the parent.
 station_handle_agent_line :: proc(
@@ -163,9 +243,10 @@ station_handle_agent_line :: proc(
 	station_dialog_clear(&relay.dialog)
 	sync.mutex_unlock(&relay.mutex)
 
-	if pi_event_consume(parser, text) && parser.last_description != "" {
-		station_display_status(relay.display, parser.last_description)
+	if event_type, step, ok := station_progress_event(text); ok {
+		station_display_progress(relay.display, event_type, step)
 	}
+	_ = pi_event_consume(parser, text)
 	if station_is_turn_end(text) {
 		report := parser.final_report
 		if report == "" {
