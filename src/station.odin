@@ -52,10 +52,11 @@ Station_Dialog :: struct {
 }
 
 Station_Relay :: struct {
-	input:  ^os.File,
-	agent:  ^os.File,
-	mutex:  sync.Mutex,
-	dialog: Station_Dialog,
+	input:   ^os.File,
+	agent:   ^os.File,
+	mutex:   sync.Mutex,
+	dialog:  Station_Dialog,
+	display: ^Station_Display,
 }
 
 run_station :: proc(report_path, station_id, brew_id, prompt: string, agent: []string) -> int {
@@ -65,6 +66,9 @@ run_station :: proc(report_path, station_id, brew_id, prompt: string, agent: []s
 		return 1
 	}
 	defer activity_sender_close(&sender)
+
+	display := new(Station_Display)
+	station_display_start(display)
 
 	agent_in_read, agent_in_write, in_err := os.pipe()
 	agent_out_read, agent_out_write, out_err := os.pipe()
@@ -90,11 +94,12 @@ run_station :: proc(report_path, station_id, brew_id, prompt: string, agent: []s
 		write_error("could not send the first prompt to the agent")
 		return 1
 	}
-	fmt.printfln("Station %s: sent the first prompt", station_id)
+	station_display_line(display, fmt.tprintf("Station %s: sent the first prompt", station_id))
 
 	relay := new(Station_Relay)
 	relay.input = os.stdin
 	relay.agent = agent_in_write
+	relay.display = display
 	_ = thread.create_and_start_with_data(relay, station_relay_replies, self_cleanup = true)
 
 	parser: Pi_Event_State
@@ -112,6 +117,8 @@ run_station :: proc(report_path, station_id, brew_id, prompt: string, agent: []s
 	}
 
 	state, wait_err := os.process_wait(process)
+	station_display_stop(display)
+	fmt.println("Agent exited.")
 	station_report(&sender, brew_id, station_id, "agent_exited", "Agent exited")
 	if wait_err != nil || !state.success {
 		return 1
@@ -143,14 +150,15 @@ station_handle_agent_line :: proc(
 	sync.mutex_unlock(&relay.mutex)
 
 	if pi_event_consume(parser, text) && parser.last_description != "" {
-		fmt.println(parser.last_description)
+		station_display_status(relay.display, parser.last_description)
 	}
 	if station_is_turn_end(text) {
 		report := parser.final_report
 		if report == "" {
 			report = "Turn finished without a text reply."
 		}
-		fmt.println(report)
+		station_display_line(relay.display, report)
+		station_display_status(relay.display, "Waiting for your reply")
 		station_report(sender, brew_id, station_id, "turn_done", report)
 	}
 }
@@ -189,7 +197,8 @@ station_dialog_request :: proc(
 	if method == "select" && len(options) > 0 {
 		question = fmt.tprintf("%s [%s]", title, strings.join(options[:], " / ", context.temp_allocator))
 	}
-	fmt.printfln("? %s (reply in this pane or from the main agent)", question)
+	station_display_line(relay.display, fmt.tprintf("? %s (reply in this pane or from the main agent)", question))
+	station_display_status(relay.display, "Waiting for an answer")
 
 	sync.mutex_lock(&relay.mutex)
 	station_dialog_clear(&relay.dialog)
