@@ -14,7 +14,7 @@ Oreo's first milestone is a provider-neutral, long-lived in-process host for tas
 | 3. Verify provider contracts | Confirm authorized Oreo client registrations, redirects, scopes, endpoints, and model/API capabilities for Codex and GitHub Copilot. | Provider-specific contracts are documented. No Pi client IDs or undocumented endpoints are assumed reusable. |
 | 4. Add provider auth and requests | Implement login/re-login handoff, credential storage, refresh, provider requests, streaming/tool-call parsing, and normalized errors. | Fake-server tests cover success and failure paths without live credentials; approved manual smoke tests confirm each provider. |
 | 5. Measure worker scale | Exercise normal and stress workloads with the worker pool and event delivery. | Record throughput, queue behavior, worker count, and memory for about 25 concurrent work items and at least 1,000 queued/retained work items; no target is set for simultaneously active threads. |
-| 6. Integrate with Coffee Shop | Consume Oreo through its library boundary while Coffee Shop retains task decomposition, worktrees, and durable task state. | Fake-provider end-to-end tests pass; adoption does not require an external agent CLI process per session. |
+| 6. Integrate with Coffee Shop | Consume Oreo through its library boundary while Coffee Shop retains task decomposition, worktrees, and durable task state. The Copilot route is direct (no Copilot SDK or CLI). | Fake-provider end-to-end tests pass; adoption does not require an external agent CLI process per session. |
 | 7. Prepare extraction | Make package paths, build instructions, notices, and tests independent of Coffee Shop-specific code. | Oreo builds and tests from its own repository and Coffee Shop consumes only the public API. |
 
 ## Current progress
@@ -22,6 +22,11 @@ Oreo's first milestone is a provider-neutral, long-lived in-process host for tas
 - The SQLite amalgamation and binding are implemented; the store applies source-controlled schema migrations in version order, persists/retrieves metadata and ordered records, validates work-item transitions, and coordinates session-close cancellation.
 - `cd oreo && just test` passes nine binding tests and eight store tests against bundled SQLite on macOS. Linux verification and worker execution remain pending.
 - The full Coffee Shop test suite passes after extending an E2E activity readiness window for parallel test load. The provider-neutral host, worker pool, and task lifecycle are the next implementation slices.
+- **Next session:**
+  - Register the GitHub OAuth App "Oreo" under the developer's account, using the callback suggestion (`http://127.0.0.1/callback`), with device flow enabled.
+  - Smoke test: device login with the app's client ID and no scopes, then the Copilot token exchange, then one model request. Record the results in the docs.
+  - Build the auth slice only after the smoke test passes.
+  - Codex: tabled until the developer logs in and chooses a plan.
 
 ## Confirmed requirements
 
@@ -36,7 +41,7 @@ Oreo's first milestone is a provider-neutral, long-lived in-process host for tas
 - **Behavior:** mirror Pi's relevant agent-loop defaults and behavior, and match its `read`, `write`, and `execute` tool behavior. Pi remains a reference, never a runtime dependency.
 - **Login UX:** expose a copyable URL so the user can authenticate manually. Provider-specific challenge details remain subject to contract verification.
 - **Platforms:** Linux, including WSL, and macOS are initial targets. Windows is out of scope.
-- **Accounts:** keep work and personal credentials side by side in Oreo-owned storage; never share Pi credentials.
+- **Accounts:** keep work and personal credentials side by side in Oreo-owned storage; never share Pi credentials. Exception until release: personal-account logins may be imported from another harness's store with `OREO_PERSONAL_IMPORT=codex,copilot` (see [architecture](architecture.md#personal-import-exception)).
 
 ## Implementation work and later gates
 
