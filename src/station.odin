@@ -61,7 +61,7 @@ Station_Relay :: struct {
 	display: ^Station_Display,
 }
 
-run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file: string, agent: []string) -> int {
+run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_kind: string, agent: []string) -> int {
 	first_prompt := prompt
 	prompt_data: []byte
 	if prompt_file != "" {
@@ -134,10 +134,34 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file: strin
 	station_display_stop(display)
 	fmt.println("Agent exited.")
 	station_report(&sender, brew_id, station_id, "agent_exited", "Agent exited")
+	if shot_kind == SHOT_KIND_RESEARCH && !station_research_clean(&sender, brew_id, station_id) {
+		return 1
+	}
 	if wait_err != nil || !state.success {
 		return 1
 	}
 	return 0
+}
+
+// A research Station must leave its worktree as it found it. Git reports any change,
+// and a failed check counts as incomplete too. The report carries counts, not paths.
+station_research_clean :: proc(sender: ^Activity_Sender, brew_id, station_id: string) -> bool {
+	state, stdout, _, err := os.process_exec(os.Process_Desc{command = {"git", "status", "--porcelain", "-uall"}}, context.temp_allocator)
+	if err != nil || !state.success {
+		station_report(sender, brew_id, station_id, "incomplete", "Cupping Station could not check its changes")
+		return false
+	}
+	changed := 0
+	for line in strings.split_lines(string(stdout), context.temp_allocator) {
+		if line != "" {
+			changed += 1
+		}
+	}
+	if changed == 0 {
+		return true
+	}
+	station_report(sender, brew_id, station_id, "incomplete", fmt.tprintf("Cupping Station changed %d paths", changed))
+	return false
 }
 
 STATION_BASH_COMMAND_MAX :: 40

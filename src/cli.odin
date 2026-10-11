@@ -25,6 +25,7 @@ Command :: struct {
 	report_path: string,
 	prompt: string,
 	prompt_file: string,
+	shot_kind: string,
 	agent: []string,
 }
 
@@ -48,6 +49,7 @@ Station_Arguments :: struct {
 	brew:        string `args:"required" usage:"Parent Brew or request identifier."`,
 	prompt:      string `usage:"First prompt for the agent."`,
 	prompt_file: string `usage:"File containing the first prompt for the agent."`,
+	kind:        string `usage:"Shot kind: execute (default) or research."`,
 }
 
 Worker_Arguments :: struct {
@@ -145,11 +147,14 @@ parse_station_args :: proc(args: []string) -> (command: Command, err: string) {
 	if prompt_given == prompt_file_given {
 		return Command{kind = .Help}, "station needs exactly one of --prompt or --prompt-file"
 	}
-	options: Station_Arguments
+	options := Station_Arguments{kind = SHOT_KIND_EXECUTE}
 	if flags.parse(&options, args[:split], .Unix) != nil || prompt_file_given && options.prompt_file == "" {
 		return Command{kind = .Help}, "invalid station arguments"
 	}
-	return Command{kind = .Station, report_path = options.report, shot_id = options.station, brew_id = options.brew, prompt = options.prompt, prompt_file = options.prompt_file, agent = args[split+1:]}, ""
+	if !valid_shot_kind(options.kind) {
+		return Command{kind = .Help}, "station kind must be execute or research"
+	}
+	return Command{kind = .Station, report_path = options.report, shot_id = options.station, brew_id = options.brew, prompt = options.prompt, prompt_file = options.prompt_file, shot_kind = options.kind, agent = args[split+1:]}, ""
 }
 
 has_help_flag :: proc(args: []string) -> bool {

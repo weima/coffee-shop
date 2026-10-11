@@ -255,6 +255,7 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 	ids := make([dynamic]string, context.temp_allocator)
 	prompts := make([dynamic]string, context.temp_allocator)
 	models := make([dynamic]string, context.temp_allocator)
+	kinds := make([dynamic]string, context.temp_allocator)
 	for shot_value in shots {
 		shot, is_shot := shot_value.(json.Object)
 		id, id_ok := host_string(shot, "id")
@@ -278,16 +279,26 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 				return
 			}
 		}
+		kind := SHOT_KIND_EXECUTE
+		if kind_value, kind_found := shot["kind"]; kind_found {
+			kind_ok := false
+			kind, kind_ok = kind_value.(json.String)
+			if !kind_ok || !valid_shot_kind(kind) {
+				host_emit(Host_Event{type = "error", request_id = request_id, shot_id = id, reason = "shot kind must be execute or research"})
+				return
+			}
+		}
 		append(&ids, id)
 		append(&prompts, prompt)
 		append(&models, model)
+		append(&kinds, kind)
 	}
 
 	host_emit(Host_Event{type = "dispatch_accepted", request_id = request_id})
-	host_start_sessions(repo, request_id, ids[:], prompts[:], models[:])
+	host_start_sessions(repo, request_id, ids[:], prompts[:], models[:], kinds[:])
 }
 
-host_start_sessions :: proc(repo, request_id: string, ids, prompts, models: []string) {
+host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, kinds: []string) {
 	state_root, state_err := default_state_root(context.temp_allocator)
 	if state_err != "" {
 		for id in ids {
@@ -347,7 +358,7 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models: []st
 			pane_id = tab.result.root_pane.pane_id
 		}
 
-		command := host_station_command(host_station_executable, host_report_socket, host_extension_path, id, request_id, prompt_path, models[i])
+		command := host_station_command(host_station_executable, host_report_socket, host_extension_path, id, request_id, prompt_path, models[i], kinds[i])
 		if run_err := herdr_run_worker(herdr, pane_id, command); run_err != "" {
 			host_session_failed(request_id, id, fmt.tprintf("could not start the Station: %s", run_err))
 			continue
@@ -386,7 +397,8 @@ host_reply :: proc(root: json.Object, request_id: string) {
 
 // The Station runs in the Herdr pane and launches the agent. Paths and the
 // optional model are quoted; the IDs are already restricted to safe characters.
-host_station_command :: proc(executable, report, extension, shot_id, request_id, prompt_file, model: string) -> string {
+// A research Shot gets read-only tools; the Station then checks that it changed nothing.
+host_station_command :: proc(executable, report, extension, shot_id, request_id, prompt_file, model, kind: string) -> string {
 	quoted_executable := shell_quote(executable)
 	defer delete(quoted_executable)
 	quoted_report := shell_quote(report)
@@ -401,11 +413,22 @@ host_station_command :: proc(executable, report, extension, shot_id, request_id,
 		defer delete(quoted_model)
 		model_argument = fmt.tprintf(" --model %s", quoted_model)
 	}
-	return fmt.tprintf("%s station --report %s --station %s --brew %s --prompt-file %s -- pi --mode rpc%s -e %s", quoted_executable, quoted_report, shot_id, request_id, quoted_prompt_file, model_argument, quoted_extension)
+	tools_argument := ""
+	if kind == SHOT_KIND_RESEARCH {
+		tools_argument = " --tools read,grep,find,ls"
+	}
+	return fmt.tprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s -- pi --mode rpc%s%s -e %s", quoted_executable, kind, quoted_report, shot_id, request_id, quoted_prompt_file, tools_argument, model_argument, quoted_extension)
 }
 
 host_session_failed :: proc(request_id, shot_id, reason: string) {
 	host_emit(Host_Event{type = "session_failed", request_id = request_id, shot_id = shot_id, reason = reason})
+}
+
+SHOT_KIND_EXECUTE :: "execute"
+SHOT_KIND_RESEARCH :: "research"
+
+valid_shot_kind :: proc(kind: string) -> bool {
+	return kind == SHOT_KIND_EXECUTE || kind == SHOT_KIND_RESEARCH
 }
 
 valid_host_model :: proc(model: string) -> bool {

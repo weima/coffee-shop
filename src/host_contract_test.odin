@@ -117,6 +117,71 @@ test_foreground_host_accepts_dispatches_and_starts_sessions :: proc(t: ^testing.
 	testing.expect(t, !strings.contains(calls, "shot-c"), "invalid model must not call Herdr")
 }
 
+// A research Shot gets read-only tools, an execute Shot does not, and an unknown kind
+// is refused before any worktree or Herdr call for that dispatch.
+@(test)
+test_foreground_host_passes_shot_kind_and_rejects_unknown_kind :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(HOST_TEST_TEMP_DIR, "coffee-shop-host-kind-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	repo := fmt.aprintf("%s/beans", root)
+	bin := fmt.aprintf("%s/bin", root)
+	state := fmt.aprintf("%s/state", root)
+	defer delete(repo)
+	defer delete(bin)
+	defer delete(state)
+	rwx := os.Permissions{.Read_User, .Write_User, .Execute_User}
+	testing.expect_value(t, os.make_directory_all(repo), os.Error(nil))
+	testing.expect_value(t, os.make_directory_all(bin), os.Error(nil))
+	testing.expect_value(t, os.write_entire_file(fmt.tprintf("%s/herdr", bin), HOST_FAKE_HERDR, rwx), os.Error(nil))
+
+	git_state, _, git_stderr, git_err := os.process_exec(os.Process_Desc{
+		command = {"sh", "-c", `git init -q "$1" && git -C "$1" -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m init`, "host-kind-test", repo},
+	}, context.allocator)
+	defer delete(git_stderr)
+	testing.expect_value(t, git_err, os.Error(nil))
+	testing.expect(t, git_state.success, string(git_stderr))
+
+	input_path := fmt.aprintf("%s/requests.ndjson", root)
+	defer delete(input_path)
+	input := fmt.aprintf(`{{"type":"dispatch","request_id":"order-5","repo":"%s","recipe":{{"order":"research order","shots":[{{"id":"shot-r","prompt":"read the code","kind":"research"}},{{"id":"shot-e","prompt":"make the change","kind":"execute"}}]}}}}
+{{"type":"dispatch","request_id":"order-6","repo":"%s","recipe":{{"order":"bad kind","shots":[{{"id":"shot-w","prompt":"write a file","kind":"write"}}]}}}}
+{{"type":"shutdown","request_id":"shutdown-1"}}
+`, repo, repo)
+	defer delete(input)
+	testing.expect_value(t, os.write_entire_file(input_path, input, rwx), os.Error(nil))
+
+	binary := build_test_binary(t, root)
+	defer delete(binary)
+	state_run, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
+		command = {"sh", "-c", `export PATH="$2:$PATH" CS_STATE_DIR="$3" FAKE_HERDR_DIR="$4"; cat "$1" | "$5" host`, "host-kind-test", input_path, bin, state, root, binary},
+	}, context.allocator)
+	defer delete(stdout)
+	defer delete(stderr)
+	testing.expect_value(t, exec_err, os.Error(nil))
+	testing.expect(t, state_run.success, string(stderr))
+	out := string(stdout)
+	testing.expect(t, strings.contains(out, `{"type":"session_started","request_id":"order-5","shot_id":"shot-r"`), out)
+	testing.expect(t, strings.contains(out, `{"type":"session_started","request_id":"order-5","shot_id":"shot-e"`), out)
+	testing.expect(t, strings.contains(out, `{"type":"error","request_id":"order-6","shot_id":"shot-w","reason":"shot kind must be execute or research"}`), out)
+	testing.expect(t, !strings.contains(out, `{"type":"dispatch_accepted","request_id":"order-6"}`), out)
+	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-6/stations/shot-w", state)), "unknown kind must not create a worktree")
+
+	calls_data, calls_err := os.read_entire_file(fmt.tprintf("%s/calls.log", root), context.allocator)
+	defer delete(calls_data)
+	testing.expect_value(t, calls_err, os.Error(nil))
+	calls := string(calls_data)
+	testing.expect(t, !strings.contains(calls, "shot-w"), "unknown kind must not call Herdr")
+	testing.expect(t, strings.contains(calls, "station --kind research --report") && strings.contains(calls, "-- pi --mode rpc --tools read,grep,find,ls -e"), calls)
+	testing.expect(t, strings.contains(calls, "station --kind execute --report") && strings.contains(calls, "-- pi --mode rpc -e"), calls)
+	testing.expect_value(t, strings.count(calls, "--tools"), 1)
+}
+
 HOST_TEST_TEMP_DIR :: "/private/tmp" when ODIN_OS == .Darwin else "/tmp"
 
 // Records each call and answers the two Herdr commands the host uses.

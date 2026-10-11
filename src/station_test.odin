@@ -398,3 +398,109 @@ test_station_writes_long_report_to_file :: proc(t: ^testing.T) {
 	testing.expect_value(t, read_err, os.Error(nil))
 	testing.expect_value(t, len(report), 3000)
 }
+
+// Fake agent that writes changed.txt in its working directory, then exits when stdin closes.
+FAKE_WRITING_AGENT :: `#!/bin/sh
+printf 'changed\n' > changed.txt
+cat > /dev/null
+`
+
+// Fake agent that changes nothing and exits when stdin closes.
+FAKE_SILENT_AGENT :: `#!/bin/sh
+cat > /dev/null
+`
+
+Station_Kind_Run :: struct {
+	exit_code:  int,
+	incomplete: string, // empty when no incomplete report arrived; owned by the caller
+}
+
+// Runs one Station of the given kind inside a fresh Git repository, the Station's
+// working directory, and collects the incomplete report, if any.
+run_station_kind :: proc(t: ^testing.T, root, kind, agent_script: string) -> (run: Station_Kind_Run) {
+	repo, _ := filepath.join({root, "beans"}, context.temp_allocator)
+	socket, _ := filepath.join({root, "report.sock"}, context.temp_allocator)
+	agent, _ := filepath.join({root, "agent.sh"}, context.temp_allocator)
+	testing.expect_value(t, os.make_directory_all(repo), os.Error(nil))
+	testing.expect_value(t, os.write_entire_file(agent, agent_script, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
+	init_state, _, init_stderr, init_err := os.process_exec(os.Process_Desc{
+		command = {"git", "init", "-q", repo},
+	}, context.allocator)
+	defer delete(init_stderr)
+	testing.expect_value(t, init_err, os.Error(nil))
+	testing.expect(t, init_state.success, string(init_stderr))
+
+	binary := build_test_binary(t, root)
+	defer delete(binary)
+	listener, listener_ok := activity_listener_open(socket)
+	testing.expect(t, listener_ok)
+	defer activity_listener_close(&listener)
+
+	state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
+		command = {"sh", "-c", `cd "$1" && "$2" station --kind "$3" --report "$4" --station shot-a --brew order-1 --prompt "hi" -- sh "$5" </dev/null`, "station-kind-test", repo, binary, kind, socket, agent},
+	}, context.allocator)
+	defer delete(stdout)
+	defer delete(stderr)
+	testing.expect_value(t, exec_err, os.Error(nil))
+	run.exit_code = state.exit_code
+
+	for {
+		result := activity_listener_receive(&listener)
+		if result.kind == .Unavailable {
+			break
+		}
+		if result.kind == .Message && result.message.kind == "incomplete" {
+			run.incomplete = strings.clone(result.message.description)
+		}
+		destroy_struct(&result.message)
+	}
+	return
+}
+
+@(test)
+test_research_station_reports_incomplete_when_agent_writes :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-research-write-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	run := run_station_kind(t, root, "research", FAKE_WRITING_AGENT)
+	defer delete(run.incomplete)
+	testing.expect_value(t, run.incomplete, "Cupping Station changed 1 paths")
+	testing.expect_value(t, run.exit_code, 1)
+}
+
+@(test)
+test_research_station_sends_no_incomplete_when_agent_writes_nothing :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-research-clean-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	run := run_station_kind(t, root, "research", FAKE_SILENT_AGENT)
+	defer delete(run.incomplete)
+	testing.expect_value(t, run.incomplete, "")
+	testing.expect_value(t, run.exit_code, 0)
+}
+
+@(test)
+test_execute_station_sends_no_incomplete_when_agent_writes :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-execute-write-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	run := run_station_kind(t, root, "execute", FAKE_WRITING_AGENT)
+	defer delete(run.incomplete)
+	testing.expect_value(t, run.incomplete, "")
+	testing.expect_value(t, run.exit_code, 0)
+}
