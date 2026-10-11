@@ -47,6 +47,8 @@ Host_Event :: struct {
 	kind:        string `json:"kind,omitempty"`,
 	description: string `json:"description,omitempty"`,
 	reason:      string `json:"reason,omitempty"`,
+	branch:      string `json:"branch,omitempty"`,
+	commit:      string `json:"commit,omitempty"`,
 }
 
 // Foreground host: reads one JSON request per line from stdin and answers on
@@ -218,6 +220,8 @@ host_handle_line :: proc(line: string) -> bool {
 		host_dispatch(root, request_id)
 	case "reply":
 		host_reply(root, request_id)
+	case "blend":
+		host_blend(root, request_id)
 	case "shutdown":
 		host_write_line(fmt.tprintf(`{{"type":"stopped","request_id":"%s"}}`, request_id))
 		return true
@@ -477,6 +481,20 @@ host_station_command :: proc(executable, report, extension, shot_id, request_id,
 		taste_argument = fmt.tprintf(" --taste %s --message %s", quoted_taste, quoted_message)
 	}
 	return fmt.tprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- pi --mode rpc%s%s -e %s", quoted_executable, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, tools_argument, model_argument, quoted_extension)
+}
+
+// A Blend request is validated in full before any Git call. Its repository and
+// branch checks run next, and then blend_run does the work.
+host_blend :: proc(root: json.Object, request_id: string) {
+	request, reason := blend_parse(root)
+	if reason == "" {
+		reason = blend_check_repository(request)
+	}
+	if reason != "" {
+		host_emit(Host_Event{type = "error", request_id = request_id, reason = reason})
+		return
+	}
+	blend_run(request_id, request)
 }
 
 host_session_failed :: proc(request_id, shot_id, reason: string) {
