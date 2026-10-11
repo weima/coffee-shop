@@ -65,6 +65,16 @@ The developer made these decisions on 2026-10-10, after the third round. Items F
 
 Still open after the fourth round: the bridge spike and process model (pending the spike); the delivery decision (extension now; library and executable later); whether a session also chooses its work or personal account; the relation between the Coffee Shop config file and `~/.oreo/config.json`; whether Codex stays a first provider to test.
 
+## Model source (2026-10-11)
+
+The developer approved this decision on 2026-10-11. It adds to the earlier sections and does not change them. No earlier statement in these documents uses a static model catalog, so none is marked superseded.
+
+1. **Live model store.** Oreo reads model metadata from pi's live model store, not from a bundled static catalog. For GitHub Copilot the store is `~/.pi/agent/models-store.json`, under the key `github-copilot`, which holds a list of models. Each model has its id, name, api, baseUrl, headers, contextWindow, maxTokens, cost, compat flags, and thinking settings.
+2. **Read only.** Reading the store is metadata only. Oreo never writes it. pi owns refresh. Oreo reads whatever pi last wrote, the same way it relies on pi for auth.
+3. **Reason.** The bundled catalog (pi-ai's `data/github-copilot.json`, version 1.1.0) lacks `claude-haiku-5.5`. The live store and `pi --list-models` both have it. A static list goes stale, and the live store is the list pi itself uses.
+4. **Evidence.** The Odin probe made six real calls, all returning 200. The request for `claude-haiku-5.5` matched the live entry in model id, API (`anthropic-messages`), base URL, and the four Copilot headers with their values. The live entry has `contextWindow` 1,000,000, `maxTokens` 128,000, and compat flags `supportsTemperature` false and `forceAdaptiveThinking` true.
+5. **Open: thinking-enabled requests.** Requests with thinking enabled (`forceAdaptiveThinking`) have **not** been tested. Which store fields Oreo must consume is decided when the request builder is written. Recorded as an open item in [PLAN.md](PLAN.md).
+
 ## System boundary
 
 ![Oreo system architecture, including Oreo the American Shorthair mascot](assets/architecture-diagram.svg)
