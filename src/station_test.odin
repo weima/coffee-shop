@@ -104,6 +104,55 @@ test_station_reports_each_turn_and_relays_replies :: proc(t: ^testing.T) {
 	_ = fmt.tprintf
 }
 
+@(test)
+test_station_reads_prompt_file_and_sends_exact_text :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-station-file-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	socket, _ := filepath.join({root, "report.sock"})
+	prompt_path, _ := filepath.join({root, "prompt.md"})
+	agent, _ := filepath.join({root, "agent.sh"})
+	received, _ := filepath.join({root, "received.log"})
+	defer delete(socket)
+	defer delete(prompt_path)
+	defer delete(agent)
+	defer delete(received)
+	prompt := "first line\nit's from a file\nlast line"
+	testing.expect_value(t, os.write_entire_file(prompt_path, prompt, os.Permissions{.Read_User, .Write_User}), os.Error(nil))
+	prompt_check, prompt_check_err := os.read_entire_file(prompt_path, context.allocator)
+	defer delete(prompt_check)
+	testing.expect_value(t, prompt_check_err, os.Error(nil))
+	testing.expect_value(t, string(prompt_check), prompt)
+	testing.expect_value(t, os.write_entire_file(agent, FAKE_STATION_AGENT, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
+
+	binary := build_test_binary(t, root)
+	defer delete(binary)
+	listener, listener_ok := activity_listener_open(socket)
+	testing.expect(t, listener_ok)
+	defer activity_listener_close(&listener)
+	parsed, parse_err := parse_args([]string{"station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt-file", prompt_path, "--", "sh", agent, received})
+	testing.expect_value(t, parse_err, "")
+	testing.expect_value(t, parsed.prompt, "")
+	testing.expect_value(t, parsed.prompt_file, prompt_path)
+
+	state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
+		command = {"sh", "-c", `printf '%s\n' "second question" | "$5" station --report "$1" --station shot-a --brew order-1 --prompt-file "$2" -- sh "$3" "$4"`, "station-file-test", socket, prompt_path, agent, received, binary},
+	}, context.allocator)
+	defer delete(stdout)
+	defer delete(stderr)
+	testing.expect_value(t, exec_err, os.Error(nil))
+	testing.expect(t, state.success, string(stderr))
+	log_data, log_err := os.read_entire_file(received, context.allocator)
+	defer delete(log_data)
+	testing.expect_value(t, log_err, os.Error(nil))
+	testing.expect(t, strings.contains(string(log_data), `{"type":"prompt","message":"first line\nit's from a file\nlast line"}`), string(log_data))
+}
+
 // Fake agent that asks a select dialog for its first prompt and answers the reply
 // with agent_end. Every stdin line is logged to $1.
 FAKE_DIALOG_AGENT :: `#!/bin/sh
