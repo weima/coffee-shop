@@ -232,6 +232,81 @@ printf '%s\n' '{"protocol_version":1,"imports":["core:testing"],"test_source":"@
 }
 
 @(test)
+test_missing_justfile_is_created_and_runs_package_check_and_tests :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp("", "rachel-just-*", context.allocator)
+	testing.expect(t, make_err == nil)
+	defer {
+		_ = os.remove_all(root)
+		delete(root)
+	}
+	package_dir, package_path_err := filepath.join({root, "pkg with spaces"})
+	testing.expect(t, package_path_err == nil)
+	defer delete(package_dir)
+	_ = os.make_directory(package_dir)
+	module_path, path_err := filepath.join({package_dir, "module.odin"})
+	testing.expect(t, path_err == nil)
+	defer delete(module_path)
+	test_path, test_path_err := filepath.join({package_dir, "module_test.odin"})
+	testing.expect(t, test_path_err == nil)
+	defer delete(test_path)
+	permissions := os.Permissions{.Read_User, .Write_User}
+	_ = os.write_entire_file_from_string(module_path, "package sample\nvalue :: 7\n", permissions)
+	_ = os.write_entire_file_from_string(
+		test_path,
+		"package sample\nimport \"core:testing\"\n@(test)\ntest_value :: proc(t: ^testing.T) { testing.expect_value(t, value, 7) }\n",
+		permissions,
+	)
+
+	justfile, ensure_err := ensure_project_justfile(root, context.allocator)
+	defer justfile_destroy(&justfile, context.allocator)
+	testing.expect_value(t, ensure_err, os.Error(nil))
+	testing.expect(t, justfile.generated)
+	check_result := run_just_recipe(justfile, root, "check", package_dir, context.allocator)
+	defer odin_command_result_destroy(&check_result, context.allocator)
+	testing.expect(t, odin_command_succeeded(check_result), transmute(string)check_result.stderr)
+	test_result := run_just_recipe(justfile, root, "test", package_dir, context.allocator)
+	defer odin_command_result_destroy(&test_result, context.allocator)
+	testing.expect(t, odin_test_result_success(Odin_Command_Result{
+		state = test_result.state,
+		stdout = test_result.stdout,
+		stderr = test_result.stderr,
+		process_error = test_result.process_error,
+	}), transmute(string)test_result.stderr)
+}
+
+@(test)
+test_existing_justfile_is_never_overwritten :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp("", "rachel-existing-just-*", context.allocator)
+	testing.expect(t, make_err == nil)
+	defer {
+		_ = os.remove_all(root)
+		delete(root)
+	}
+	path, path_err := filepath.join({root, "justfile"})
+	testing.expect(t, path_err == nil)
+	defer delete(path)
+	original := "check:\n    echo custom-check\n\ntest:\n    echo custom-test\n"
+	_ = os.write_entire_file_from_string(path, original, os.Permissions{.Read_User, .Write_User})
+
+	justfile, ensure_err := ensure_project_justfile(root, context.allocator)
+	defer justfile_destroy(&justfile, context.allocator)
+	testing.expect_value(t, ensure_err, os.Error(nil))
+	testing.expect(t, !justfile.generated)
+	check_result := run_just_recipe(justfile, root, "check", "", context.allocator)
+	defer odin_command_result_destroy(&check_result, context.allocator)
+	testing.expect(t, odin_command_succeeded(check_result))
+	testing.expect(t, strings.contains(transmute(string)check_result.stdout, "custom-check"))
+	test_result := run_just_recipe(justfile, root, "test", "", context.allocator)
+	defer odin_command_result_destroy(&test_result, context.allocator)
+	testing.expect(t, odin_command_succeeded(test_result))
+	testing.expect(t, strings.contains(transmute(string)test_result.stdout, "custom-test"))
+	contents, read_err := os.read_entire_file(path, context.allocator)
+	defer delete(contents)
+	testing.expect_value(t, read_err, os.Error(nil))
+	testing.expect_value(t, transmute(string)contents, original)
+}
+
+@(test)
 test_test_file_classifier_flags_production_procs_not_odin_tests :: proc(t: ^testing.T) {
 	production := "package sample\nmemory_usage_test :: proc() {}\n"
 	real_test := "package sample\n@(test)\nverify_memory :: proc(t: ^testing.T) {}\n"

@@ -4,11 +4,11 @@ Implement the smallest useful foreground watcher first. Keep generation and proc
 
 ## Current progress
 
-- Rachel polls every 250 ms, debounces saves for 350 ms, and runs package-level `odin check -no-entry-point .`.
-- Packages containing `*_test.odin` run `odin test .`; test failures and allocator-leak diagnostics become errors.
+- Rachel polls every 250 ms, debounces saves for 350 ms, and runs the watched project's `just check` and `just test` recipes.
+- If the target has no root `justfile`, `Justfile`, or `.justfile`, Rachel creates a starter with `check` and `test` recipes. Existing project recipes are run as-is and never replaced; the contract is documented in [architecture.md](architecture.md).
 - Changed production files get a companion test file without overwriting an existing one. Rachel warns about new procedures without intent comments and production-looking content in `*_test.odin` files.
 - A configured `RACHEL_TEST_GENERATOR` executable receives a versioned JSON request over stdin and returns proposed test source as JSON over stdout. Rachel validates the response, writes only the matching test file, and runs the package tests. No harness is bundled.
-- `cd tools/rachel && just test` passes 12 tests without allocator-leak warnings; `just build` passes. Manual temporary-project smoke checks cover watcher feedback, warnings, companion creation, and a fake-generator round trip.
+- `cd tools/rachel && just test` passes 14 tests without allocator-leak warnings; `just build` passes. Manual temporary-project smoke checks cover watcher feedback, warnings, companion creation, and a fake-generator round trip.
 - Linux verification and a real user-configured generator wrapper remain outstanding.
 
 ## Phase 0 — Resolve implementation gates
@@ -23,7 +23,7 @@ Implement the smallest useful foreground watcher first. Keep generation and proc
 
 - Add `rachel <directory>` CLI validation and foreground lifecycle.
 - Watch `.odin` saves and coalesce events with a quiet-period debounce.
-- Resolve changed files to package directories; run `odin check -no-entry-point .` through an argv-based process boundary.
+- Resolve changed files to package directories; invoke `just check` and `just test` through an argv-based process boundary.
 - Capture exit status and output, retain compiler errors visibly, and recover after the next save.
 - Serialize validations per package so process runs cannot race over one edit.
 
@@ -56,15 +56,18 @@ Implement the smallest useful foreground watcher first. Keep generation and proc
 
 **Gate:** focused and full tests pass without allocator leak warnings on both platforms; no test contacts a live AI service.
 
-## Phase 5 — Dogfood Rachel on Oreo
+## Candidate Phase 5 — Evaluate Rachel-guided Oreo development
+
+This is an opt-in trial, not a replacement for the existing AI workflow. Use one Oreo vertical slice to assess whether Rachel's save-level feedback makes development more reliable and easier to supervise.
 
 - Before any edit under `oreo/`, run Rachel's `just test` and `just build`, then start Rachel watching the Oreo directory in a dedicated Herdr tab. Keep a separate Herdr tab for Git operations and read Rachel's output with `herdr pane read` or `pane wait-output`.
 - Leave `RACHEL_TEST_GENERATOR` unset. The coding agent authors each focused TDD test first, observes Rachel's red result, then implements the smallest passing change.
-- Let Rachel run `odin check` and package tests after every settled save; treat leak reports as failures.
+- Let Rachel run the project's `just check` and `just test` recipes after each settled save; treat leak reports as failures.
 - If Rachel herself crashes, stops watching, or reports incorrect diagnostics, stop the watcher and pause Oreo edits. Fix Rachel, pass her checks, restart the loop, and only then resume Oreo work. An ordinary Oreo test failure is feedback, not a reason to stop Rachel.
+- Run the complete unit and E2E suites once after the vertical slices are green, not on every edit. Record feedback latency, false positives, defects caught, and developer interruptions; use those observations to decide whether this should become the default AI workflow.
 - Keep both Herdr tabs and the worktree through review. Remove them only after human confirmation that the PR is merged into the local root checkout and the worktree is clean.
 
-**Gate:** an Oreo vertical slice passes its focused tests without allocator warnings while Rachel's diagnostics are actively observed through Herdr; Rachel's own suite/build remain green.
+**Gate:** one Oreo vertical slice passes focused checks with no allocator warnings and Rachel's output is observed through Herdr. The trial report recommends whether to adopt, adjust, or reject this flow; adoption requires explicit human approval.
 
 ## Out of scope for the first release
 

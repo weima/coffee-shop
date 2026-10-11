@@ -11,6 +11,21 @@ CLI_Options :: struct {
 	root: string,
 }
 
+Rachel_Justfile :: struct {
+	path: string,
+	generated: bool,
+}
+
+RACHEL_DEFAULT_JUSTFILE :: `# Rachel-generated defaults; edit for collections or custom linker flags.
+set shell := ["sh", "-cu"]
+
+check package=".":
+    odin check -no-entry-point {{quote(package)}}
+
+test package=".":
+    TZ=UTC odin test {{quote(package)}}
+`
+
 parse_cli_args :: proc(args: []string, allocator := context.allocator) -> (options: CLI_Options, err: os.Error) {
 	if len(args) != 2 {
 		return {}, os.Error(.Invalid_Command)
@@ -28,6 +43,75 @@ parse_cli_args :: proc(args: []string, allocator := context.allocator) -> (optio
 options_destroy :: proc(options: ^CLI_Options, allocator := context.allocator) {
 	delete(options.root, allocator)
 	options^ = CLI_Options{}
+}
+
+ensure_project_justfile :: proc(root: string, allocator := context.allocator) -> (justfile: Rachel_Justfile, err: os.Error) {
+	for name in ([]string{"justfile", "Justfile", ".justfile"}) {
+		path, path_err := filepath.join({root, name}, allocator)
+		if path_err != nil {
+			return {}, os.Error(path_err)
+		}
+		if os.is_file(path) {
+			return Rachel_Justfile{path=path}, nil
+		}
+		if os.exists(path) {
+			delete(path, allocator)
+			return {}, os.Error(.Invalid_Path)
+		}
+		delete(path, allocator)
+	}
+
+	path, path_err := filepath.join({root, "justfile"}, allocator)
+	if path_err != nil {
+		return {}, os.Error(path_err)
+	}
+	file, open_err := os.open(path, {.Write, .Create, .Excl})
+	if open_err != nil {
+		if os.is_file(path) {
+			return Rachel_Justfile{path=path}, nil
+		}
+		delete(path, allocator)
+		return {}, open_err
+	}
+	_, write_err := os.write_string(file, RACHEL_DEFAULT_JUSTFILE)
+	close_err := os.close(file)
+	if write_err != nil {
+		_ = os.remove(path)
+		delete(path, allocator)
+		return {}, write_err
+	}
+	if close_err != nil {
+		_ = os.remove(path)
+		delete(path, allocator)
+		return {}, close_err
+	}
+	fmt.eprintfln("[RACHEL] Created default justfile %s", path)
+	return Rachel_Justfile{path=path, generated=true}, nil
+}
+
+justfile_destroy :: proc(justfile: ^Rachel_Justfile, allocator := context.allocator) {
+	delete(justfile.path, allocator)
+	justfile^ = Rachel_Justfile{}
+}
+
+run_just_recipe :: proc(
+	justfile: Rachel_Justfile,
+	working_dir, recipe, package_dir: string,
+	allocator := context.allocator,
+) -> Odin_Command_Result {
+	command := make([dynamic]string, 0, allocator)
+	defer delete(command)
+	for arg in ([]string{"just", "--justfile", justfile.path, "--working-directory", working_dir, recipe}) {
+		_, _ = append(&command, arg)
+	}
+	if justfile.generated {
+		_, _ = append(&command, package_dir)
+	}
+	state, stdout, stderr, process_err := os.process_exec(
+		os.Process_Desc{working_dir=working_dir, command=command[:]},
+		allocator,
+	)
+	return Odin_Command_Result{state=state, stdout=stdout, stderr=stderr, process_error=process_err}
 }
 
 main :: proc() {
@@ -55,6 +139,12 @@ watch_project :: proc(root: string) -> int {
 		return 1
 	}
 	defer project_snapshot_destroy(&current)
+	justfile, justfile_err := ensure_project_justfile(root)
+	if justfile_err != nil {
+		fmt.eprintfln("[ERROR] cannot prepare Rachel's justfile in %s: %s", root, os.error_string(justfile_err))
+		return 1
+	}
+	defer justfile_destroy(&justfile)
 	generator_executable := os.get_env(RACHEL_TEST_GENERATOR_ENV, context.allocator)
 	defer delete(generator_executable, context.allocator)
 	warned_test_files := make([dynamic]string, 0, context.allocator)
@@ -64,9 +154,16 @@ watch_project :: proc(root: string) -> int {
 		fmt.eprintfln("[ERROR] cannot list Odin packages: %s", os.error_string(package_err))
 		return 1
 	}
-	for package_dir in packages {
-		if run_and_report_check(package_dir) && package_has_test_file(current, package_dir) {
-			run_and_report_test(package_dir)
+	if justfile.generated {
+		for package_dir in packages {
+			if run_and_report_just_check(justfile, root, package_dir) && package_has_test_file(current, package_dir) {
+				run_and_report_just_test(justfile, root, package_dir)
+			}
+		}
+	} else {
+		check_ok := run_and_report_just_check(justfile, root, "")
+		if check_ok && project_has_test_files(current) {
+			run_and_report_just_test(justfile, root, "")
 		}
 	}
 	delete_string_slice(packages)
@@ -102,30 +199,44 @@ watch_project :: proc(root: string) -> int {
 				fmt.eprintfln("[ERROR] cannot compare Odin files: %s", os.error_string(stable_err))
 				continue
 			}
+			project_check_ok := true
+			if !justfile.generated {
+				project_check_ok = run_and_report_just_check(justfile, root, "")
+			}
+			validated_packages := make([dynamic]string, 0, context.allocator)
 			test_file_created := false
 			for package_dir in stable_changes {
-				if run_and_report_check(package_dir) {
-					report_new_procedure_contract_warnings(current, latest, package_dir)
-					created, create_err := ensure_companion_test_files(current, latest, package_dir)
-					if create_err != nil {
-						fmt.eprintfln("[ERROR] cannot create companion test file in %s: %s", package_dir, os.error_string(create_err))
-					}
-					test_file_created = test_file_created || created
-					if create_err == nil {
-						generated_count, generation_err := generate_tests_for_changed_procedures(
-							generator_executable,
-							current,
-							latest,
-							package_dir,
+				check_ok := project_check_ok
+				if justfile.generated {
+					check_ok = run_and_report_just_check(justfile, root, package_dir)
+				}
+				if !check_ok {
+					continue
+				}
+				if append_err := append_unique_package(&validated_packages, package_dir, context.allocator); append_err != nil {
+					fmt.eprintfln("[ERROR] cannot track changed package %s: %s", package_dir, os.error_string(append_err))
+					continue
+				}
+				report_new_procedure_contract_warnings(current, latest, package_dir)
+				created, create_err := ensure_companion_test_files(current, latest, package_dir)
+				if create_err != nil {
+					fmt.eprintfln("[ERROR] cannot create companion test file in %s: %s", package_dir, os.error_string(create_err))
+				}
+				test_file_created = test_file_created || created
+				if create_err == nil {
+					generated_count, generation_err := generate_tests_for_changed_procedures(
+						generator_executable,
+						current,
+						latest,
+						package_dir,
 					)
-						if generation_err != nil {
-							fmt.eprintfln("[ERROR] test generation failed in %s: %s", package_dir, os.error_string(generation_err))
-						}
-						test_file_created = test_file_created || generated_count > 0
+					if generation_err != nil {
+						fmt.eprintfln("[ERROR] test generation failed in %s: %s", package_dir, os.error_string(generation_err))
 					}
-					if warn_err := warn_test_filename_conflicts(current, latest, package_dir, &warned_test_files); warn_err != nil {
-						fmt.eprintfln("[ERROR] cannot inspect test filenames in %s: %s", package_dir, os.error_string(warn_err))
-					}
+					test_file_created = test_file_created || generated_count > 0
+				}
+				if warn_err := warn_test_filename_conflicts(current, latest, package_dir, &warned_test_files); warn_err != nil {
+					fmt.eprintfln("[ERROR] cannot inspect test filenames in %s: %s", package_dir, os.error_string(warn_err))
 				}
 			}
 			if test_file_created {
@@ -137,11 +248,16 @@ watch_project :: proc(root: string) -> int {
 					latest = refreshed
 				}
 			}
-			for package_dir in stable_changes {
-				if package_has_test_file(latest, package_dir) {
-					run_and_report_test(package_dir)
+			if justfile.generated {
+				for package_dir in validated_packages {
+					if package_has_test_file(latest, package_dir) {
+						run_and_report_just_test(justfile, root, package_dir)
+					}
 				}
+			} else if len(validated_packages) > 0 && project_has_test_files(latest) {
+				run_and_report_just_test(justfile, root, "")
 			}
+			delete_string_slice(validated_packages)
 			delete_string_slice(stable_changes)
 			next = latest
 		}
@@ -349,34 +465,51 @@ forget_test_filename_warning :: proc(warned_paths: ^[dynamic]string, path: strin
 	}
 }
 
-run_and_report_check :: proc(package_dir: string, odin_executable := "odin", allocator := context.allocator) -> bool {
-	result := run_odin_check(package_dir, odin_executable, allocator)
+project_has_test_files :: proc(snapshot: Project_Snapshot) -> bool {
+	for file in snapshot.files {
+		if strings.has_suffix(file.path, "_test.odin") {
+			return true
+		}
+	}
+	return false
+}
+
+run_and_report_just_check :: proc(
+	justfile: Rachel_Justfile,
+	root, package_dir: string,
+	allocator := context.allocator,
+) -> bool {
+	result := run_just_recipe(justfile, root, "check", package_dir, allocator)
 	defer odin_command_result_destroy(&result, allocator)
 	success := odin_command_succeeded(result)
 	if result.process_error != nil {
-		fmt.eprintfln("[ERROR] odin check failed in %s: %s", package_dir, os.error_string(result.process_error))
+		fmt.eprintfln("[ERROR] just check failed in %s: %s", root, os.error_string(result.process_error))
 	} else if !success {
-		fmt.eprintfln("[ERROR] odin check failed in %s (exit %d)", package_dir, result.state.exit_code)
+		fmt.eprintfln("[ERROR] just check failed in %s (exit %d)", root, result.state.exit_code)
 	} else {
-		fmt.eprintfln("[OK] odin check %s", package_dir)
+		fmt.eprintfln("[OK] just check %s", root)
 	}
 	print_command_output(result)
 	return success
 }
 
-run_and_report_test :: proc(package_dir: string, odin_executable := "odin", allocator := context.allocator) -> bool {
-	result := run_odin_test(package_dir, odin_executable, allocator)
+run_and_report_just_test :: proc(
+	justfile: Rachel_Justfile,
+	root, package_dir: string,
+	allocator := context.allocator,
+) -> bool {
+	result := run_just_recipe(justfile, root, "test", package_dir, allocator)
 	defer odin_command_result_destroy(&result, allocator)
 	leak_warning := odin_test_has_allocator_leak(result)
 	success := odin_test_result_success(result)
 	if leak_warning {
-		fmt.eprintfln("[ERROR] Odin test reported allocator leaks in %s", package_dir)
+		fmt.eprintfln("[ERROR] just test reported allocator leaks in %s", root)
 	} else if result.process_error != nil {
-		fmt.eprintfln("[ERROR] odin test failed in %s: %s", package_dir, os.error_string(result.process_error))
+		fmt.eprintfln("[ERROR] just test failed in %s: %s", root, os.error_string(result.process_error))
 	} else if !result.state.success {
-		fmt.eprintfln("[ERROR] odin test failed in %s (exit %d)", package_dir, result.state.exit_code)
+		fmt.eprintfln("[ERROR] just test failed in %s (exit %d)", root, result.state.exit_code)
 	} else {
-		fmt.eprintfln("[OK] odin test %s", package_dir)
+		fmt.eprintfln("[OK] just test %s", root)
 	}
 	print_command_output(result)
 	return success

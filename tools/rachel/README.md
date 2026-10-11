@@ -11,11 +11,13 @@ cd tools/rachel
 just run /path/to/odin-project
 ```
 
-Rachel currently polls for Odin file updates every 250 ms, coalesces changes for a 350 ms quiet period, and runs `odin check -no-entry-point .` for the affected package. If the package contains `*_test.odin` files, she also runs `odin test .`; test failures and allocator-leak diagnostics become `[ERROR]` terminal feedback. On a changed production file, Rachel creates its missing companion test file without overwriting an existing file. She warns about newly added procedures without intent comments and production-looking code in newly created `*_test.odin` files. When `RACHEL_TEST_GENERATOR` is configured, she can generate and validate tests for documented procedures without a matching test.
+Rachel currently polls for Odin file updates every 250 ms, coalesces changes for a 350 ms quiet period, and runs the watched project's `just check` and `just test` recipes. If no root justfile exists, she creates a starter with those recipes and package arguments. Test failures and allocator-leak diagnostics become `[ERROR]` terminal feedback. On a changed production file, Rachel creates its missing companion test file without overwriting an existing file. She warns about newly added procedures without intent comments and production-looking code in newly created `*_test.odin` files. When `RACHEL_TEST_GENERATOR` is configured, she can generate and validate tests for documented procedures without a matching test.
 
 ```sh
 RACHEL_TEST_GENERATOR=/path/to/local-generator just run /path/to/odin-project
 ```
+
+The project justfile is left untouched when present. Rachel creates the starter only when none exists; see [justfile integration](architecture.md#justfile-integration).
 
 The generator is a trusted local executable. It reads one versioned JSON request from stdin and returns test source as JSON on stdout; see [the protocol](architecture.md#local-generator-protocol).
 
@@ -32,7 +34,7 @@ Generated tests are written directly to the working tree. Rachel rechecks the so
 
 The watcher, compile/test feedback loop, missing-intent warnings, test-filename conflict warnings, companion-test creation, and provider-neutral test-generation adapter are implemented. The adapter can use any trusted local command; Rachel does not own model credentials or depend on Pi. Further test-generation quality tuning and Linux verification remain open.
 
-`cd tools/rachel && just test` passes 12 tests without allocator-leak warnings; `just build` succeeds. Linux verification remains outstanding.
+`cd tools/rachel && just test` passes 14 tests without allocator-leak warnings; `just build` succeeds. Linux verification remains outstanding.
 
 - [Architecture and diagrams](architecture.md)
 - [Implementation plan](PLAN.md)
