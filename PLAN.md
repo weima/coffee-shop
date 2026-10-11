@@ -25,10 +25,22 @@ The implemented `brew`/`status`/`cancel`/`collect` CLI is one-shot. `brew` accep
 | A. Lock the interactive contract | Structured dispatch, session identity, input/result events, transport, and shutdown rules | The main agent can issue a request and address a reply to the correct session without parsing terminal text |
 | B. Add the foreground host | Coffee Shop starts from Pi as an executable or `odin run src`, handles multiple requests, and exits cleanly | Fake-client test proves it remains ready between requests; it never daemonizes |
 | C. Start interactive Pi sessions | Herdr worker sessions remain open for follow-up and work only in isolated Stations | Fake harness verifies session startup, input, and output without an AI service |
-| D. Bridge events and replies | Deliver `needs_input`, progress, and completion to the Barista; route replies back to the same worker | Tests cover pause/reply/resume, completion, duplicate events, and failed delivery |
+| D. Bridge events and replies | Each Station reports turns to the parent and relays replies to its agent; the host relays Station reports to the main agent | Tests cover turn reports, reply relay, agent exit, duplicate events, and failed delivery |
 | E. Persist and recover sessions | Preserve history across host/session close and reopen; report unfinished work honestly | Reopen tests retrieve closed sessions and never replay side effects automatically |
 | F. Verify the full workflow | Main-agent Order → Coffee Shop → Herdr → interactive Pi worker → main agent | Full E2E passes on Linux and macOS after phases A–E are green; no allocator-leak warnings |
 | G. Optional improvements | Evaluate Oreo for the main or worker agent role, or Rachel as a developer aid, only after the core flow is usable and Oreo is stable | Neither is needed to pass the Coffee Shop usability gate; treat each as a separately approved enhancement |
+
+### Station (phase D design)
+
+A **Station** is a `coffee-shop station` process that runs in a Herdr pane for one Shot. It is harness-neutral:
+
+1. It launches the agent command (Pi or Oreo) and speaks the Pi RPC subset on the agent's stdin/stdout: `prompt` in, `agent_end` out.
+2. It reports each completed turn to the parent Coffee Shop over the activity socket (`turn_done`, then `agent_exited`).
+3. Lines typed into the Station's pane are replies. The Station sends each one to the agent as a follow-up prompt. Closing the pane's stdin ends the agent and the Station.
+
+The host relays Station reports to the main agent. Replies go to the Station, never to the host.
+
+Implemented so far: the `station` command and its fake-agent test (`src/station.odin`). Still to do: host listener and relay, Herdr launch of Station panes instead of raw `pi`, and the report size limit (currently truncated to the activity limit).
 
 ## Completed one-shot foundation
 

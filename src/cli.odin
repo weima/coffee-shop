@@ -11,6 +11,7 @@ Command_Kind :: enum {
 	Collect,
 	Worker,
 	Host,
+	Station,
 }
 
 Command :: struct {
@@ -21,6 +22,9 @@ Command :: struct {
 	shot_id: string,
 	state_root: string,
 	token: string,
+	report_path: string,
+	prompt: string,
+	agent: []string,
 }
 
 Brew_Arguments :: struct {
@@ -35,6 +39,13 @@ Brew_ID_Arguments :: struct {
 Server_Arguments :: struct {
 	state_root: string `args:"required" usage:"Coffee Shop state directory."`,
 	repository: string `args:"required" usage:"Beans Git repository path."`,
+}
+
+Station_Arguments :: struct {
+	report:  string `args:"required" usage:"Parent Coffee Shop activity socket."`,
+	station: string `args:"required" usage:"Station identifier."`,
+	brew:    string `args:"required" usage:"Parent Brew or request identifier."`,
+	prompt:  string `args:"required" usage:"First prompt for the agent."`,
 }
 
 Worker_Arguments :: struct {
@@ -74,6 +85,8 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 		return Command{kind = .Brew, repo = options.repo, recipe = options.recipe}, ""
 	case "host":
 		return Command{kind = .Host}, ""
+	case "station":
+		return parse_station_args(args[1:])
 	case "__server":
 		options: Server_Arguments
 		if flags.parse(&options, args[1:], .Unix) != nil {
@@ -103,6 +116,25 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 	case:
 		return Command{kind = .Help}, "unknown command"
 	}
+}
+
+// The agent command follows "--" and is passed through unparsed.
+parse_station_args :: proc(args: []string) -> (command: Command, err: string) {
+	split := -1
+	for arg, i in args {
+		if arg == "--" {
+			split = i
+			break
+		}
+	}
+	if split < 0 || split == len(args)-1 {
+		return Command{kind = .Help}, "station needs an agent command after --"
+	}
+	options: Station_Arguments
+	if flags.parse(&options, args[:split], .Unix) != nil {
+		return Command{kind = .Help}, "invalid station arguments"
+	}
+	return Command{kind = .Station, report_path = options.report, shot_id = options.station, brew_id = options.brew, prompt = options.prompt, agent = args[split+1:]}, ""
 }
 
 has_help_flag :: proc(args: []string) -> bool {
