@@ -2,18 +2,22 @@ package main
 
 import "core:bufio"
 import "core:encoding/json"
+import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:thread"
 import "core:time"
 
 // Station runs one agent session and relays between it and the parent Coffee
 // Shop. The agent speaks the Pi RPC subset on stdin/stdout (prompt in, agent_end
-// out), so Pi or Oreo can run here if it speaks the same subset. Lines typed
-// into the Station's stdin are replies, sent to the agent as follow-up prompts.
-// Closing stdin ends the session.
-// shortcut: one report per turn, truncated to the activity limit; no
-// needs_input or completion distinction and no reply queue yet.
+// out), so Pi or Oreo can run here if it speaks the same subset.
+//
+// Lines typed into the Station's pane, or sent there by the host, are replies.
+// A reply answers a pending dialog if the agent asked one; otherwise it is a
+// follow-up prompt. Closing stdin ends the session.
+// shortcut: one report per turn and per dialog, truncated to the activity limit;
+// dialog timeouts are not tracked, so a late answer can reach the next prompt.
 
 Station_Prompt :: struct {
 	type:              string `json:"type"`,
@@ -21,9 +25,37 @@ Station_Prompt :: struct {
 	streamingBehavior: string `json:"streamingBehavior,omitempty"`,
 }
 
+Dialog_Value_Response :: struct {
+	type:  string `json:"type"`,
+	id:    string `json:"id"`,
+	value: string `json:"value"`,
+}
+
+Dialog_Confirm_Response :: struct {
+	type:      string `json:"type"`,
+	id:        string `json:"id"`,
+	confirmed: bool `json:"confirmed"`,
+}
+
+Dialog_Cancel_Response :: struct {
+	type:      string `json:"type"`,
+	id:        string `json:"id"`,
+	cancelled: bool `json:"cancelled"`,
+}
+
+// A dialog the agent is blocked on. Strings are owned.
+Station_Dialog :: struct {
+	active:  bool,
+	id:      string,
+	method:  string,
+	options: []string,
+}
+
 Station_Relay :: struct {
-	input: ^os.File,
-	agent: ^os.File,
+	input:  ^os.File,
+	agent:  ^os.File,
+	mutex:  sync.Mutex,
+	dialog: Station_Dialog,
 }
 
 run_station :: proc(report_path, station_id, brew_id, prompt: string, agent: []string) -> int {
@@ -58,6 +90,7 @@ run_station :: proc(report_path, station_id, brew_id, prompt: string, agent: []s
 		write_error("could not send the first prompt to the agent")
 		return 1
 	}
+	fmt.printfln("Station %s: sent the first prompt", station_id)
 
 	relay := new(Station_Relay)
 	relay.input = os.stdin
@@ -74,14 +107,7 @@ run_station :: proc(report_path, station_id, brew_id, prompt: string, agent: []s
 			break
 		}
 		text := strings.trim_right(line, "\r\n")
-		_ = pi_event_consume(&parser, text)
-		if station_is_turn_end(text) {
-			report := parser.final_report
-			if report == "" {
-				report = "Turn finished without a text reply."
-			}
-			station_report(&sender, brew_id, station_id, "turn_done", report)
-		}
+		station_handle_agent_line(relay, &sender, brew_id, station_id, &parser, text)
 		free_all(context.temp_allocator)
 	}
 
@@ -93,8 +119,103 @@ run_station :: proc(report_path, station_id, brew_id, prompt: string, agent: []s
 	return 0
 }
 
-// Every stdin line is a reply. End of stdin closes the agent's input, which ends
-// the agent and therefore the Station.
+// UI requests are handled here. Other output updates progress, and a finished
+// turn is reported to the parent.
+station_handle_agent_line :: proc(
+	relay: ^Station_Relay,
+	sender: ^Activity_Sender,
+	brew_id, station_id: string,
+	parser: ^Pi_Event_State,
+	text: string,
+) {
+	value, parse_err := json.parse_string(text, .JSON, false, context.temp_allocator)
+	if parse_err == .None {
+		if root, ok := value.(json.Object); ok && pi_event_string(root, "type") == "extension_ui_request" {
+			// Only dialogs need handling; other UI requests are display-only.
+			_ = station_dialog_request(relay, sender, brew_id, station_id, root)
+			return
+		}
+	}
+
+	// Any other agent output means the agent moved past a dialog it had open.
+	sync.mutex_lock(&relay.mutex)
+	station_dialog_clear(&relay.dialog)
+	sync.mutex_unlock(&relay.mutex)
+
+	if pi_event_consume(parser, text) && parser.last_description != "" {
+		fmt.println(parser.last_description)
+	}
+	if station_is_turn_end(text) {
+		report := parser.final_report
+		if report == "" {
+			report = "Turn finished without a text reply."
+		}
+		fmt.println(report)
+		station_report(sender, brew_id, station_id, "turn_done", report)
+	}
+}
+
+// Fire-and-forget UI requests need no answer. Dialogs make the agent wait, so they
+// are reported as needs_input and kept until a reply arrives.
+station_dialog_request :: proc(
+	relay: ^Station_Relay,
+	sender: ^Activity_Sender,
+	brew_id, station_id: string,
+	root: json.Object,
+) -> bool {
+	method := pi_event_string(root, "method")
+	switch method {
+	case "select", "confirm", "input", "editor":
+	case:
+		return false
+	}
+	id := pi_event_string(root, "id")
+	if id == "" {
+		return false
+	}
+	title := pi_event_string(root, "title")
+	options: [dynamic]string
+	if options_value, found := root["options"]; found {
+		if list, is_list := options_value.(json.Array); is_list {
+			for item in list {
+				if text, is_text := item.(json.String); is_text {
+					append(&options, strings.clone(text))
+				}
+			}
+		}
+	}
+
+	question := title
+	if method == "select" && len(options) > 0 {
+		question = fmt.tprintf("%s [%s]", title, strings.join(options[:], " / ", context.temp_allocator))
+	}
+	fmt.printfln("? %s (reply in this pane or from the main agent)", question)
+
+	sync.mutex_lock(&relay.mutex)
+	station_dialog_clear(&relay.dialog)
+	relay.dialog = Station_Dialog{active = true, id = strings.clone(id), method = strings.clone(method), options = options[:]}
+	sync.mutex_unlock(&relay.mutex)
+
+	station_report(sender, brew_id, station_id, "needs_input", question)
+	return true
+}
+
+station_dialog_clear :: proc(dialog: ^Station_Dialog) {
+	if !dialog.active {
+		return
+	}
+	delete(dialog.id)
+	delete(dialog.method)
+	for option in dialog.options {
+		delete(option)
+	}
+	delete(dialog.options)
+	dialog^ = {}
+}
+
+// Every non-empty stdin line is a reply: it answers the pending dialog if there is
+// one, otherwise it is a follow-up prompt. End of stdin closes the agent's input,
+// which ends the agent and therefore the Station.
 station_relay_replies :: proc(data: rawptr) {
 	relay := (^Station_Relay)(data)
 	scanner: bufio.Scanner
@@ -105,6 +226,19 @@ station_relay_replies :: proc(data: rawptr) {
 		if text == "" {
 			continue
 		}
+
+		sync.mutex_lock(&relay.mutex)
+		if relay.dialog.active {
+			response := station_dialog_response(relay.dialog, text)
+			station_dialog_clear(&relay.dialog)
+			sync.mutex_unlock(&relay.mutex)
+			if !station_write_line(relay.agent, response) {
+				break
+			}
+			continue
+		}
+		sync.mutex_unlock(&relay.mutex)
+
 		if !station_write_prompt(relay.agent, text, "followUp") {
 			break
 		}
@@ -112,12 +246,56 @@ station_relay_replies :: proc(data: rawptr) {
 	_ = os.close(relay.agent)
 }
 
+// Builds the agent's answer to a dialog from a typed reply. Unmatched select
+// options and unclear confirm answers are cancelled rather than guessed.
+station_dialog_response :: proc(dialog: Station_Dialog, reply: string) -> string {
+	data: []byte
+	err: json.Marshal_Error
+	switch dialog.method {
+	case "confirm":
+		lower := strings.to_lower(reply, context.temp_allocator)
+		switch lower {
+		case "yes", "y":
+			data, err = json.marshal(Dialog_Confirm_Response{type = "extension_ui_response", id = dialog.id, confirmed = true}, {}, context.temp_allocator)
+		case "no", "n":
+			data, err = json.marshal(Dialog_Confirm_Response{type = "extension_ui_response", id = dialog.id, confirmed = false}, {}, context.temp_allocator)
+		case:
+			data, err = json.marshal(Dialog_Cancel_Response{type = "extension_ui_response", id = dialog.id, cancelled = true}, {}, context.temp_allocator)
+		}
+	case "select":
+		if !slice_contains(dialog.options, reply) {
+			data, err = json.marshal(Dialog_Cancel_Response{type = "extension_ui_response", id = dialog.id, cancelled = true}, {}, context.temp_allocator)
+			break
+		}
+		data, err = json.marshal(Dialog_Value_Response{type = "extension_ui_response", id = dialog.id, value = reply}, {}, context.temp_allocator)
+	case:
+		data, err = json.marshal(Dialog_Value_Response{type = "extension_ui_response", id = dialog.id, value = reply}, {}, context.temp_allocator)
+	}
+	if err != nil {
+		return `{"type":"extension_ui_response","cancelled":true}`
+	}
+	return string(data)
+}
+
+slice_contains :: proc(items: []string, value: string) -> bool {
+	for item in items {
+		if item == value {
+			return true
+		}
+	}
+	return false
+}
+
 station_write_prompt :: proc(file: ^os.File, message, behavior: string) -> bool {
 	data, err := json.marshal(Station_Prompt{type = "prompt", message = message, streamingBehavior = behavior}, {}, context.temp_allocator)
 	if err != nil {
 		return false
 	}
-	if _, write_err := os.write(file, data); write_err != nil {
+	return station_write_line(file, string(data))
+}
+
+station_write_line :: proc(file: ^os.File, line: string) -> bool {
+	if _, write_err := os.write_string(file, line); write_err != nil {
 		return false
 	}
 	_, newline_err := os.write_string(file, "\n")
