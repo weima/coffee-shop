@@ -1,5 +1,7 @@
 # Oreo Architecture
 
+**Why Oreo exists.** pi is very capable, but it's too heavy for parallel jobs. So we want to fire up light-weight oreo to do what pi does. Oreo runs light-weight agents that do what pi does, in parallel. It is a pi extension and uses pi's runtime and login.
+
 Oreo is a small, standalone Odin agent harness. It starts as its own package in this repository and should be extractable into an independent repository. Its first delivery is a pi extension; a library API for Coffee Shop comes later (see [second-round decisions](#decisions-2026-10-10-second-round), item 1).
 
 Since 2026-10-10, Oreo ships as a pi extension and depends on the pi runtime. The agent loop stays in Odin. A thin pi extension bridges the Odin host to pi's model layer, so provider credentials and login stay inside pi (pi's responsibility; proposed, pending the spike). Login and token handling are pi's responsibility; model calls go through pi's model layer (fourth round, F2). Oreo keeps its provider-neutral structure internally (see [second-round decisions](#decisions-2026-10-10-second-round) and [Runtime decision](#runtime-decision-2026-10-10)).
@@ -52,7 +54,6 @@ Open after the third round (not decided here):
 - Whether the prompt instruction (A2) replaces or sits alongside the structured provider, model, and thinking-level fields on each work item. This document assumes it sits alongside.
 - Whether a session also chooses its work or personal account. A1 settles only the default.
 - The relation between the Coffee Shop config file (A1) and `~/.oreo/config.json`.
-- Whether the provider-terms check is required before release: resolved, no check (fourth round, F1).
 - Whether Codex stays a first provider to test. A6 says it is irrelevant to Oreo's auth; the second-round decision still lists it as a first provider.
 
 ## Decisions (2026-10-10, fourth round)

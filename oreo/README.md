@@ -1,5 +1,7 @@
 # Oreo
 
+**Why Oreo exists.** pi is very capable, but it's too heavy for parallel jobs. So we want to fire up light-weight oreo to do what pi does. Oreo runs light-weight agents that do what pi does, in parallel. It is a pi extension and uses pi's runtime and login.
+
 Oreo is a small Odin agent harness. It ships as a pi extension for now; library and executable delivery are later. Coffee Shop consumes it through that extension for now; a library API comes later, and Oreo may be published from its own repository once mature. It hosts one in-memory session per top-level task; each session can submit many work items to a shared thread pool in one long-lived host process, which the pi extension starts as a separate OS process. **Oreo is a pi extension and depends on the pi runtime. The agent loop and the `read`, `write`, and `execute` tools run in Odin; a thin bridge gives the Odin host access to pi's model layer (proposed, pending the spike). The end user logs in to providers in pi beforehand; Oreo performs no login and implements no OAuth flow, token handling, or client registration of its own; these are pi's responsibility.** Pi also remains the behavioral reference for agent-loop defaults and built-in tools.
 
 > **Status:** Oreo implementation is underway. The bundled SQLite 3.54.0 binding and metadata store pass 17 real-engine tests on macOS. The store persists work-item transitions, session-close cancellation, and versioned schema migrations; Linux verification, worker execution, and the provider-neutral host remain pending.

@@ -1,5 +1,9 @@
 # Oreo Implementation Plan
 
+**Why Oreo exists.** pi is very capable, but it's too heavy for parallel jobs. So we want to fire up light-weight oreo to do what pi does. Oreo runs light-weight agents that do what pi does, in parallel. It is a pi extension and uses pi's runtime and login.
+
+Success is many concurrent jobs at much lower memory and CPU than one pi process per job; threshold to be set from the spike measurements.
+
 Build Oreo as an independent Odin agent harness in `oreo/`, with source in `oreo/src/` and package assets in `oreo/assets/`. This plan follows the confirmed requirements in [Architecture](architecture.md); that document is the design source of truth.
 
 Oreo's first milestone is a provider-neutral, long-lived host for task sessions, run as a separate OS process started by the pi extension (third round, A3). Each session can submit many work items to a shared thread pool. Provider login stays in pi; Oreo does no auth work (fourth round, F2). Oreo ships as a pi extension and depends on the pi runtime (2026-10-10 decision; see [architecture](architecture.md#runtime-decision-2026-10-10)). The agent loop and the `read`, `write`, and `execute` tools run in Odin (third round, A4); a thin pi extension bridges the host to pi's model layer (proposed, pending the spike; see [second-round decisions](architecture.md#decisions-2026-10-10-second-round)). Its provider-neutral structure stays inside Oreo.
