@@ -18,6 +18,8 @@ import "core:time"
 // Lines typed into the Station's pane, or sent there by the host, are replies.
 // A reply answers a pending dialog if the agent asked one; otherwise it is a
 // follow-up prompt. Closing stdin ends the session.
+// A research Shot and a Pull are one turn: the Station closes the agent's input
+// after the first agent_end, so the agent exits and the post-exit checks run.
 // shortcut: one report per turn and per dialog, truncated to the activity limit;
 // dialog timeouts are not tracked, so a late answer can reach the next prompt.
 
@@ -53,12 +55,16 @@ Station_Dialog :: struct {
 	options: []string,
 }
 
+// The mutex guards the dialog and the agent's input: a reply is written before the
+// input is closed, or it is dropped.
 Station_Relay :: struct {
-	input:   ^os.File,
-	agent:   ^os.File,
-	mutex:   sync.Mutex,
-	dialog:  Station_Dialog,
-	display: ^Station_Display,
+	input:        ^os.File,
+	agent:        ^os.File,
+	mutex:        sync.Mutex,
+	dialog:       Station_Dialog,
+	display:      ^Station_Display,
+	one_turn:     bool,
+	agent_closed: bool,
 }
 
 run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_kind, taste, message: string, agent: []string) -> int {
@@ -114,6 +120,7 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 	relay.input = os.stdin
 	relay.agent = agent_in_write
 	relay.display = display
+	relay.one_turn = shot_kind == SHOT_KIND_RESEARCH || taste != ""
 	_ = thread.create_and_start_with_data(relay, station_relay_replies, self_cleanup = true)
 
 	parser: Pi_Event_State
@@ -336,9 +343,26 @@ station_handle_agent_line :: proc(
 			report = "Turn finished without a text reply."
 		}
 		station_display_line(relay.display, report)
-		station_display_status(relay.display, "Waiting for your reply")
+		if !relay.one_turn {
+			station_display_status(relay.display, "Waiting for your reply")
+		}
 		station_report(sender, brew_id, station_id, "turn_done", report)
+		if relay.one_turn {
+			station_relay_close_agent(relay)
+		}
 	}
+}
+
+// Closes the agent's input once. The agent exits when its input closes, and the
+// relay thread may still be writing, so both happen under the relay's mutex.
+station_relay_close_agent :: proc(relay: ^Station_Relay) {
+	sync.mutex_lock(&relay.mutex)
+	defer sync.mutex_unlock(&relay.mutex)
+	if relay.agent_closed {
+		return
+	}
+	relay.agent_closed = true
+	_ = os.close(relay.agent)
 }
 
 // Fire-and-forget UI requests need no answer. Dialogs make the agent wait, so they
@@ -409,29 +433,32 @@ station_relay_replies :: proc(data: rawptr) {
 	scanner: bufio.Scanner
 	bufio.scanner_init(&scanner, os.to_reader(relay.input))
 	defer bufio.scanner_destroy(&scanner)
+	defer station_relay_close_agent(relay)
 	for bufio.scanner_scan(&scanner) {
 		text := strings.trim_space(bufio.scanner_text(&scanner))
 		if text == "" {
 			continue
 		}
 
+		// A reply after the close is dropped without a report.
 		sync.mutex_lock(&relay.mutex)
+		if relay.agent_closed {
+			sync.mutex_unlock(&relay.mutex)
+			break
+		}
+		written: bool
 		if relay.dialog.active {
 			response := station_dialog_response(relay.dialog, text)
 			station_dialog_clear(&relay.dialog)
-			sync.mutex_unlock(&relay.mutex)
-			if !station_write_line(relay.agent, response) {
-				break
-			}
-			continue
+			written = station_write_line(relay.agent, response)
+		} else {
+			written = station_write_prompt(relay.agent, text, "followUp")
 		}
 		sync.mutex_unlock(&relay.mutex)
-
-		if !station_write_prompt(relay.agent, text, "followUp") {
+		if !written {
 			break
 		}
 	}
-	_ = os.close(relay.agent)
 }
 
 // Builds the agent's answer to a dialog from a typed reply. Unmatched select

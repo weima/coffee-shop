@@ -42,7 +42,7 @@ A **Station** is a `coffee-shop station` process that runs in a Herdr pane for o
 
 Each Station runs `pi --mode rpc -e <coffee-shop extension>` next to the user's installed extensions. The extension (`extensions/coffee-shop.ts`) is compiled into the binary and written to `<state>/host/extensions/` at host start. It adds the `coffee_shop_ask` tool, which raises a `select` dialog that reaches the main agent as `needs_input`.
 
-Long prompts travel in per-Shot files, and a Shot may choose a model.
+Long prompts travel in per-Shot files, and a Shot may choose a model. Shots open as tabs in one Herdr workspace per repository.
 
 The host relays Station reports to the main agent. Replies go to the Station, never to the host.
 
@@ -459,6 +459,8 @@ A Brew for an Order that is too large to brew in one go runs in five steps:
    Implemented: the Shot `taste` and `message` fields, the Station commit after a passing Taste, and tests `test_foreground_host_passes_taste_and_message_to_station`, `test_foreground_host_omits_taste_for_shot_without_taste`, `test_foreground_host_rejects_taste_on_research_shot`, `test_foreground_host_rejects_taste_without_valid_message`, `test_pull_with_passing_taste_commits_with_message`, `test_pull_with_failing_taste_sends_taste_failed_and_makes_no_commit`, `test_pull_with_passing_taste_and_no_changes_sends_taste_passed`, `test_shot_without_taste_sends_no_taste_report_and_makes_no_commit`.
 5. **Blend.** The Barista combines the commits of a Brew's Pulls into one reviewed commit, using the Blend operation. Blend changes the commit history it is given; it does not add work of its own.
    Implemented: the `blend` host request, a temporary worktree under the host directory, and the fail-closed rule (a failed pick removes the worktree and the new branch and reports `blend_failed`); tests `test_blend_combines_non_conflicting_pulls_into_one_commit`, `test_blend_conflict_fails_closed_and_leaves_nothing`, `test_blend_rejects_invalid_requests_before_any_git_change`.
+
+A research Shot and a Pull Shot are one turn: the Station ends the agent after its first turn, so the post-exit checks (incomplete, Taste and commit) run.
 
 Names to avoid for these steps: research (use Cupping), task (use Shot), commit squash (use Blend).
 
