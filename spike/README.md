@@ -14,6 +14,7 @@ measures. `session.prompt()` is never called.
 | `spike/lib.mjs` | Shared helpers: isolated HOME/agent dir/cwd, SDK loader, idle session factory. |
 | `spike/in-process.mjs` | N = 1, 10, 50, 100 sessions in ONE node process. |
 | `spike/one-process-each.mjs` | Baseline: one child process per session, N = 1, 5, 10. Also a bare-node reference. |
+| `spike/baseline-guarded.mjs` | Guarded baseline: one child per session, N = 25 then N = 50, with a free-memory guard. Reuses `one-process-each.mjs --child`. |
 
 ## How to run
 
@@ -110,3 +111,53 @@ None. `createAgentSession` succeeded at every N, in-process and in every child.
 ## Credentials
 
 No credential file was opened, read or printed. The HOME override means the SDK could not reach the real `~/.pi`. The sessions did not share a login, because there was no login in the isolated HOME. No credential prompt appeared.
+
+## Guarded baseline
+
+Run: `node spike/baseline-guarded.mjs` (about 50 s). Children start one at a time,
+with a 0.3 s pause between them. Before each child starts, the script reads
+`vm_stat` and sums free and inactive pages (16384 bytes each). If that sum is
+below 2.00 GB, it starts no more children and stops the ones it started. Each
+step runs with fresh children: all children are stopped before the next step.
+RSS is summed with `ps -o rss=`. Available memory is read before the step, at
+peak (after the 1 s settle, children alive), and after cleanup.
+
+| N requested | N reached | total RSS (MB) | avg RSS per process (MB) | available before (GB) | available at peak (GB) | available after cleanup (GB) | stopped early |
+|---|---|---|---|---|---|---|---|
+| 25 | 25 | 2474.6 | 98.98 | 4.69 | 3.75 | 5.38 | no |
+| 50 | 50 | 4452.5 | 89.05 | 5.38 | 3.13 | 6.29 | no |
+
+Machine: Apple M4, 16 GB, macOS, Node v22.23.2. No failures in any child. After
+each step, no child and no `oreo-spike-*` temp directory was left.
+
+**What it shows:**
+
+- N = 50 was reached. The guard did not trigger. The lowest available memory at
+  peak was 3.13 GB, so the 2 GB guard had about 1.1 GB of margin.
+- The summed RSS for 50 processes is 4452.5 MB, about 89 MB each. The drop in
+  average from 99 MB at N = 25 to 89 MB at N = 50 is consistent with more shared
+  pages between processes. Summed RSS counts shared pages once per process, so
+  it overstates physical use.
+- A cross-check from `vm_stat`: available memory fell 0.94 GB for 25 processes
+  (about 38 MB each) and 2.25 GB for 50 (about 45 MB each). These are rough. Other
+  applications and the file cache move the figure too, and the "after cleanup"
+  value rose above "before" in both steps.
+
+**What it does not show:**
+
+- The N = 25 and N = 50 steps are separate runs, not one run that grows from 25 to
+  50. Each step starts from a freshly stopped state.
+- Idle sessions only, with no model and no user config, as in the sections above.
+- The earlier one-process-each run measured about 138 MB per process at N = 1, 5 and
+  10. This guarded run measured 89 to 99 MB per process at N = 25 and 50. The
+  cause is not established here. Possible causes: warmer shared pages, or a
+  different machine state.
+- One run only. Available memory varies by several hundred MB between runs.
+
+**Questions:**
+
+- Q1: The cap of 50 applies to the child processes. The parent `node` process
+  adds one more, so there are 51 `node` processes at N = 50. Should the parent count
+  toward the cap?
+- Q2: Summed RSS overstates physical use when processes share pages. Should the
+  baseline report physical footprint (for example `footprint` or `vmmap`) as well?
