@@ -7,6 +7,8 @@ Slice 3 research output for [PLAN.md](../PLAN.md) ("Verify provider contracts").
 
 > **Scope (2026-10-10, second round, items 1 and 5).** Codex and GitHub Copilot are the first providers to test. Oreo's provider list is no longer limited to them: providers come from pi's ecosystem, and login and model calls go through pi. The contracts below remain the reference for these two. See [architecture](../architecture.md#decisions-2026-10-10-second-round).
 
+> **Reference only (third round, A6).** Oreo is a pi plugin, so auth is not Oreo's job: pi holds the logins, and Oreo performs no login. The Codex and Copilot auth contract details (sections 1.2 and 2.2, Items 1–6) are reference only, not an Oreo implementation requirement. Their facts are kept. Items 7–8 (models, limits, terms) remain reference for the bridge and the smoke test. See [architecture](../architecture.md#decisions-2026-10-10-third-round).
+
 ## Summary
 
 - **Codex.** The only documented route for a third-party app to use a ChatGPT plan is OpenAI's open-source "Sign in with ChatGPT" flow (SIWC, sources C1–C2). It uses dynamic client registration (no developer-owned client ID, no secret), PKCE, and a `127.0.0.1` loopback callback. Inference then goes directly to `https://api.openai.com/v1/responses`. Eligibility for Oreo is not confirmed. No documented device-code route exists for third-party clients.
@@ -78,6 +80,8 @@ Source type: `fetch` = page read in full by the fetch tool; `fetch+find` = fetch
 ---
 
 ## 1. OpenAI Codex
+
+> Reference only (third round, A6). Not an Oreo implementation requirement.
 
 ### 1.1 Route summary
 
@@ -182,6 +186,8 @@ Documented third-party route (SIWC open-source): the user signs in at `auth.open
 ---
 
 ## 2. GitHub Copilot
+
+> Reference only (third round, A6). Not an Oreo implementation requirement.
 
 ### 2.1 Route summary
 
@@ -291,7 +297,7 @@ Documented route: a GitHub OAuth App (or GitHub App) with device flow enabled gi
 
 These statements in [architecture.md](../architecture.md) and [PLAN.md](../PLAN.md) do not match the documented contracts.
 
-Status after the [2026-10-10 decisions](#decisions-2026-10-10): gaps 4 and 5 were resolved by the direct Copilot route. That route is now superseded, because provider calls go through pi, so gaps 4 and 5 are open again until pi's route is checked. Gap 3 is to be verified by the smoke test through pi. Gaps 1, 2, 6, and 7 are unchanged; Codex is tabled.
+Status after the [2026-10-10 decisions](#decisions-2026-10-10): gaps 4 and 5 were resolved by the direct Copilot route. That route is now superseded, because provider calls go through pi, so gaps 4 and 5 are open again until pi's route is checked. Gap 3 is to be verified by the smoke test through pi. Gaps 1, 2, and 3 are auth details: reference only (third round, A6), and no longer Oreo requirements. Gaps 4–7 remain open for the bridge spike and the smoke test. Codex is tabled for implementation.
 
 1. **Codex headless path.** The architecture calls Codex device-code login "the headless path". No device-code route is documented for third-party clients (Codex Item 1). The documented headless alternative is credential transfer from a browser-capable machine (C9).
 2. **Codex loopback URI.** The architecture says the user "has approved a loopback redirect URI". The approved value is not recorded in the repo. The documented rule is `http://127.0.0.1:<port>/auth/callback`, with the port free to vary (C2).
@@ -333,7 +339,8 @@ The developer answered the open questions on 2026-10-10. Numbers Q1–Q10 are th
 | Q8. Callback URL | Earlier suggestion: `http://127.0.0.1/callback`. Dropped (2026-10-10, item 3): no callback URL is needed. | dropped (2026-10-10, item 3) |
 | Q9. Copilot scopes | Earlier plan: start with no scopes, checked by the smoke test. Superseded (2026-10-10, items 2 and 3): login goes through pi, and the scope choice moves to pi's login. pi requests `read:user` as a reference only (pi source is not a contract source). | superseded (2026-10-10, items 2 and 3) |
 | Q10. Copilot route | Earlier answer: direct, calling pi's undocumented Copilot endpoints (the token exchange and the API host). Superseded (2026-10-10, item 2): provider calls go through pi, so Oreo does not call those endpoints itself. The earlier answer is kept as the record. | superseded (2026-10-10, item 2); endpoints remain unverified |
-| Q11. Provider terms | Open (2026-10-10, item 5). Whether an extension of pi falls under pi's provider registration. Not verified. Must be checked before any public release. Personal use is not affected. | open |
+| Q11. Provider terms | Open (2026-10-10, item 5). Whether an extension of pi falls under pi's provider registration. Not verified. Must be checked before any public release. Personal use is not affected. | pre-release gate kept; developer notes no check needed; clarify before release |
+| Third round A6. Codex and GitHub Copilot auth | Oreo is a pi plugin, so auth is not Oreo's job. Codex is irrelevant to Oreo's auth now. The auth contract details in sections 1.2 and 2.2 are reference only, not an Oreo implementation requirement. Facts are kept. | reference only (third round, A6) |
 
 **Route conflict.** The Copilot SDK route assumed by PLAN slice 6 was replaced by the direct route. The 2026-10-10 runtime decision supersedes the direct route as well: provider calls go through pi. PLAN slice 6 now says so.
 
