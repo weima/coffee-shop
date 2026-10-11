@@ -5,6 +5,7 @@ package oreo
 
 import "core:os"
 import "core:path/filepath"
+import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:time"
@@ -26,8 +27,8 @@ Pool_Test_Fake :: struct {
 @(private)
 pool_test_fake: Pool_Test_Fake
 
-// Odin's test runner runs tests in parallel. The three pool tests share one
-// fake, so they take this lock to run one at a time.
+// Odin's test runner runs tests in parallel. The pool tests share the fakes and
+// the event log, so they take this lock to run one at a time.
 @(private)
 pool_test_lock: sync.Mutex
 
@@ -296,4 +297,294 @@ pool_test_cleanup :: proc(host: ^Host, directory, path: string) {
 	_ = os.remove_all(directory)
 	delete(directory)
 	delete(path)
+}
+
+// The pause tests use one fake that pauses on its first call and records the
+// reply its second call was resumed with.
+@(private)
+POOL_TEST_PAUSE_MESSAGE :: "need input"
+
+@(private)
+Pool_Test_Pause :: struct {
+	mutex:         sync.Mutex,
+	paused_once:   bool,
+	resumed_calls: int,
+	seen_resumed:  string,
+}
+
+@(private)
+pool_test_pause: Pool_Test_Pause
+
+@(private)
+pool_test_pause_work :: proc(input: Work_Item_Input) -> Work_Item_Result {
+	sync.mutex_lock(&pool_test_pause.mutex)
+	should_pause := !pool_test_pause.paused_once
+	pool_test_pause.paused_once = true
+	sync.mutex_unlock(&pool_test_pause.mutex)
+	if should_pause {
+		return Work_Item_Result{ok = true, needs_input = true, output = POOL_TEST_PAUSE_MESSAGE}
+	}
+	sync.mutex_lock(&pool_test_pause.mutex)
+	delete(pool_test_pause.seen_resumed)
+	pool_test_pause.seen_resumed = strings.clone(input.resumed_input)
+	pool_test_pause.resumed_calls += 1
+	sync.mutex_unlock(&pool_test_pause.mutex)
+	return Work_Item_Result{ok = true, output = "resumed result"}
+}
+
+@(private)
+pool_test_pause_reset :: proc() {
+	sync.mutex_lock(&pool_test_pause.mutex)
+	delete(pool_test_pause.seen_resumed)
+	pool_test_pause.seen_resumed = ""
+	pool_test_pause.paused_once = false
+	pool_test_pause.resumed_calls = 0
+	sync.mutex_unlock(&pool_test_pause.mutex)
+}
+
+@(private)
+pool_test_pause_resumed :: proc() -> (seen: string, calls: int) {
+	sync.mutex_lock(&pool_test_pause.mutex)
+	defer sync.mutex_unlock(&pool_test_pause.mutex)
+	return pool_test_pause.seen_resumed, pool_test_pause.resumed_calls
+}
+
+// The event log records copies: Agent_Event strings are borrowed by the pool.
+@(private)
+Pool_Test_Event_Log :: struct {
+	mutex:  sync.Mutex,
+	events: [dynamic]Agent_Event,
+}
+
+@(private)
+pool_test_events: Pool_Test_Event_Log
+
+@(private)
+pool_test_record_event :: proc(event: Agent_Event) {
+	sync.mutex_lock(&pool_test_events.mutex)
+	defer sync.mutex_unlock(&pool_test_events.mutex)
+	_, _ = append(&pool_test_events.events, Agent_Event{
+		kind         = event.kind,
+		session_id   = strings.clone(event.session_id, context.allocator),
+		work_item_id = strings.clone(event.work_item_id, context.allocator),
+		message      = strings.clone(event.message, context.allocator),
+	})
+}
+
+// pool_test_event_clear releases the log. Call it before a test starts and
+// after its pool stops, once no worker can still emit.
+@(private)
+pool_test_event_clear :: proc() {
+	sync.mutex_lock(&pool_test_events.mutex)
+	defer sync.mutex_unlock(&pool_test_events.mutex)
+	for event in pool_test_events.events {
+		delete(event.session_id)
+		delete(event.work_item_id)
+		delete(event.message)
+	}
+	delete(pool_test_events.events)
+	pool_test_events.events = nil
+}
+
+@(private)
+pool_test_event_len :: proc() -> int {
+	sync.mutex_lock(&pool_test_events.mutex)
+	defer sync.mutex_unlock(&pool_test_events.mutex)
+	return len(pool_test_events.events)
+}
+
+@(private)
+pool_test_event_count :: proc(kind: Agent_Event_Kind) -> int {
+	sync.mutex_lock(&pool_test_events.mutex)
+	defer sync.mutex_unlock(&pool_test_events.mutex)
+	count := 0
+	for event in pool_test_events.events {
+		if event.kind == kind {
+			count += 1
+		}
+	}
+	return count
+}
+
+@(private)
+pool_test_event_at :: proc(index: int) -> Agent_Event {
+	sync.mutex_lock(&pool_test_events.mutex)
+	defer sync.mutex_unlock(&pool_test_events.mutex)
+	if index < 0 || index >= len(pool_test_events.events) {
+		return {}
+	}
+	return pool_test_events.events[index]
+}
+
+@(private)
+pool_test_find_event :: proc(kind: Agent_Event_Kind) -> (Agent_Event, bool) {
+	sync.mutex_lock(&pool_test_events.mutex)
+	defer sync.mutex_unlock(&pool_test_events.mutex)
+	for event in pool_test_events.events {
+		if event.kind == kind {
+			return event, true
+		}
+	}
+	return {}, false
+}
+
+@(private)
+pool_test_event_work :: proc(input: Work_Item_Input) -> Work_Item_Result {
+	return Work_Item_Result{ok = true, output = input.request}
+}
+
+@(test)
+test_pool_pauses_for_input_and_runs_other_items :: proc(t: ^testing.T) {
+	sync.mutex_lock(&pool_test_lock)
+	defer sync.mutex_unlock(&pool_test_lock)
+	host, directory, path := pool_test_host(t)
+	defer pool_test_cleanup(&host, directory, path)
+	session, session_err := create_session(host, "pool pause")
+	defer session_destroy(&session)
+	defer host_error_destroy(&session_err)
+	testing.expect_value(t, session_err.kind, Host_Error_Kind.None)
+
+	pool_test_pause_reset()
+	pool_test_event_clear()
+	// One worker proves that a pause releases it for the other item.
+	pool, pool_err := pool_start(host, 1, pool_test_pause_work, pool_test_record_event)
+	defer host_error_destroy(&pool_err)
+	testing.expect_value(t, pool_err.kind, Host_Error_Kind.None)
+
+	paused_id, paused_err := pool_submit(pool, session.id, "fake-provider", "fake-model", "low", "pause")
+	defer delete(paused_id)
+	defer host_error_destroy(&paused_err)
+	testing.expect_value(t, paused_err.kind, Host_Error_Kind.None)
+	other_id, other_err := pool_submit(pool, session.id, "fake-provider", "fake-model", "low", "other")
+	defer delete(other_id)
+	defer host_error_destroy(&other_err)
+	testing.expect_value(t, other_err.kind, Host_Error_Kind.None)
+
+	testing.expect(t, pool_wait_idle(pool, 30_000), "the pool did not become idle")
+
+	store_handle := pool_test_store(t, host)
+	testing.expect(t, pool_test_has_status(t, store_handle, paused_id, store.WORK_ITEM_NEEDS_INPUT))
+	testing.expect(t, pool_test_has_status(t, store_handle, other_id, store.WORK_ITEM_COMPLETED))
+	testing.expect_value(t, pool_test_event_count(.Needs_Input), 1)
+
+	pause_event, pause_found := pool_test_find_event(.Needs_Input)
+	testing.expect(t, pause_found)
+	testing.expect_value(t, pause_event.work_item_id, paused_id)
+	testing.expect_value(t, pause_event.message, POOL_TEST_PAUSE_MESSAGE)
+
+	pool_stop_err := pool_stop(&pool, false)
+	defer host_error_destroy(&pool_stop_err)
+	testing.expect_value(t, pool_stop_err.kind, Host_Error_Kind.None)
+	pool_test_event_clear()
+}
+
+@(test)
+test_pool_resume_requeues_with_caller_input :: proc(t: ^testing.T) {
+	sync.mutex_lock(&pool_test_lock)
+	defer sync.mutex_unlock(&pool_test_lock)
+	host, directory, path := pool_test_host(t)
+	defer pool_test_cleanup(&host, directory, path)
+	session, session_err := create_session(host, "pool resume")
+	defer session_destroy(&session)
+	defer host_error_destroy(&session_err)
+	testing.expect_value(t, session_err.kind, Host_Error_Kind.None)
+
+	pool_test_pause_reset()
+	pool_test_event_clear()
+	pool, pool_err := pool_start(host, 1, pool_test_pause_work, pool_test_record_event)
+	defer host_error_destroy(&pool_err)
+	testing.expect_value(t, pool_err.kind, Host_Error_Kind.None)
+
+	item_id, submit_err := pool_submit(pool, session.id, "fake-provider", "fake-model", "low", "pause")
+	defer delete(item_id)
+	defer host_error_destroy(&submit_err)
+	testing.expect_value(t, submit_err.kind, Host_Error_Kind.None)
+
+	testing.expect(t, pool_wait_idle(pool, 30_000), "the pool did not become idle while paused")
+	store_handle := pool_test_store(t, host)
+	testing.expect(t, pool_test_has_status(t, store_handle, item_id, store.WORK_ITEM_NEEDS_INPUT))
+
+	resume_err := pool_resume(pool, item_id, "the caller reply")
+	defer host_error_destroy(&resume_err)
+	testing.expect_value(t, resume_err.kind, Host_Error_Kind.None)
+
+	testing.expect(t, pool_wait_idle(pool, 30_000), "the pool did not finish the resumed item")
+	testing.expect(t, pool_test_has_status(t, store_handle, item_id, store.WORK_ITEM_COMPLETED))
+
+	seen, resumed_calls := pool_test_pause_resumed()
+	testing.expect_value(t, resumed_calls, 1)
+	testing.expect_value(t, seen, "the caller reply")
+	pool_test_pause_reset()
+
+	final_event, final_found := pool_test_find_event(.Final_Result)
+	testing.expect(t, final_found)
+	testing.expect_value(t, final_event.work_item_id, item_id)
+	testing.expect_value(t, final_event.message, "resumed result")
+
+	// The reply is durable context, not just an in-memory handoff.
+	records, records_err := store.list_work_item_records(store_handle, item_id)
+	defer store.records_destroy(records)
+	testing.expect_value(t, records_err.kind, store.Store_Error_Kind.None)
+	reply_recorded := false
+	for record in records {
+		if record.kind == POOL_INPUT_RECORD_KIND {
+			reply_recorded = true
+		}
+	}
+	testing.expect(t, reply_recorded, "the caller reply was not recorded")
+
+	pool_stop_err := pool_stop(&pool, false)
+	defer host_error_destroy(&pool_stop_err)
+	testing.expect_value(t, pool_stop_err.kind, Host_Error_Kind.None)
+	pool_test_event_clear()
+}
+
+@(test)
+test_pool_events_surround_each_item :: proc(t: ^testing.T) {
+	sync.mutex_lock(&pool_test_lock)
+	defer sync.mutex_unlock(&pool_test_lock)
+	host, directory, path := pool_test_host(t)
+	defer pool_test_cleanup(&host, directory, path)
+	session, session_err := create_session(host, "pool events")
+	defer session_destroy(&session)
+	defer host_error_destroy(&session_err)
+	testing.expect_value(t, session_err.kind, Host_Error_Kind.None)
+
+	pool_test_event_clear()
+	// One worker makes the event order deterministic.
+	pool, pool_err := pool_start(host, 1, pool_test_event_work, pool_test_record_event)
+	defer host_error_destroy(&pool_err)
+	testing.expect_value(t, pool_err.kind, Host_Error_Kind.None)
+
+	requests := [3]string{"event-1", "event-2", "event-3"}
+	ids: [dynamic]string
+	defer {
+		for id in ids {
+			delete(id)
+		}
+		delete(ids)
+	}
+	for request in requests {
+		id, submit_err := pool_submit(pool, session.id, "fake-provider", "fake-model", "low", request)
+		testing.expect_value(t, submit_err.kind, Host_Error_Kind.None)
+		host_error_destroy(&submit_err)
+		append(&ids, id)
+	}
+
+	testing.expect(t, pool_wait_idle(pool, 30_000), "the pool did not become idle")
+	testing.expect_value(t, pool_test_event_len(), len(requests) * 2)
+	for request, index in requests {
+		progress := pool_test_event_at(index * 2)
+		final := pool_test_event_at(index * 2 + 1)
+		testing.expect_value(t, progress.kind, Agent_Event_Kind.Progress)
+		testing.expect_value(t, progress.work_item_id, ids[index])
+		testing.expect_value(t, final.kind, Agent_Event_Kind.Final_Result)
+		testing.expect_value(t, final.work_item_id, ids[index])
+		testing.expect_value(t, final.message, request)
+	}
+
+	pool_stop_err := pool_stop(&pool, false)
+	defer host_error_destroy(&pool_stop_err)
+	testing.expect_value(t, pool_stop_err.kind, Host_Error_Kind.None)
+	pool_test_event_clear()
 }
