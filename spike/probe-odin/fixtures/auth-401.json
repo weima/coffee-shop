@@ -1,0 +1,8 @@
+{
+  "github-copilot": {
+    "type": "oauth",
+    "access": "fixture-401-token",
+    "refresh": "fixture-refresh-token",
+    "expires": 4102444800000
+  }
+}

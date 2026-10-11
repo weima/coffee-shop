@@ -1,0 +1,7 @@
+{"session":1,"call":1,"latency_ms":772,"status":200,"input_tokens":18,"output_tokens":4}
+{"session":1,"call":2,"latency_ms":775,"status":200,"input_tokens":18,"output_tokens":4}
+{"session":2,"call":3,"latency_ms":938,"status":200,"input_tokens":18,"output_tokens":4}
+{"session":2,"call":4,"latency_ms":746,"status":200,"input_tokens":18,"output_tokens":4}
+{"session":3,"call":5,"latency_ms":829,"status":200,"input_tokens":18,"output_tokens":4}
+{"session":3,"call":6,"latency_ms":838,"status":200,"input_tokens":18,"output_tokens":4}
+{"done":true,"calls":6,"wall_ms":10927,"total_tokens":132}
