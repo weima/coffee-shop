@@ -256,6 +256,8 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 	prompts := make([dynamic]string, context.temp_allocator)
 	models := make([dynamic]string, context.temp_allocator)
 	kinds := make([dynamic]string, context.temp_allocator)
+	tastes := make([dynamic]string, context.temp_allocator)
+	messages := make([dynamic]string, context.temp_allocator)
 	for shot_value in shots {
 		shot, is_shot := shot_value.(json.Object)
 		id, id_ok := host_string(shot, "id")
@@ -288,17 +290,65 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 				return
 			}
 		}
+		taste, message, taste_reason := host_shot_taste(shot, kind)
+		if taste_reason != "" {
+			host_emit(Host_Event{type = "error", request_id = request_id, shot_id = id, reason = taste_reason})
+			return
+		}
+
 		append(&ids, id)
 		append(&prompts, prompt)
 		append(&models, model)
 		append(&kinds, kind)
+		append(&tastes, taste)
+		append(&messages, message)
 	}
 
 	host_emit(Host_Event{type = "dispatch_accepted", request_id = request_id})
-	host_start_sessions(repo, request_id, ids[:], prompts[:], models[:], kinds[:])
+	host_start_sessions(repo, request_id, ids[:], prompts[:], models[:], kinds[:], tastes[:], messages[:])
 }
 
-host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, kinds: []string) {
+// A Shot with a taste is a Pull: it needs a commit message, and only an execute Shot
+// may commit. Both are checked here, before any worktree or Herdr call.
+host_shot_taste :: proc(shot: json.Object, kind: string) -> (taste, message, reason: string) {
+	taste_value, taste_found := shot["taste"]
+	message_value, message_found := shot["message"]
+	if !taste_found {
+		if message_found {
+			return "", "", "shot message needs a taste"
+		}
+		return "", "", ""
+	}
+	taste_ok := false
+	taste, taste_ok = taste_value.(json.String)
+	if !taste_ok || !valid_shot_taste(taste) {
+		return "", "", "shot taste must be a command of 1 to 512 characters on one line"
+	}
+	if kind != SHOT_KIND_EXECUTE {
+		return "", "", "shot taste needs an execute kind"
+	}
+	message_ok := false
+	if message_found {
+		message, message_ok = message_value.(json.String)
+	}
+	if !message_ok || !valid_commit_message(message) {
+		return "", "", "shot message is required with a taste and must be 1 to 200 characters on one line"
+	}
+	return taste, message, ""
+}
+
+HOST_TASTE_MAX :: 512
+HOST_COMMIT_MESSAGE_MAX :: 200
+
+valid_shot_taste :: proc(taste: string) -> bool {
+	return strings.trim_space(taste) != "" && strings.rune_count(taste) <= HOST_TASTE_MAX && !strings.contains_any(taste, "\r\n")
+}
+
+valid_commit_message :: proc(message: string) -> bool {
+	return strings.trim_space(message) != "" && strings.rune_count(message) <= HOST_COMMIT_MESSAGE_MAX && !strings.contains_any(message, "\r\n")
+}
+
+host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, kinds, tastes, messages: []string) {
 	state_root, state_err := default_state_root(context.temp_allocator)
 	if state_err != "" {
 		for id in ids {
@@ -358,7 +408,7 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, kind
 			pane_id = tab.result.root_pane.pane_id
 		}
 
-		command := host_station_command(host_station_executable, host_report_socket, host_extension_path, id, request_id, prompt_path, models[i], kinds[i])
+		command := host_station_command(host_station_executable, host_report_socket, host_extension_path, id, request_id, prompt_path, models[i], kinds[i], tastes[i], messages[i])
 		if run_err := herdr_run_worker(herdr, pane_id, command); run_err != "" {
 			host_session_failed(request_id, id, fmt.tprintf("could not start the Station: %s", run_err))
 			continue
@@ -398,7 +448,8 @@ host_reply :: proc(root: json.Object, request_id: string) {
 // The Station runs in the Herdr pane and launches the agent. Paths and the
 // optional model are quoted; the IDs are already restricted to safe characters.
 // A research Shot gets read-only tools; the Station then checks that it changed nothing.
-host_station_command :: proc(executable, report, extension, shot_id, request_id, prompt_file, model, kind: string) -> string {
+// A Pull passes its taste and message to the Station, which commits only if the taste passes.
+host_station_command :: proc(executable, report, extension, shot_id, request_id, prompt_file, model, kind, taste, message: string) -> string {
 	quoted_executable := shell_quote(executable)
 	defer delete(quoted_executable)
 	quoted_report := shell_quote(report)
@@ -417,7 +468,15 @@ host_station_command :: proc(executable, report, extension, shot_id, request_id,
 	if kind == SHOT_KIND_RESEARCH {
 		tools_argument = " --tools read,grep,find,ls"
 	}
-	return fmt.tprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s -- pi --mode rpc%s%s -e %s", quoted_executable, kind, quoted_report, shot_id, request_id, quoted_prompt_file, tools_argument, model_argument, quoted_extension)
+	taste_argument := ""
+	if taste != "" {
+		quoted_taste := shell_quote(taste)
+		defer delete(quoted_taste)
+		quoted_message := shell_quote(message)
+		defer delete(quoted_message)
+		taste_argument = fmt.tprintf(" --taste %s --message %s", quoted_taste, quoted_message)
+	}
+	return fmt.tprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- pi --mode rpc%s%s -e %s", quoted_executable, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, tools_argument, model_argument, quoted_extension)
 }
 
 host_session_failed :: proc(request_id, shot_id, reason: string) {

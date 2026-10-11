@@ -504,3 +504,187 @@ test_execute_station_sends_no_incomplete_when_agent_writes :: proc(t: ^testing.T
 	testing.expect_value(t, run.incomplete, "")
 	testing.expect_value(t, run.exit_code, 0)
 }
+
+Pull_Run :: struct {
+	exit_code:        int,
+	kind:             string, // last Taste report kind, empty when none arrived; owned by the caller
+	description:      string, // owned by the caller
+	taste_after_exit: bool,   // a Taste report arrived after agent_exited
+}
+
+// Runs one execute Station with a Taste and message in a fresh repository with one
+// commit. An empty taste runs the Shot without one, with no Taste flags at all.
+run_station_pull :: proc(t: ^testing.T, root, agent_script, taste, message: string) -> (run: Pull_Run) {
+	repo, _ := filepath.join({root, "beans"}, context.temp_allocator)
+	socket, _ := filepath.join({root, "report.sock"}, context.temp_allocator)
+	agent, _ := filepath.join({root, "agent.sh"}, context.temp_allocator)
+	testing.expect_value(t, os.make_directory_all(repo), os.Error(nil))
+	testing.expect_value(t, os.write_entire_file(agent, agent_script, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
+	init_state, _, init_stderr, init_err := os.process_exec(os.Process_Desc{
+		command = {"sh", "-c", `git init -q "$1" && git -C "$1" config user.name test && git -C "$1" config user.email test@example.com && git -C "$1" commit -q --allow-empty -m init`, "pull-test", repo},
+	}, context.allocator)
+	defer delete(init_stderr)
+	testing.expect_value(t, init_err, os.Error(nil))
+	testing.expect(t, init_state.success, string(init_stderr))
+
+	binary := build_test_binary(t, root)
+	defer delete(binary)
+	listener, listener_ok := activity_listener_open(socket)
+	testing.expect(t, listener_ok)
+	defer activity_listener_close(&listener)
+
+	command := `cd "$1" && "$2" station --kind execute --report "$3" --station shot-a --brew order-1 --prompt "hi" -- sh "$4" </dev/null`
+	if taste != "" {
+		command = `cd "$1" && "$2" station --kind execute --report "$3" --station shot-a --brew order-1 --prompt "hi" --taste "$5" --message "$6" -- sh "$4" </dev/null`
+	}
+	state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
+		command = {"sh", "-c", command, "station-pull-test", repo, binary, socket, agent, taste, message},
+	}, context.allocator)
+	defer delete(stdout)
+	defer delete(stderr)
+	testing.expect_value(t, exec_err, os.Error(nil))
+	run.exit_code = state.exit_code
+
+	exited := false
+	for {
+		result := activity_listener_receive(&listener)
+		if result.kind == .Unavailable {
+			break
+		}
+		if result.kind == .Message {
+			switch result.message.kind {
+			case "agent_exited":
+				exited = true
+			case "taste_failed", "taste_passed", "pulled":
+				delete(run.kind)
+				delete(run.description)
+				run.kind = strings.clone(result.message.kind)
+				run.description = strings.clone(result.message.description)
+				run.taste_after_exit = exited
+			}
+		}
+		destroy_struct(&result.message)
+	}
+	return
+}
+
+// Returns the Git output for the repository; the caller owns it.
+pull_git :: proc(t: ^testing.T, repo: string, args: ..string) -> string {
+	command := make([dynamic]string, context.temp_allocator)
+	append(&command, "git", "-C", repo)
+	append(&command, ..args)
+	state, stdout, stderr, err := os.process_exec(os.Process_Desc{command = command[:]}, context.allocator)
+	defer delete(stderr)
+	testing.expect_value(t, err, os.Error(nil))
+	testing.expect(t, state.success, string(stderr))
+	return string(stdout)
+}
+
+@(test)
+test_pull_with_passing_taste_commits_with_message :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-pull-pass-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	run := run_station_pull(t, root, FAKE_WRITING_AGENT, "true", "Add the change")
+	defer delete(run.kind)
+	defer delete(run.description)
+	testing.expect_value(t, run.exit_code, 0)
+	testing.expect_value(t, run.kind, "pulled")
+	testing.expect(t, run.taste_after_exit, "the Taste must report after agent_exited")
+
+	repo, _ := filepath.join({root, "beans"}, context.temp_allocator)
+	subject := pull_git(t, repo, "log", "-1", "--format=%s")
+	defer delete(subject)
+	testing.expect_value(t, strings.trim_space(subject), "Add the change")
+	count := pull_git(t, repo, "rev-list", "--count", "HEAD")
+	defer delete(count)
+	testing.expect_value(t, strings.trim_space(count), "2")
+}
+
+@(test)
+test_pull_with_failing_taste_sends_taste_failed_and_makes_no_commit :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-pull-fail-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	run := run_station_pull(t, root, FAKE_WRITING_AGENT, "false", "Add the change")
+	defer delete(run.kind)
+	defer delete(run.description)
+	testing.expect_value(t, run.exit_code, 1)
+	testing.expect_value(t, run.kind, "taste_failed")
+	testing.expect_value(t, run.description, "Taste exited with code 1")
+
+	repo, _ := filepath.join({root, "beans"}, context.temp_allocator)
+	count := pull_git(t, repo, "rev-list", "--count", "HEAD")
+	defer delete(count)
+	testing.expect_value(t, strings.trim_space(count), "1")
+}
+
+@(test)
+test_pull_with_passing_taste_and_no_changes_sends_taste_passed :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-pull-clean-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	run := run_station_pull(t, root, FAKE_SILENT_AGENT, "true", "Add the change")
+	defer delete(run.kind)
+	defer delete(run.description)
+	testing.expect_value(t, run.exit_code, 0)
+	testing.expect_value(t, run.kind, "taste_passed")
+	testing.expect_value(t, run.description, "Taste passed with no changes")
+
+	repo, _ := filepath.join({root, "beans"}, context.temp_allocator)
+	count := pull_git(t, repo, "rev-list", "--count", "HEAD")
+	defer delete(count)
+	testing.expect_value(t, strings.trim_space(count), "1")
+}
+
+@(test)
+test_shot_without_taste_sends_no_taste_report_and_makes_no_commit :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-pull-none-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	run := run_station_pull(t, root, FAKE_WRITING_AGENT, "", "")
+	defer delete(run.kind)
+	defer delete(run.description)
+	testing.expect_value(t, run.exit_code, 0)
+	testing.expect_value(t, run.kind, "")
+
+	repo, _ := filepath.join({root, "beans"}, context.temp_allocator)
+	count := pull_git(t, repo, "rev-list", "--count", "HEAD")
+	defer delete(count)
+	testing.expect_value(t, strings.trim_space(count), "1")
+}
+
+@(test)
+test_station_parse_requires_execute_taste_and_message_together :: proc(t: ^testing.T) {
+	with_taste, taste_err := parse_args({"station", "--report", "/tmp/r.sock", "--station", "shot-a", "--brew", "order-1", "--prompt", "hi", "--taste", "just test", "--message", "Add it", "--", "pi"})
+	testing.expect_value(t, taste_err, "")
+	testing.expect_value(t, with_taste.taste, "just test")
+	testing.expect_value(t, with_taste.message, "Add it")
+
+	_, message_err := parse_args({"station", "--report", "/tmp/r.sock", "--station", "shot-a", "--brew", "order-1", "--prompt", "hi", "--message", "Add it", "--", "pi"})
+	testing.expect(t, message_err != "", "a message without a taste must be refused")
+	_, taste_only_err := parse_args({"station", "--report", "/tmp/r.sock", "--station", "shot-a", "--brew", "order-1", "--prompt", "hi", "--taste", "just test", "--", "pi"})
+	testing.expect(t, taste_only_err != "", "a taste without a message must be refused")
+	_, research_err := parse_args({"station", "--report", "/tmp/r.sock", "--station", "shot-a", "--brew", "order-1", "--prompt", "hi", "--kind", "research", "--taste", "just test", "--message", "Add it", "--", "pi"})
+	testing.expect(t, research_err != "", "a research Station must not take a taste")
+}
