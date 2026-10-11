@@ -123,7 +123,7 @@ host_relay_reports :: proc(data: rawptr) {
 				request_id = result.message.brew_id,
 				shot_id = result.message.shot_id,
 				kind = result.message.kind,
-				description = result.message.description,
+				description = host_report_text(result.message.description),
 			})
 			destroy_struct(&result.message)
 		case .Unavailable:
@@ -134,6 +134,25 @@ host_relay_reports :: proc(data: rawptr) {
 		}
 		free_all(context.temp_allocator)
 	}
+}
+
+// A Station sends a long report as "file:<path>". Only files under this host's
+// reports directory are read; anything else is reported as unavailable.
+host_report_text :: proc(description: string) -> string {
+	if !strings.has_prefix(description, STATION_FILE_PREFIX) {
+		return description
+	}
+	path := description[len(STATION_FILE_PREFIX):]
+	reports_dir, _ := filepath.join({host_history_root, "reports"}, context.temp_allocator)
+	inside := strings.has_prefix(path, reports_dir) && len(path) > len(reports_dir) && path[len(reports_dir)] == '/'
+	if !inside || strings.contains(path, "..") {
+		return fmt.tprintf("Report location refused: %s", path)
+	}
+	data, err := os.read_entire_file(path, context.temp_allocator)
+	if err != nil {
+		return fmt.tprintf("Report file could not be read: %s", path)
+	}
+	return string(data)
 }
 
 // Returns true when the host must stop.

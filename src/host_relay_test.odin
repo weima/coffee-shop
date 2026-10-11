@@ -74,3 +74,46 @@ test_host_relays_station_reports_to_stdout :: proc(t: ^testing.T) {
 	testing.expect_value(t, history_err, os.Error(nil))
 	testing.expect(t, strings.contains(string(history), `"kind":"turn_done"`) && strings.contains(string(history), `"kind":"agent_exited"`), string(history))
 }
+
+@(test)
+test_host_relays_full_long_station_report :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-relay-long-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	state, _ := filepath.join({root, "state"})
+	fifo, _ := filepath.join({root, "in.fifo"})
+	out_path, _ := filepath.join({root, "host.out"})
+	err_path, _ := filepath.join({root, "host.err"})
+	agent, _ := filepath.join({root, "agent.sh"})
+	received, _ := filepath.join({root, "received.log"})
+	defer delete(state)
+	defer delete(fifo)
+	defer delete(out_path)
+	defer delete(err_path)
+	defer delete(agent)
+	defer delete(received)
+	testing.expect_value(t, os.write_entire_file(agent, FAKE_LONG_AGENT, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
+	binary := build_test_binary(t, root)
+	defer delete(binary)
+
+	script_state, script_out, script_err, exec_err := os.process_exec(os.Process_Desc{
+		command = {"sh", "-c", HOST_RELAY_SCRIPT, "relay-test", state, fifo, out_path, err_path, agent, received, binary},
+	}, context.allocator)
+	defer delete(script_out)
+	defer delete(script_err)
+	testing.expect_value(t, exec_err, os.Error(nil))
+	testing.expect(t, script_state.success, string(script_err))
+
+	out_data, out_err := os.read_entire_file(out_path, context.allocator)
+	defer delete(out_data)
+	testing.expect_value(t, out_err, os.Error(nil))
+	out := string(out_data)
+	full := strings.repeat("x", 3000, context.temp_allocator)
+	expected := strings.concatenate({`"kind":"turn_done","description":"`, full, `"}`}, context.temp_allocator)
+	testing.expect(t, strings.contains(out, expected), out[:min(len(out), 400)])
+}

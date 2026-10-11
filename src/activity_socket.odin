@@ -34,6 +34,7 @@ Activity_Listener :: struct {
 
 Activity_Sender :: struct {
 	fd: posix.FD,
+	path: string, // socket path, so a sender can find its sibling directories
 }
 
 Activity_Receive_Kind :: enum {
@@ -142,6 +143,7 @@ activity_sender_open :: proc(path: string) -> (sender: Activity_Sender, ok: bool
 		return
 	}
 	sender.fd = fd
+	sender.path = strings.clone(path)
 	return sender, true
 }
 
@@ -176,6 +178,7 @@ activity_sender_close :: proc(sender: ^Activity_Sender) {
 	if sender.fd >= 0 {
 		posix.close(sender.fd)
 	}
+	delete(sender.path)
 	sender^ = Activity_Sender{fd = -1}
 }
 

@@ -4,6 +4,7 @@ import "core:bufio"
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
 import "core:sync"
 import "core:terminal/ansi"
@@ -322,10 +323,16 @@ station_is_turn_end :: proc(line: string) -> bool {
 	return ok && pi_event_string(root, "type") == "agent_end"
 }
 
+// Reports that fit the activity limit travel inline. A longer report is written to
+// <host>/reports/ and the socket carries "file:" plus its path, so the host can
+// relay the whole text. If the file cannot be written, the report is truncated.
 station_report :: proc(sender: ^Activity_Sender, brew_id, station_id, kind, description: string) {
 	text := description
 	if len(text) > ACTIVITY_MAX_DESCRIPTION {
 		text = text[:ACTIVITY_MAX_DESCRIPTION]
+		if path, ok := station_write_report_file(sender.path, station_id, kind, description); ok {
+			text = fmt.tprintf("%s%s", STATION_FILE_PREFIX, path)
+		}
 	}
 	_ = activity_sender_send(sender, Activity_Message{
 		brew_id = brew_id,
@@ -334,4 +341,24 @@ station_report :: proc(sender: ^Activity_Sender, brew_id, station_id, kind, desc
 		description = text,
 		timestamp_ns = time.now()._nsec,
 	})
+}
+
+STATION_FILE_PREFIX :: "file:"
+
+station_write_report_file :: proc(socket_path, station_id, kind, text: string) -> (path: string, ok: bool) {
+	slash := strings.last_index_byte(socket_path, '/')
+	if slash < 0 {
+		return "", false
+	}
+	host_dir := socket_path[:slash]
+	reports_dir, _ := filepath.join({host_dir, "reports"}, context.temp_allocator)
+	if os.make_directory_all(reports_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
+		return "", false
+	}
+	name := fmt.tprintf("%s-%s-%d.txt", station_id, kind, time.now()._nsec)
+	path, _ = filepath.join({reports_dir, name}, context.temp_allocator)
+	if os.write_entire_file(path, text, os.Permissions{.Read_User, .Write_User}) != nil {
+		return "", false
+	}
+	return path, true
 }
