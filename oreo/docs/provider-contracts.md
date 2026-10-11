@@ -5,6 +5,8 @@ Slice 3 research output for [PLAN.md](../PLAN.md) ("Verify provider contracts").
 - Read date for every source below: **2026-10-10** (system date of this research pass).
 - Status values: `documented`, `undocumented`, `needs developer registration`. A `documented` row always cites a source ID from the source log.
 
+> **Scope (2026-10-10, second round, items 1 and 5).** Codex and GitHub Copilot are the first providers to test. Oreo's provider list is no longer limited to them: providers come from pi's ecosystem, and login and model calls go through pi. The contracts below remain the reference for these two. See [architecture](../architecture.md#decisions-2026-10-10-second-round).
+
 ## Summary
 
 - **Codex.** The only documented route for a third-party app to use a ChatGPT plan is OpenAI's open-source "Sign in with ChatGPT" flow (SIWC, sources C1–C2). It uses dynamic client registration (no developer-owned client ID, no secret), PKCE, and a `127.0.0.1` loopback callback. Inference then goes directly to `https://api.openai.com/v1/responses`. Eligibility for Oreo is not confirmed. No documented device-code route exists for third-party clients.
@@ -289,7 +291,7 @@ Documented route: a GitHub OAuth App (or GitHub App) with device flow enabled gi
 
 These statements in [architecture.md](../architecture.md) and [PLAN.md](../PLAN.md) do not match the documented contracts.
 
-Status after the [2026-10-10 decisions](#decisions-2026-10-10): gaps 4 and 5 are resolved by the direct Copilot route, which is undocumented. Gap 3 is to be verified by the smoke test. Gaps 1, 2, 6, and 7 are unchanged; Codex is tabled.
+Status after the [2026-10-10 decisions](#decisions-2026-10-10): gaps 4 and 5 were resolved by the direct Copilot route. That route is now superseded, because provider calls go through pi, so gaps 4 and 5 are open again until pi's route is checked. Gap 3 is to be verified by the smoke test through pi. Gaps 1, 2, 6, and 7 are unchanged; Codex is tabled.
 
 1. **Codex headless path.** The architecture calls Codex device-code login "the headless path". No device-code route is documented for third-party clients (Codex Item 1). The documented headless alternative is credential transfer from a browser-capable machine (C9).
 2. **Codex loopback URI.** The architecture says the user "has approved a loopback redirect URI". The approved value is not recorded in the repo. The documented rule is `http://127.0.0.1:<port>/auth/callback`, with the port free to vary (C2).
@@ -309,25 +311,29 @@ Status after the [2026-10-10 decisions](#decisions-2026-10-10): gaps 4 and 5 are
 - Whether Copilot inference works with no OAuth scope, or which minimal scope set it needs.
 - Whether a GitHub OAuth App can revoke its own grant through an API.
 - Whether a third-party client may call Copilot hosts directly. Not stated either way in the documents read.
+- Whether an extension of pi falls under pi's provider registration. Open; must be checked before any public release (Q11).
 - Terms: the OpenAI Terms of Use page returned HTTP 403, so C19 is excerpt-only. The Codex open-source license was not checked. The Copilot CLI bundling license was not checked.
 - Pages read only from search excerpts (C17, C19, C20, G7, G19, G20) were not read in full.
 
 ## Decisions (2026-10-10)
 
+> Partly superseded by the runtime decision of 2026-10-10 ([architecture](../architecture.md#runtime-decision-2026-10-10)): login and provider calls go through pi, and the GitHub OAuth App is dropped. Each row shows its current status. Earlier answers are kept as the record.
+
 The developer answered the open questions on 2026-10-10. Numbers Q1–Q10 are the decision items, not the retired question numbers. Focus is GitHub Copilot; Codex is tabled.
 
 | Item | Decision | Status |
 |---|---|---|
-| Q1. Codex | Tabled. The developer has not logged in to Codex yet. Codex personal import and Codex implementation are both tabled. The Codex contract facts above are unchanged. | tabled |
-| Q2. Refresh write-back | Option (b): rotated tokens are saved to Oreo's own `~/.oreo/auth.json`. This makes a copy, which is accepted for personal use. | decided |
-| Q3. README and PLAN | Updated to match the personal import exception in [architecture.md](../architecture.md#personal-import-exception). | decided |
-| Q4. Import flag | `OREO_PERSONAL_IMPORT=codex,copilot`. Name chosen. Only `copilot` is in use while Codex is tabled. | decided (name); Codex value tabled |
+| Q1. Codex | Earlier answer: Codex implementation is tabled. Codex personal import is superseded (Q4). The Codex contract facts above are unchanged. | tabled |
+| Q2. Refresh write-back | Earlier answer: option (b), rotated tokens saved to Oreo's own `~/.oreo/auth.json`. Superseded (2026-10-10, item 2): refresh and storage go through pi, so this write-back no longer applies. | superseded (2026-10-10, item 2) |
+| Q3. README and PLAN | Originally updated to match the personal import exception. Both files now follow the 2026-10-10 runtime decision instead. | superseded (2026-10-10, items 1 and 4) |
+| Q4. Import flag | Earlier answer: `OREO_PERSONAL_IMPORT=codex,copilot`. Superseded (2026-10-10, item 4): no import is needed, because each user logs in through pi. Kept as the record. | superseded (2026-10-10, item 4) |
 | Q5. Codex plan | Tabled, with Q1. | tabled |
-| Q6. Legal review | No legal review is required before release. | decided |
-| Q7. OAuth App owner | The "Oreo" OAuth App is registered under the developer's personal GitHub account. | decided; registration pending |
-| Q8. Callback URL | `http://127.0.0.1/callback`. Reason: GitHub's device flow never redirects, so no server listens on it. | suggested, pending developer confirmation |
-| Q9. Copilot scopes | Start with no scopes. The smoke test checks whether the Copilot token works without scopes. pi requests `read:user` as a reference only (pi source is not a contract source). | decided (start); verify in smoke test |
-| Q10. Copilot route | Direct. The Copilot SDK and the Copilot CLI are not used. The direct route calls pi's undocumented Copilot endpoints (the token exchange and the API host). | undocumented; pi reference; personal use until a documented API exists |
+| Q6. Legal review | Earlier answer: no legal review is required before release. Superseded in part (2026-10-10, item 5): a provider-terms check is open and must be done before any public release (Q11). Personal use is not affected. | superseded in part; open (Q11) |
+| Q7. OAuth App owner | Earlier answer: the "Oreo" OAuth App under the developer's personal GitHub account. Dropped (2026-10-10, item 3): no OAuth App is registered. | dropped (2026-10-10, item 3) |
+| Q8. Callback URL | Earlier suggestion: `http://127.0.0.1/callback`. Dropped (2026-10-10, item 3): no callback URL is needed. | dropped (2026-10-10, item 3) |
+| Q9. Copilot scopes | Earlier plan: start with no scopes, checked by the smoke test. Superseded (2026-10-10, items 2 and 3): login goes through pi, and the scope choice moves to pi's login. pi requests `read:user` as a reference only (pi source is not a contract source). | superseded (2026-10-10, items 2 and 3) |
+| Q10. Copilot route | Earlier answer: direct, calling pi's undocumented Copilot endpoints (the token exchange and the API host). Superseded (2026-10-10, item 2): provider calls go through pi, so Oreo does not call those endpoints itself. The earlier answer is kept as the record. | superseded (2026-10-10, item 2); endpoints remain unverified |
+| Q11. Provider terms | Open (2026-10-10, item 5). Whether an extension of pi falls under pi's provider registration. Not verified. Must be checked before any public release. Personal use is not affected. | open |
 
-**Route conflict.** The Copilot SDK route assumed by PLAN slice 6 is replaced by the direct route. PLAN slice 6 now says so.
+**Route conflict.** The Copilot SDK route assumed by PLAN slice 6 was replaced by the direct route. The 2026-10-10 runtime decision supersedes the direct route as well: provider calls go through pi. PLAN slice 6 now says so.
 
