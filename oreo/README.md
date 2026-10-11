@@ -1,13 +1,13 @@
 # Oreo
 
-Oreo is a small Odin agent harness intended to be used as a library by Coffee Shop and, once mature, published from its own repository. It hosts one in-memory session per top-level task; each session can submit many work items to a shared thread pool in one long-lived process. **Pi is the behavioral reference for provider authentication, agent-loop defaults, and built-in tools only; Oreo will not depend on Pi's code, executable, runtime, or credential store.**
+Oreo is a small Odin agent harness intended to be used as a library by Coffee Shop and, once mature, published from its own repository. Delivery (extension, library, or executable) is under review. It hosts one in-memory session per top-level task; each session can submit many work items to a shared thread pool in one long-lived process. **Oreo ships as a pi extension and depends on the pi runtime. All provider login and model calls go through pi's auth and model layer; Oreo implements no OAuth flow of its own.** Pi also remains the behavioral reference for agent-loop defaults and built-in tools.
 
 > **Status:** Oreo implementation is underway. The bundled SQLite 3.54.0 binding and metadata store pass 17 real-engine tests on macOS. The store persists work-item transitions, session-close cancellation, and versioned schema migrations; Linux verification, worker execution, and the provider-neutral host remain pending.
 
 ## What Oreo will provide
 
 - A long-lived Odin host with per-task sessions, durable structured context storage, and a shared worker pool for each session's work items.
-- Provider authentication and model requests for OpenAI Codex and GitHub Copilot, after the provider-neutral core is established and provider contracts are verified.
+- Provider login and model requests for OpenAI Codex and GitHub Copilot through pi's auth and model layer, after the provider-neutral core is established.
 - Pi-compatible `read`, `write`, and `execute` tools, plus events for external input, progress, and final results.
 - A small Odin library API that Coffee Shop can call.
 
@@ -15,7 +15,7 @@ A typical workload is about 5 task sessions with 5 concurrent work items each (a
 
 ## Authentication
 
-Oreo will implement the provider-specific OAuth flows directly and store credentials separately in `~/.oreo/auth.json` with owner-only permissions. It will not read or write another harness's credential store, except for the personal import exception: until release, personal-account logins may be imported from another harness's store when the user opts in with `OREO_PERSONAL_IMPORT=codex,copilot`. See [architecture](architecture.md#personal-import-exception). Provider client identifiers and endpoints must be checked for authorized use before release.
+Login goes through pi. Each user logs in through pi with their own account; Oreo does not implement its own OAuth flow and does not register its own client ID. Oreo does not read or write another harness's credential store. How work and personal accounts stay separate under pi is not yet specified. The earlier personal import exception (`OREO_PERSONAL_IMPORT=codex,copilot`) is superseded, because no import is needed; see [architecture](architecture.md#runtime-decision-2026-10-10) and the [earlier record](architecture.md#personal-import-exception). Provider terms must be checked before any public release; personal use is not affected.
 
 ## Development
 
@@ -37,7 +37,7 @@ cd oreo && just test
 
 ## Reference implementation
 
-The following Pi source files are behavioral references for OAuth, credential handling, and built-in tool contracts. Oreo will implement the behavior independently.
+The following Pi source files are behavioral references for built-in tool contracts. The OAuth and credential-handling links are the record of the earlier design; login now goes through pi.
 
 - [OpenAI Codex OAuth](https://github.com/earendil-works/pi/blob/main/packages/ai/src/auth/oauth/openai-codex.ts)
 - [GitHub Copilot OAuth](https://github.com/earendil-works/pi/blob/main/packages/ai/src/auth/oauth/github-copilot.ts)

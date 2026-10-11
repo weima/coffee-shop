@@ -2,7 +2,7 @@
 
 Build Oreo as an independent Odin agent harness in `oreo/`, with source in `oreo/src/` and package assets in `oreo/assets/`. This plan follows the confirmed requirements in [Architecture](architecture.md); that document is the design source of truth.
 
-Oreo's first milestone is a provider-neutral, long-lived in-process host for task sessions, each of which can submit many work items to a shared thread pool. Live provider authentication comes later. Pi is a behavioral reference only; Oreo has no Pi runtime or credential dependency.
+Oreo's first milestone is a provider-neutral, long-lived in-process host for task sessions, each of which can submit many work items to a shared thread pool. Live provider authentication comes later, through pi's auth and model layer. Oreo ships as a pi extension and depends on the pi runtime (2026-10-10 decision; see [architecture](architecture.md#runtime-decision-2026-10-10)). Its provider-neutral structure stays inside Oreo.
 
 ## Delivery slices
 
@@ -11,10 +11,10 @@ Oreo's first milestone is a provider-neutral, long-lived in-process host for tas
 | 0. Finalize the core contract | Turn the confirmed lifecycle and persistence requirements into a small public API and test cases. | API shape and implementation defaults are documented; no remaining user decision blocks the provider-neutral core. |
 | 1. Build the provider-neutral core | Odin package, per-task session state, structured database storage, shared worker-pool integration, explicit provider/model/thinking settings on each work item, event/input handoff, config loading, and fake provider. | `odin check` and offline tests pass on Linux and macOS; sessions pause/resume and their stored context remains queryable after close and process restart. |
 | 2. Match Pi's agent loop and tools | Independently implement the agreed agent-loop defaults and `read`, `write`, and `execute` behavior. | Tests cover turn/tool-call behavior, progress/final results, external-input pause/resume, and tool failures against verified Pi reference contracts. |
-| 3. Verify provider contracts | Confirm authorized Oreo client registrations, redirects, scopes, endpoints, and model/API capabilities for Codex and GitHub Copilot. | Provider-specific contracts are documented. No Pi client IDs or undocumented endpoints are assumed reusable. |
-| 4. Add provider auth and requests | Implement login/re-login handoff, credential storage, refresh, provider requests, streaming/tool-call parsing, and normalized errors. | Fake-server tests cover success and failure paths without live credentials; approved manual smoke tests confirm each provider. |
+| 3. Verify provider contracts | Record provider contracts for Codex and GitHub Copilot as reference. Oreo registers no client (2026-10-10). | Provider-specific contracts are documented. No Pi client IDs or undocumented endpoints are assumed reusable. |
+| 4. Add provider auth and requests | Use pi's auth and provider layer; no Oreo OAuth flow. | An approved smoke test through pi's login confirms each provider; automated tests use no live credentials. |
 | 5. Measure worker scale | Exercise normal and stress workloads with the worker pool and event delivery. | Record throughput, queue behavior, worker count, and memory for about 25 concurrent work items and at least 1,000 queued/retained work items; no target is set for simultaneously active threads. |
-| 6. Integrate with Coffee Shop | Consume Oreo through its library boundary while Coffee Shop retains task decomposition, worktrees, and durable task state. The Copilot route is direct (no Copilot SDK or CLI). | Fake-provider end-to-end tests pass; adoption does not require an external agent CLI process per session. |
+| 6. Integrate with Coffee Shop | Consume Oreo through its library boundary while Coffee Shop retains task decomposition, worktrees, and durable task state. Provider access goes through pi (2026-10-10), which supersedes the earlier direct Copilot route. | Fake-provider end-to-end tests pass; adoption does not require an external agent CLI process per session. |
 | 7. Prepare extraction | Make package paths, build instructions, notices, and tests independent of Coffee Shop-specific code. | Oreo builds and tests from its own repository and Coffee Shop consumes only the public API. |
 
 ## Current progress
@@ -22,15 +22,15 @@ Oreo's first milestone is a provider-neutral, long-lived in-process host for tas
 - The SQLite amalgamation and binding are implemented; the store applies source-controlled schema migrations in version order, persists/retrieves metadata and ordered records, validates work-item transitions, and coordinates session-close cancellation.
 - `cd oreo && just test` passes nine binding tests and eight store tests against bundled SQLite on macOS. Linux verification and worker execution remain pending.
 - The full Coffee Shop test suite passes after extending an E2E activity readiness window for parallel test load. The provider-neutral host, worker pool, and task lifecycle are the next implementation slices.
-- **Next session:**
-  - Register the GitHub OAuth App "Oreo" under the developer's account, using the callback suggestion (`http://127.0.0.1/callback`), with device flow enabled.
-  - Smoke test: device login with the app's client ID and no scopes, then the Copilot token exchange, then one model request. Record the results in the docs.
-  - Build the auth slice only after the smoke test passes.
-  - Codex: tabled until the developer logs in and chooses a plan.
+- **Next session** (2026-10-10 runtime decision; the GitHub OAuth App step is dropped):
+  1. Spike: how many `createAgentSession` sessions fit in one pi process, whether they reuse one login, and their memory and CPU cost. Measure before the plan depends on it.
+  2. Provider-terms check: whether an extension of pi falls under pi's provider registration. Required before any public release; personal use is not affected.
+  3. Decide delivery: extension, library, or executable. The earlier "both executable and library" answer is to be revisited.
+  4. Auth slice: a smoke test through pi's login, then one model request per provider. Codex remains tabled until the developer logs in and chooses a plan.
 
 ## Confirmed requirements
 
-- **Providers:** Codex and GitHub Copilot are first. Implement the provider-neutral core before live auth; live auth remains gated on authorized client/API contracts.
+- **Providers:** Codex and GitHub Copilot are first, accessed through pi's auth and model layer (2026-10-10). Live auth is a smoke test through pi's login. Provider terms must be checked before public release.
 - **Runtime:** one long-lived Oreo host holds in-memory task sessions. Each task gets its own session; one session can submit many work items to a shared thread pool.
 - **Scale:** the typical example is 5 task sessions with about 5 concurrent work items each (about 25 worker jobs). The stretch target is at least 1,000 queued/retained work items; there is no requirement for 1,000 active threads.
 - **Scheduling:** Oreo uses a shared thread pool for work items; task decomposition remains with the consumer. User-input waits persist context, pause work, release the worker, and resume after the caller responds.
@@ -38,10 +38,10 @@ Oreo's first milestone is a provider-neutral, long-lived in-process host for tas
 - **Session lifetime:** the library exposes `close(session)`. The host's main thread receives `/quit` and calls it. Closing a session cooperatively cancels queued/active work so workers return to the pool, while preserving history.
 - **Context and queue:** persist structured session/work-item context in SQLite at `~/.oreo/sessions.db`; bundle SQLite source so users need no system installation. Context remains findable after close/restart. Retain at least 1,000 queued work items and return `Queue_Full` at capacity. V1 lookup is by metadata, not full text. The v1 tables and indexes are defined in [the database schema](schema.md). End-to-end tests use the real bundled engine and a temporary file-backed database.
 - **Events:** emit external-input, progress, and final-result events. Their exact Odin payloads are implementation details for the core slice, not a pending user decision.
-- **Behavior:** mirror Pi's relevant agent-loop defaults and behavior, and match its `read`, `write`, and `execute` tool behavior. Pi remains a reference, never a runtime dependency.
-- **Login UX:** expose a copyable URL so the user can authenticate manually. Provider-specific challenge details remain subject to contract verification.
+- **Behavior:** mirror Pi's relevant agent-loop defaults and behavior, and match its `read`, `write`, and `execute` tool behavior. Pi is a runtime dependency since 2026-10-10 (Oreo ships as a pi extension). It also remains the reference for agent-loop and tool behavior.
+- **Login UX:** login goes through pi (2026-10-10). Whether pi's login offers a copyable URL is to be confirmed in the smoke test; the earlier Oreo design exposed one.
 - **Platforms:** Linux, including WSL, and macOS are initial targets. Windows is out of scope.
-- **Accounts:** keep work and personal credentials side by side in Oreo-owned storage; never share Pi credentials. Exception until release: personal-account logins may be imported from another harness's store with `OREO_PERSONAL_IMPORT=codex,copilot` (see [architecture](architecture.md#personal-import-exception)).
+- **Accounts:** each user logs in through pi with their own account (2026-10-10). Oreo implements no OAuth flow and registers no client ID. Keeping work and personal accounts apart under pi is open. The earlier personal import exception is superseded ([record](architecture.md#personal-import-exception)).
 
 ## Implementation work and later gates
 
@@ -60,12 +60,12 @@ The requirements above are settled. The following are implementation tasks, not 
 
 ### Provider-auth gate
 
-- Before live auth, verify authorized Oreo client registrations, redirects, scopes, endpoints, and model/API capabilities for Codex and GitHub Copilot.
-- During the auth slice, settle default-account selection and implement safe credential-file updates. These do not block the provider-neutral core or SQLite binding.
+- Oreo registers no client (2026-10-10). Before any public release, check whether an extension of pi falls under pi's provider registration. Personal use is not affected.
+- During the auth slice, settle default-account selection. Credential-file updates are pi's, not Oreo's (2026-10-10). These do not block the provider-neutral core or SQLite binding.
 
 ## Explicit exclusions
 
-- No Pi package, executable, session file, or credential-store dependency.
+- No dependency on pi session files. Pi is a runtime dependency since 2026-10-10, which supersedes the earlier "no Pi package, executable, or credential-store dependency".
 - No separate Oreo process per session.
 - No task decomposition, worktree management, plugin system, or extra initial tool set.
 - No Windows target and no live credentials in automated tests.
