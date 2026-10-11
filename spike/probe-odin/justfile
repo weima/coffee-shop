@@ -1,0 +1,42 @@
+# Wrappers for the Odin probe. Run from anywhere: `just --justfile spike/probe-odin/justfile <recipe>`.
+# test: step 1, loopback fake only. probe: step 2, six real calls (runs only after test passes).
+set working-directory := "."
+
+port := "18777"
+bin := "probe-bin"
+
+build:
+    odin build . -out:{{bin}}
+
+test: build
+    #!/usr/bin/env sh
+    set -u
+    if nc -z 127.0.0.1 {{port}}; then echo "port {{port}} is busy; refusing" >&2; exit 1; fi
+    python3 fake_server.py {{port}} > /tmp/probe-odin-fake.log 2>&1 &
+    srv=$!
+    trap 'kill $srv 2>/dev/null; wait $srv 2>/dev/null' EXIT
+    i=0
+    until nc -z 127.0.0.1 {{port}}; do
+        i=$((i + 1))
+        if [ "$i" -gt 50 ]; then echo "fake server did not start" >&2; exit 1; fi
+        sleep 0.1
+    done
+    PROBE_TEST_BASE_URL=http://127.0.0.1:{{port}} ./{{bin}} test
+
+probe: test
+    #!/usr/bin/env sh
+    set -u
+    # The shell passes the path only. The program reads auth.json; the shell never opens it.
+    auth="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json"
+    ./{{bin}} run "$auth" > step2-run.jsonl &
+    pid=$!
+    sleep 2.5
+    footprint -p "$pid" || true
+    rc=0
+    wait "$pid" || rc=$?
+    cat step2-run.jsonl
+    exit $rc
+
+clean:
+    rm -f {{bin}}
+    pkill -f '[f]ake_server.py {{port}}' || true
