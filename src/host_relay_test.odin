@@ -117,3 +117,35 @@ test_host_relays_full_long_station_report :: proc(t: ^testing.T) {
 	expected := strings.concatenate({`"kind":"turn_done","description":"`, full, `"}`}, context.temp_allocator)
 	testing.expect(t, strings.contains(out, expected), out[:min(len(out), 400)])
 }
+
+// A killed host leaves its socket file behind; the next host must still start.
+@(test)
+test_host_starts_over_stale_socket_file :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-stale-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	state, _ := filepath.join({root, "state"})
+	defer delete(state)
+	host_dir, _ := filepath.join({state, "host"})
+	defer delete(host_dir)
+	testing.expect_value(t, os.make_directory_all(host_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
+	stale, _ := filepath.join({host_dir, "activity.sock"})
+	defer delete(stale)
+	testing.expect_value(t, os.write_entire_file(stale, "", os.Permissions{.Read_User, .Write_User}), os.Error(nil))
+	binary := build_test_binary(t, root)
+	defer delete(binary)
+
+	state_run, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
+		command = {"sh", "-c", `printf '%s\n' '{"type":"shutdown","request_id":"done"}' | CS_STATE_DIR="$1" "$2" host`, "stale-test", state, binary},
+	}, context.allocator)
+	defer delete(stdout)
+	defer delete(stderr)
+	testing.expect_value(t, exec_err, os.Error(nil))
+	testing.expect(t, state_run.success, string(stderr))
+	testing.expect(t, strings.contains(string(stdout), `{"type":"ready","protocol":1}`), string(stdout))
+}

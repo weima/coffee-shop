@@ -74,6 +74,9 @@ run_host :: proc() -> int {
 	host_extension_path = extension_path
 	host_history_root = strings.clone(host_dir, context.allocator)
 	socket_path, _ := filepath.join({host_dir, "activity.sock"}, context.allocator)
+	// A host that was killed leaves its socket behind, and bind would refuse it.
+	// One host runs per state directory, so the leftover file is ours to remove.
+	activity_unlink(socket_path)
 	listener, listener_ok := activity_listener_open(socket_path)
 	if !listener_ok {
 		host_write_line(`{"type":"error","reason":"could not open the host report socket"}`)
