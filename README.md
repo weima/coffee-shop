@@ -2,9 +2,9 @@
 
 ![Coffee Shop mascot: Coffee and Oreo](assets/coffee-shop.svg)
 
-Coffee Shop is being built as a small Odin command-line tool for dispatching parallel Pi workers. The active Pi session acts as the **Barista**: it turns a developer's **Order** into a **Recipe**, then asks Coffee Shop to run the work.
+Coffee Shop is a local Odin orchestrator for work initiated from a long-lived main-agent session. Pi is the first user-facing **Barista**: it receives a natural-language **Order**, prepares an explicit **Recipe**, and asks a foreground Coffee Shop host to manage Herdr workspaces, isolated Git worktrees, and worker sessions. The first usable workflow uses Pi for both main and Herdr worker sessions. Oreo may take either agent role once stable; Oreo and Rachel are optional improvements, not prerequisites.
 
-> **Status:** the vertical slice builds and its automated tests pass on Linux, WSL and macOS. A real one-Shot Pi/Herdr smoke Brew also passed on macOS with Pi `1.1.0` and Herdr `0.9.3`; it produced a completed report and `status`/`collect` succeeded. The smoke task was read-only and made no Station changes.
+> **Current status:** The implemented `brew`/`status`/`cancel`/`collect` CLI is a one-shot foundation; its Pi Workers run one fixed prompt and exit. The automated vertical-slice suite passes on Linux, WSL and macOS, and a real Pi/Herdr smoke Brew passed on macOS with Pi `1.1.0` and Herdr `0.9.3`. The long-lived host, interactive worker sessions, and live completion/needs-input relay described below are **not implemented yet**.
 
 ## The story behind the names
 
@@ -13,7 +13,7 @@ Coffee Shop is named for two of our family members, Coffee and Oreo.
 - **Coffee** is a black German Shepherd and Golden Retriever mix with relaxed floppy ears and a long charcoal muzzle. He is still with us. He is the Barista in the project's characters: the one who turns an Order into a Recipe and leads the Brew.
 - **Oreo** was an American Shorthair with a black-and-white coat. He passed away in 2025, at the age of 12, and we miss him. He is drawn as the cat who reviews a finished Brew. The final review packet is now called the **Tray**.
 
-Rachel is another family member and the inspiration for the human-facing Odin feedback companion in [`tools/rachel/`](tools/rachel/). Her mascot joins Coffee and Oreo in the same round-badge illustration style: Coffee leads the work, Oreo is remembered as the reviewer, and Rachel helps the developer while they code. Her glasses and laptop are part of the design; the paw pin is a small remembrance of Oreo.
+Rachel is another family member and the inspiration for the optional human-facing Odin feedback companion in [`tools/rachel/`](tools/rachel/). Her mascot joins Coffee and Oreo in the same round-badge illustration style: Coffee leads the work, Oreo is remembered as the reviewer, and Rachel can help the developer while they code. Rachel is not part of the Coffee Shop runtime.
 
 The drawings are in [`assets/characters/`](assets/characters/): `coffee.svg`, `oreo.svg`, and `rachel.svg`, alongside the other roles. We want them with us in this project, and this section is how we keep them here.
 
@@ -31,26 +31,31 @@ To **develop** Coffee Shop you also need:
 - The Odin compiler, official monthly release `dev-2026-10`. Odin has no semver-stable release; it publishes one `dev-YYYY-MM` release a month, and Coffee Shop pins one. The compiler reports it as `dev-2026-10-nightly:84bc3fc`, because Odin's version string always says "nightly". Download the archive for your platform from the [`dev-2026-10` release](https://github.com/odin-lang/Odin/releases/tag/dev-2026-10) and verify it against that archive's published SHA-256.
 - [`just`](https://github.com/casey/just), the command runner for the project's checks. Install it with `cargo install just --locked` or your package manager. `just test`, `just check` and `just build` are the supported entry points.
 
-## How it works
+## Intended interaction flow
 
-1. The Barista prepares a Recipe with one or more independent Shots.
-2. Coffee Shop creates an isolated Git worktree, or **Station**, for each Shot.
-3. Coffee Shop starts each Pi **Worker** in its own tab in a Herdr workspace.
-4. Coffee Shop records progress in the **Register** and events in the **Receipt**.
-5. The Barista reviews the completed work and serves a **Tray**: a summary, evidence, and any decision needed.
-6. A person decides whether to integrate the changes. Coffee Shop does not merge or publish them.
+1. For the first usable path, start Pi from `~/work/coffee-shop` and keep its main session open. Pi is the user-facing Barista; Oreo may take this role later once stable.
+2. The active main-agent harness starts Coffee Shop from the `coffee-shop` executable or `odin run src`. The foreground host stays ready for structured dispatch and control requests; it is not a detached daemon or a second natural-language agent.
+3. The user gives the main agent a repository task. The Barista interprets the Order, prepares an explicit Recipe, and sends Coffee Shop a dispatch request.
+4. Coffee Shop creates a Herdr workspace and isolated Git worktree(s), then starts an interactive Pi worker session. Oreo may be evaluated as an alternative only after the Pi-based Coffee Shop flow is usable.
+5. The user can give follow-up instructions in the Herdr worker pane. All project edits stay in the isolated worktree.
+6. The worker sends `needs_input`, progress, or completion to Coffee Shop. Coffee Shop notifies the main agent; the Barista brings the question or result to the user and routes replies back to the same session.
+7. The Barista reports completion. A person reviews and decides whether to integrate; Coffee Shop does not merge or publish automatically.
 
-See [the architecture](docs/architecture.md) for the diagram and boundaries. See [the plan](PLAN.md) for the proposed implementation steps. See the [vocabulary](specs/UBIQUITOUS_LANGUAGE_LATEST.md) for the coffee-shop terms.
+**Input boundary:** “Coffee Shop waits for input” means the foreground host waits for structured requests from the active main-agent harness. Raw user text goes to that harness; Coffee Shop does not interpret it.
 
-## Initial scope
+**Current implementation:** `brew` accepts a prepared JSON Recipe, starts non-interactive `pi --mode json --print --no-session` Workers, waits for terminal Shots, then exits. `status`, `cancel`, and `collect` are separate commands. There is no long-lived host, interactive Worker, or live needs-input/completion relay yet.
+
+Oreo and Rachel are improvement tracks, not core dependencies: the Coffee Shop workflow must be usable with Pi alone. See [the architecture](docs/architecture.md) for target and current diagrams and boundaries. See [the plan](PLAN.md) for the next implementation phases. See the [vocabulary](specs/UBIQUITOUS_LANGUAGE_LATEST.md) for the coffee-shop terms.
+
+## Target scope
 
 | Included | Not included |
 | --- | --- |
-| One local machine, Pi workers, and Herdr workspaces | Other agent harnesses or session backends |
-| Explicit task breakdown by the active Pi session | A separate AI coordinator or automatic task decomposition |
-| One isolated Git worktree per Shot | Persistent second mates or remote workers |
-| Durable run status and collected worker results | An always-on watcher, Relay, or automatic merge |
-| Human review before integration | Automatic PR creation or publishing |
+| One local main-agent session (Pi first) with a foreground Coffee Shop controller | A detached background daemon or remote workers |
+| Explicit task breakdown by the Barista | Natural-language task decomposition inside Coffee Shop |
+| Herdr workspaces, isolated Git worktrees, and interactive Pi worker sessions | Oreo/Rachel integration in the core path; unrelated harnesses or workspace backends |
+| Session history plus completion and needs-input handoff to the main agent | Automatic merge, PR creation, publishing, or cleanup |
+| Human review before integration | Persistent second coordinators |
 
 ## Recipe format
 
@@ -83,9 +88,9 @@ Each Station is a fresh checkout, so gitignored directories such as `node_module
 - It works for any repository-local directory, for example `node_modules`, `vendor/bundle`, `.bundle` or `.venv`. Ecosystems that keep packages in a global cache outside the repository, such as NuGet's `~/.nuget/packages`, need nothing shared.
 - When a Station lacks one of those common directories that the Beans has, the Filter adds a note suggesting `share` instead of leaving you with a confusing test failure.
 
-## Usage
+## Current one-shot CLI usage
 
-A typical session:
+A typical one-shot session:
 
 1. The Barista writes a Recipe and runs `brew`. It blocks until every Shot is finished, so run it in the background (for example with Pi's `bg_run`) rather than in the foreground.
 2. While it runs, `status <brew-id>` shows each Shot, and `cancel <brew-id>` stops the Brew.

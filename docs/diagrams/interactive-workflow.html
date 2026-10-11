@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coffee Shop interactive workflow</title>
+  <style>
+    html, body { margin: 0; background: #f5f2eb; }
+    svg { display: block; width: 100%; height: auto; font-family: Arial, sans-serif; }
+    .title { font-size: 34px; font-weight: 700; fill: #241f1a; }
+    .subtitle { font-size: 18px; fill: #635b51; }
+    .lane { fill: #fffdf9; stroke: #d9d0c4; stroke-width: 2; }
+    .lane-head { fill: #eadfce; stroke: #cdbda6; stroke-width: 2; }
+    .lane-title { font-size: 20px; font-weight: 700; fill: #30271f; text-anchor: middle; }
+    .lane-sub { font-size: 15px; fill: #635b51; text-anchor: middle; }
+    .lifeline { stroke: #c9bfae; stroke-width: 2; stroke-dasharray: 7 8; }
+    .box { fill: #fff; stroke-width: 2; }
+    .box-text { font-size: 16px; font-weight: 700; text-anchor: middle; }
+    .box-sub { font-size: 14px; fill: #594f44; text-anchor: middle; }
+    .request { stroke: #376a9a; fill: none; stroke-width: 3; marker-end: url(#arrow-blue); }
+    .event { stroke: #ad6233; fill: none; stroke-width: 3; marker-end: url(#arrow-orange); }
+    .work { stroke: #4b795a; fill: none; stroke-width: 3; marker-end: url(#arrow-green); }
+    .followup { stroke: #75619a; fill: none; stroke-width: 3; marker-end: url(#arrow-purple); }
+    .request-text { fill: #28577f; }
+    .event-text { fill: #8e4d27; }
+    .work-text { fill: #3e674c; }
+    .followup-text { fill: #634e88; }
+    .note { fill: #fff4d5; stroke: #d2a84b; stroke-width: 2; }
+    .note-text { font-size: 16px; fill: #58431a; }
+    .footer { font-size: 16px; font-weight: 700; fill: #7d3d2e; }
+  </style>
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1430" role="img" aria-labelledby="diagram-title diagram-desc">
+  <title id="diagram-title">Coffee Shop target interactive workflow</title>
+  <desc id="diagram-desc">A developer gives an Order to the main Pi session. Pi sends a structured dispatch to a foreground Coffee Shop host. Coffee Shop starts an interactive agent session in a Herdr workspace and isolated worktree. Worker events return through Coffee Shop to the main-agent session, which reports to the developer and routes replies.</desc>
+  <defs>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#376a9a"/></marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#ad6233"/></marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#4b795a"/></marker>
+    <marker id="arrow-purple" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#75619a"/></marker>
+  </defs>
+  <rect x="0" y="0" width="1600" height="1430" fill="#f5f2eb"/>
+  <text x="70" y="62" class="title">Coffee Shop: interactive work loop</text>
+  <text x="70" y="94" class="subtitle">Target flow — main agent stays user-facing; Pi is first; Coffee Shop manages worker sessions.</text>
+
+  <rect x="55" y="130" width="1490" height="1260" rx="18" class="lane"/>
+  <rect x="80" y="150" width="250" height="82" rx="12" class="lane-head"/>
+  <rect x="370" y="150" width="250" height="82" rx="12" class="lane-head"/>
+  <rect x="660" y="150" width="250" height="82" rx="12" class="lane-head"/>
+  <rect x="950" y="150" width="250" height="82" rx="12" class="lane-head"/>
+  <rect x="1240" y="150" width="250" height="82" rx="12" class="lane-head"/>
+  <text x="205" y="183" class="lane-title">Developer</text>
+  <text x="205" y="208" class="lane-sub">human input and review</text>
+  <text x="495" y="183" class="lane-title">Main agent / Barista</text>
+  <text x="495" y="208" class="lane-sub">Pi first; Oreo when stable</text>
+  <text x="785" y="183" class="lane-title">Coffee Shop host</text>
+  <text x="785" y="208" class="lane-sub">Pi-started foreground Odin host</text>
+  <text x="1075" y="183" class="lane-title">Herdr worker session</text>
+  <text x="1075" y="208" class="lane-sub">Interactive Pi worker; core path</text>
+  <text x="1365" y="183" class="lane-title">Git worktree</text>
+  <text x="1365" y="208" class="lane-sub">isolated target checkout</text>
+
+  <line x1="205" y1="245" x2="205" y2="1230" class="lifeline"/>
+  <line x1="495" y1="245" x2="495" y2="1230" class="lifeline"/>
+  <line x1="785" y1="245" x2="785" y2="1230" class="lifeline"/>
+  <line x1="1075" y1="245" x2="1075" y2="1230" class="lifeline"/>
+  <line x1="1365" y1="245" x2="1365" y2="1230" class="lifeline"/>
+
+  <rect x="270" y="260" width="300" height="52" rx="9" class="box" stroke="#376a9a"/>
+  <text x="420" y="292" class="box-text request-text">1 · Natural-language Order</text>
+  <line x1="215" y1="330" x2="475" y2="330" class="request"/>
+
+  <rect x="475" y="380" width="410" height="58" rx="9" class="box" stroke="#376a9a"/>
+  <text x="680" y="404" class="box-text request-text">2 · Structured Recipe / dispatch</text>
+  <text x="680" y="426" class="box-sub">Barista owns interpretation and breakdown</text>
+  <line x1="505" y1="455" x2="765" y2="455" class="request"/>
+
+  <rect x="765" y="500" width="400" height="58" rx="9" class="box" stroke="#376a9a"/>
+  <text x="965" y="524" class="box-text request-text">3 · Create Herdr workspace + Station</text>
+  <text x="965" y="546" class="box-sub">Start an interactive Pi worker session</text>
+  <line x1="795" y1="575" x2="1055" y2="575" class="request"/>
+
+  <rect x="1055" y="620" width="400" height="58" rx="9" class="box" stroke="#4b795a"/>
+  <text x="1255" y="644" class="box-text work-text">4 · Read and change the project</text>
+  <text x="1255" y="666" class="box-sub">All edits stay in the isolated worktree</text>
+  <line x1="1085" y1="695" x2="1345" y2="695" class="work"/>
+
+  <rect x="370" y="740" width="650" height="58" rx="9" class="box" stroke="#75619a"/>
+  <text x="695" y="764" class="box-text followup-text">5 · User gives follow-up in the Herdr pane</text>
+  <text x="695" y="786" class="box-sub">Or replies to a needs-input request through the main agent</text>
+  <line x1="215" y1="815" x2="1060" y2="815" class="followup"/>
+
+  <rect x="760" y="860" width="400" height="58" rx="9" class="box" stroke="#ad6233"/>
+  <text x="960" y="884" class="box-text event-text">6 · needs_input · progress · completed</text>
+  <text x="960" y="906" class="box-sub">Structured event tied to the worker session</text>
+  <line x1="1065" y1="935" x2="795" y2="935" class="event"/>
+
+  <rect x="470" y="980" width="400" height="58" rx="9" class="box" stroke="#ad6233"/>
+  <text x="670" y="1004" class="box-text event-text">7 · Forward event; route human reply</text>
+  <text x="670" y="1026" class="box-sub">Coffee Shop notifies the main agent</text>
+  <line x1="775" y1="1055" x2="505" y2="1055" class="event"/>
+
+  <rect x="120" y="1100" width="400" height="58" rx="9" class="box" stroke="#75619a"/>
+  <text x="320" y="1124" class="box-text followup-text">8 · Question or completion summary</text>
+  <text x="320" y="1146" class="box-sub">Human reviews; integration stays explicit</text>
+  <line x1="485" y1="1175" x2="225" y2="1175" class="followup"/>
+
+  <rect x="100" y="1238" width="1400" height="100" rx="12" class="note"/>
+  <text x="130" y="1277" class="note-text">“Coffee Shop waits for input” means the foreground host waits for structured requests from the main agent.</text>
+  <text x="130" y="1307" class="note-text">Oreo and Rachel are optional improvements, not prerequisites for this Pi-based core workflow.</text>
+  <text x="80" y="1370" class="footer">Current code is one-shot: brew + pi --print --no-session. This target interactive loop is not implemented yet.</text>
+</svg>
+</body>
+</html>

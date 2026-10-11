@@ -1,8 +1,16 @@
 # Coffee Shop Architecture
 
-Coffee Shop is a local Odin dispatcher. The active Pi session decides how to divide an Order. Coffee Shop starts and tracks Pi workers; it does not act as another AI coordinator.
+The target is an interactive, foreground control loop around the user's main-agent session. Pi is the first Barista; Oreo may take the main-agent or worker role once stable. The Barista is the natural-language interface and owns task decomposition. Coffee Shop owns Herdr workspace, worktree, and worker-session lifecycle, then relays worker events and user replies. The first usable path uses Pi for both agent roles. Oreo and Rachel are optional improvements, not core dependencies.
 
-## Architecture diagram
+## Target interaction flow
+
+![Target Coffee Shop interactive workflow](diagrams/interactive-workflow.png)<br>
+Source: [`diagrams/interactive-workflow.html`](diagrams/interactive-workflow.html).
+
+The active main-agent session receives raw user input. The foreground Coffee Shop host waits for structured dispatch and control requests from the Barista; it does not parse natural language and is not a detached daemon. The initial target worker session is interactive Pi: it can receive follow-up instructions and return `needs_input` or `completed` events to the main agent. Oreo may be evaluated for either agent role only after the Pi-based flow is usable and Oreo is stable; Rachel is outside the runtime. The exact local transport is not fixed. This target loop is **not implemented yet**.
+
+## Current one-shot architecture diagram
+The diagram below documents the implemented `brew` pipeline, not the target interactive loop.
 
 ```mermaid
 flowchart TD
@@ -48,9 +56,9 @@ flowchart TD
     Barista --> Dev
 ```
 
-## Design views
+## Current implementation internals
 
-The views below show the same design from different angles. The server views match the implementation (PLAN.md item 8); the Shot view lists today's states.
+The views below document the one-shot CLI foundation. The repository-server views match the current implementation (PLAN.md item 8); the Shot view lists the current one-shot states.
 
 ### Processes
 
@@ -135,9 +143,9 @@ stateDiagram-v2
     Exited --> [*]
 ```
 
-### Shot states
+### Current one-shot Shot states
 
-The states a Shot moves through, as recorded in its Register.
+These Register states describe the implemented one-shot `brew` path. Interactive worker-session pause/input states belong to the target session lifecycle and are not represented here.
 
 ```mermaid
 stateDiagram-v2
@@ -156,17 +164,19 @@ stateDiagram-v2
 
 | Component | Responsibility |
 | --- | --- |
-| **Barista** | The active Pi session. It interprets an Order, writes a Recipe, and reviews results. |
-| **Coffee Shop CLI** | The Odin program. It validates inputs, creates Stations, starts Workers in Herdr, records state, and collects results. |
+| **Barista** | The long-lived, user-facing main-agent session. Pi is first; Oreo may take this role later when stable. It receives Orders, owns task decomposition, and relays worker events and human replies. |
+| **Coffee Shop host** | Target: a foreground Odin control process started by the Barista. It launches sessions and relays events; it does not interpret natural language. The current CLI is one-shot. |
+| **Coffee Shop CLI** | Current commands validate inputs, create Stations, start Workers in Herdr, record state, and collect results. |
 | **Beans** | The target repository and task context supplied to workers. |
 | **Recipe** | An Order and its explicit list of Shots. The Barista owns task decomposition. |
 | **Shot** | One unit of work with one prompt and one Worker. |
 | **Station** | A Git worktree isolated to one Shot. |
-| **Worker** | One Pi CLI process in a Herdr tab, working in its Shot's Station. Pi's JSON event stream is reduced to bounded activity summaries. |
-| **Activity channel** | A per-Brew Unix-domain stream socket. Workers send bounded newline-delimited summaries best-effort; the supervisor validates Brew/Shot identity and persists the latest one per running Shot. It does not establish liveness. |
+| **Worker** | Target: an interactive Pi session in Herdr. Current behavior is one non-interactive Pi JSON/print process per Shot. Oreo is a later optional alternative, not a prerequisite. |
+| **Activity channel** | Current per-Brew Unix-domain socket for best-effort progress summaries. It does not deliver `needs_input` or completion to the main Pi and does not establish liveness. |
+| **Session bridge** | Target local channel for structured dispatch, `needs_input`, completion, and human replies. Its transport and exact message contract remain to be selected. |
 | **Register** | Durable current status for each Brew and Shot. |
 | **Receipt** | Append-only events that explain status changes. |
-| **Server** | One per repository. It starts on demand, holds the Register in memory, and is the only writer of Brew state, so commands and Workers ask it instead of editing files. It is elected by an exclusive lock on `server.lock`, exits when the repository has no active Brew, and serves requests over one Unix socket. See the Server section below. |
+| **Server** | Current per-repository state server. It starts on demand, holds the Register in memory, and is the only writer of Brew state. It exits when the repository has no active Brew; it is distinct from the target foreground Coffee Shop host. See the Server section below. |
 | **Scale** | The maximum number of concurrent Workers. |
 | **Filter** | Uses a separate one-shot Pi reviewer to check selected changes against the Beans repository's root `standards.md`, then discovers and runs unit/component and end-to-end test commands from existing manifests and test configuration. It reports evidence without fixing code or changing test setup. |
 | **Tray** | The final review packet with the outcome, evidence, and any decision for the developer. |
@@ -206,7 +216,7 @@ The server for a repository is described under Local state. This section describ
 - **Retries.** A client that cannot reach the server starts it if none is running, retries up to six times with half a second between attempts, then aborts with the cause.
 - **Stale servers.** A lock belongs to the file it was taken on. A server that finds its lock file replaced, because the directory was removed and recreated, stops without touching the socket path, which now belongs to its successor.
 
-## Shot lifecycle
+## Current one-shot Shot lifecycle
 
 | State | Meaning |
 | --- | --- |
@@ -243,7 +253,9 @@ Liveness has three answers, not two. A process is **gone** only on evidence. On 
 - **Limits.** Checks run inside the Station, a fresh checkout: dependencies the repository does not commit (for example `node_modules`) are absent, and a command may write build output there. Failures from either cause are reported as failures. Output is kept to its tail, and there is no timeout.
 - **Decisions.** The Tray ends with "Decisions for the developer": any Shot that did not complete, a review that reported findings or could not run, a failing check, and every ambiguity or gap above.
 
-## Data flow
+## Current one-shot data flow
+
+The following is the implemented `brew` lifecycle; it is not the target user-to-worker interaction loop.
 
 1. The Barista supplies a JSON Recipe and the path to the Beans.
 2. The CLI validates the repository and Recipe before it starts Workers.
@@ -278,9 +290,10 @@ This workflow is for worktrees used by a human or coding agent to develop Coffee
 - Filter reports review findings and test outcomes; it does not auto-fix, commit, merge, publish, or manage CI. It does not rewrite test scripts or configuration. If discovery is ambiguous or setup is unavailable, it reports that instead of guessing.
 - Workers do not merge, commit, or publish their changes. A person reviews the Tray and explicitly decides when to integrate them.
 - Coffee Shop preserves Stations and Brew state by default. The proposed Blend action removes only the target Brew's per-Shot worktrees after its single integration commit succeeds; Brew state, reports, and Filter evidence remain.
-- The per-Brew supervisor exists only while `brew` is active. A repository's server runs only while that repository has an active Brew and exits after an idle timeout. There is no always-on watcher or automatic Worker timeout. The Barista asks for status or collection when needed.
+- **Current one-shot behavior.** The per-Brew supervisor exists only while `brew` is active. A repository's state server exits after an idle timeout; it is not the foreground host.
+- **Target host behavior.** The Coffee Shop controller stays attached to the main-agent session and routes worker events and replies. A detached global daemon remains out of scope.
 - The Register and Receipt live under the Coffee Shop state directory, outside the Beans repository.
 
-## Deliberate omissions
+## Target boundaries
 
-The first version targets one machine, Pi, and Herdr. It does not include second mates, remote execution, Relay, tmux or zmx backends, automatic task decomposition, or automatic merges. Add a feature only when a real workflow needs it.
+Target one machine, a user-facing main-agent/Barista session (Pi first), a foreground Coffee Shop host, and Herdr. Pi is required for the first usable path. Oreo may take the main or worker agent role after the Pi-based workflow is usable and Oreo is stable; Rachel is a developer aid outside the runtime. Keep task decomposition with the Barista and integration decisions with the developer. A detached daemon, remote execution, unrelated agent/session backends, automatic task decomposition, automatic merge, PR creation, and publishing remain out of scope.
