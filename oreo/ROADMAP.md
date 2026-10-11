@@ -13,10 +13,10 @@ Oreo grows from a provider-neutral Odin session host, run as a separate process 
 
 ## Provider integration
 
-- Confirm, through pi, login and model requests for the first providers to test, OpenAI Codex and GitHub Copilot, including endpoints, scopes, and model APIs as pi exposes them. Oreo performs no login and registers no OAuth client.
-- Send model requests through pi's model layer after the core harness is established. Login, re-login, and token storage stay in pi; the end user chooses the default account in the Coffee Shop config.
+- Confirm model requests through pi for the first providers to test, OpenAI Codex and GitHub Copilot, including the model APIs pi exposes. Login, token handling, and client registration are pi's responsibility (fourth round, F2); Oreo performs none of them.
+- Send model requests through pi's model layer after the core harness is established. Login, re-login, and token storage stay in pi (pi's responsibility); the end user chooses the default account in the Coffee Shop config.
 
-**Exit condition:** fake-server tests cover provider behavior without live credentials, and separately approved manual smoke tests prove pi login and one small task per provider.
+**Exit condition:** fake-server tests cover provider behavior without live credentials, and separately approved manual smoke tests prove one model request and one small task per provider through pi.
 
 ## Scale and Coffee Shop adoption
 

@@ -2,6 +2,8 @@
 
 Slice 3 research output for [PLAN.md](../PLAN.md) ("Verify provider contracts"). Documentation only. This file records no client IDs, client secrets, tokens, or credentials, and it contains no live provider calls. Pi source code is not used as a contract source.
 
+> **Reference material only (fourth round, F2).** The Codex and GitHub Copilot auth contracts in this file are not an Oreo task. Oreo does no login, OAuth flow, token handling, or client registration; pi does. Sections 1.2 and 2.2 record facts only.
+
 - Read date for every source below: **2026-10-10** (system date of this research pass).
 - Status values: `documented`, `undocumented`, `needs developer registration`. A `documented` row always cites a source ID from the source log.
 
@@ -180,7 +182,7 @@ Documented third-party route (SIWC open-source): the user signs in at `auth.open
 | Usage limits | Plus: a five-hour limit, shared across every app using the plan, including private and open-source clients. Pro: no five-hour limit. Exceeding a limit returns HTTP `429` with `subscription_sharing_usage_limit_exceeded`. Numeric allowances are not published in the SIWC docs; the Codex plan allowances are on the Help Center page (C20, excerpt). | documented (numbers not published) | C1, C8, C20 |
 | Usage visibility | ChatGPT Settings → Usage shows app usage and access. | documented | C1 |
 | Third-party restrictions | The SIWC open-source route explicitly allows open-source clients and selected private clients. Hosted or paid apps need the interest form. | documented | C1, C10 |
-| Terms | OpenAI Terms of Use prohibit reverse engineering or decompiling the Services, and "automatically or programmatically extract data or Output". Read from a search excerpt only; the page returned HTTP 403. Oreo must not reverse-engineer ChatGPT or Codex internals. Use the SIWC route only. | documented (excerpt); legal review pending | C19 |
+| Terms | OpenAI Terms of Use prohibit reverse engineering or decompiling the Services, and "automatically or programmatically extract data or Output". Read from a search excerpt only; the page returned HTTP 403. Oreo must not reverse-engineer ChatGPT or Codex internals. Use the SIWC route only. | documented (excerpt); no legal check (fourth round, F1) | C19 |
 | Codex open-source license | Not checked. | not verified | — |
 
 ---
@@ -214,7 +216,7 @@ Documented route: a GitHub OAuth App (or GitHub App) with device flow enabled gi
 | Token expiry default | "Expire user access tokens is enabled by default" for new OAuth Apps. | documented | G10 |
 | Public client | Device-flow code and poll requests take no client secret. The refresh request takes no secret only for tokens issued by device flow. | documented | G9 |
 | GitHub App alternative | "GitHub Apps offer finer-grained permissions and are recommended for new projects" (G1). Device flow must be enabled in the App settings as well (G9). | documented | G1, G9 |
-| Oreo registration | No OAuth App or GitHub App exists for Oreo. Owner, name, and device-flow setting are open. | needs developer registration | — |
+| Oreo registration | No OAuth App or GitHub App exists for Oreo, and none is planned (fourth round, F2). | not an Oreo task (fourth round, F2) | — |
 
 **Item 3. Redirect and callback**
 
@@ -317,7 +319,7 @@ Status after the [2026-10-10 decisions](#decisions-2026-10-10): gaps 4 and 5 wer
 - Whether Copilot inference works with no OAuth scope, or which minimal scope set it needs.
 - Whether a GitHub OAuth App can revoke its own grant through an API.
 - Whether a third-party client may call Copilot hosts directly. Not stated either way in the documents read.
-- Whether an extension of pi falls under pi's provider registration. Open; must be checked before any public release (Q11).
+- Whether an extension of pi falls under pi's provider registration. Not checked: no legal or provider-terms check (developer decision, 2026-10-10: Oreo is a pi plugin).
 - Terms: the OpenAI Terms of Use page returned HTTP 403, so C19 is excerpt-only. The Codex open-source license was not checked. The Copilot CLI bundling license was not checked.
 - Pages read only from search excerpts (C17, C19, C20, G7, G19, G20) were not read in full.
 
@@ -334,13 +336,15 @@ The developer answered the open questions on 2026-10-10. Numbers Q1–Q10 are th
 | Q3. README and PLAN | Originally updated to match the personal import exception. Both files now follow the 2026-10-10 runtime decision instead. | superseded (2026-10-10, items 1 and 4) |
 | Q4. Import flag | Earlier answer: `OREO_PERSONAL_IMPORT=codex,copilot`. Superseded (2026-10-10, item 4): no import is needed, because each user logs in through pi. Kept as the record. | superseded (2026-10-10, item 4) |
 | Q5. Codex plan | Tabled, with Q1. | tabled |
-| Q6. Legal review | Earlier answer: no legal review is required before release. Superseded in part (2026-10-10, item 5): a provider-terms check is open and must be done before any public release (Q11). Personal use is not affected. | superseded in part; open (Q11) |
+| Q6. Legal review | Superseded (fourth round, F1): no legal or provider-terms check. Earlier answer: no legal review is required before release. Superseded in part (2026-10-10, item 5): a provider-terms check was open and was to be done before any public release (Q11). Personal use is not affected. | superseded (fourth round, F1) |
 | Q7. OAuth App owner | Earlier answer: the "Oreo" OAuth App under the developer's personal GitHub account. Dropped (2026-10-10, item 3): no OAuth App is registered. | dropped (2026-10-10, item 3) |
 | Q8. Callback URL | Earlier suggestion: `http://127.0.0.1/callback`. Dropped (2026-10-10, item 3): no callback URL is needed. | dropped (2026-10-10, item 3) |
 | Q9. Copilot scopes | Earlier plan: start with no scopes, checked by the smoke test. Superseded (2026-10-10, items 2 and 3): login goes through pi, and the scope choice moves to pi's login. pi requests `read:user` as a reference only (pi source is not a contract source). | superseded (2026-10-10, items 2 and 3) |
 | Q10. Copilot route | Earlier answer: direct, calling pi's undocumented Copilot endpoints (the token exchange and the API host). Superseded (2026-10-10, item 2): provider calls go through pi, so Oreo does not call those endpoints itself. The earlier answer is kept as the record. | superseded (2026-10-10, item 2); endpoints remain unverified |
-| Q11. Provider terms | Open (2026-10-10, item 5). Whether an extension of pi falls under pi's provider registration. Not verified. Must be checked before any public release. Personal use is not affected. | pre-release gate kept; developer notes no check needed; clarify before release |
+| Q11. Provider terms | No legal or provider-terms check (developer decision, 2026-10-10: Oreo is a pi plugin). Whether an extension of pi falls under pi's provider registration remains not verified. | superseded (fourth round, F1) |
 | Third round A6. Codex and GitHub Copilot auth | Oreo is a pi plugin, so auth is not Oreo's job. Codex is irrelevant to Oreo's auth now. The auth contract details in sections 1.2 and 2.2 are reference only, not an Oreo implementation requirement. Facts are kept. | reference only (third round, A6) |
+| Fourth round F1. Legal check | No legal or provider-terms check (developer decision, 2026-10-10: Oreo is a pi plugin). Supersedes A5, A7, and the Q11 pre-release gate. | decided (fourth round) |
+| Fourth round F2. Auth | Oreo does no auth work: no login, OAuth flow, token handling, or client registration. These are pi's responsibility. A6 stays: the auth contracts are reference only. | decided (fourth round) |
 
 **Route conflict.** The Copilot SDK route assumed by PLAN slice 6 was replaced by the direct route. The 2026-10-10 runtime decision supersedes the direct route as well: provider calls go through pi. PLAN slice 6 now says so.
 
