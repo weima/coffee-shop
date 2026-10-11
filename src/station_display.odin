@@ -7,32 +7,37 @@ import "core:sys/posix"
 import "core:thread"
 import "core:time"
 
-STATION_FRAME_INTERVAL :: 200 * time.Millisecond
+STATION_FRAME_INTERVAL :: 150 * time.Millisecond
 STATION_STATUS_MAX :: 48
+STATION_TRACK :: 40 // columns the cat walks across
+STATION_SPRITE_WIDTH :: 11
+STATION_BLOCK_ROWS :: 5 // steam, ears, face with mug, legs, status
 
-// A cat peeks over a cup while the steam rises. One line, redrawn in place.
-STATION_FRAMES := [4]string{
-	"=^.^=  ~    [_]",
-	"=^.^=  ~~   [_]",
-	"=^.^=  ~~~  [_]",
-	"=^-^=  ~~~~ [_]",
-}
+// Each row is drawn in place, so the block never scrolls. Steam and legs alternate
+// between two frames, so the cat appears to walk and the coffee to steam.
+STATION_STEAM_RIGHT := [2]string{"       ~ ~", "      ~ ~ "}
+STATION_STEAM_LEFT := [2]string{" ~ ~", "~ ~"}
+STATION_LEGS_RIGHT := [2]string{" /    \\", " \\    /"}
+STATION_LEGS_LEFT := [2]string{"    /   \\", "    \\   /"}
 
-// One status line at the bottom of the pane, animated while the agent works.
-// Permanent lines (replies, questions, final text) are printed above it. When
-// stdout is not a terminal, nothing is animated and only permanent lines appear.
+// One block of lines at the bottom of the pane, animated while the agent works.
+// Permanent lines (replies, questions, the final text) print above it. When stdout
+// is not a terminal, nothing is animated and only permanent lines appear.
 Station_Display :: struct {
 	mutex:   sync.Mutex,
 	live:    bool,
 	running: bool,
 	status:  string,
-	frame:   int,
-	drawn:   bool,
+	x:       int,
+	dir:     int,
+	step:    int,
+	drawn:   int,
 }
 
 station_display_start :: proc(display: ^Station_Display) {
 	display.live = bool(posix.isatty(posix.STDOUT_FILENO))
 	display.running = true
+	display.dir = 1
 	display.status = strings.clone("Starting")
 	if display.live {
 		_ = thread.create_and_start_with_data(display, station_display_animate, self_cleanup = true)
@@ -48,27 +53,73 @@ station_display_animate :: proc(data: rawptr) {
 			sync.mutex_unlock(&display.mutex)
 			return
 		}
+		station_display_advance_locked(display)
 		station_display_draw_locked(display)
 		sync.mutex_unlock(&display.mutex)
 	}
 }
 
+station_display_advance_locked :: proc(display: ^Station_Display) {
+	display.x += display.dir
+	if display.x <= 0 {
+		display.x = 0
+		display.dir = 1
+	}
+	if display.x >= STATION_TRACK - STATION_SPRITE_WIDTH {
+		display.x = STATION_TRACK - STATION_SPRITE_WIDTH
+		display.dir = -1
+	}
+	display.step += 1
+}
+
+// Moves the cursor back to the top of the block, then rewrites every row.
 station_display_draw_locked :: proc(display: ^Station_Display) {
 	if !display.live {
 		return
 	}
-	fmt.print(station_frame_line(display.frame, display.status))
-	display.frame += 1
-	display.drawn = true
+	if display.drawn > 0 {
+		fmt.printf("\x1b[%dA", display.drawn)
+	}
+	lines := station_block_lines(display.x, display.step, display.dir > 0, display.status)
+	for line in lines {
+		fmt.printf("\r\x1b[2K%s\n", line)
+	}
+	display.drawn = STATION_BLOCK_ROWS
 }
 
-// The line is erased with an ANSI clear before each redraw, so it never scrolls.
-station_frame_line :: proc(frame: int, status: string) -> string {
+// Erases the block and leaves the cursor at its top row, ready for a permanent line.
+station_display_clear_locked :: proc(display: ^Station_Display) {
+	if !display.live || display.drawn == 0 {
+		return
+	}
+	fmt.printf("\x1b[%dA", display.drawn)
+	for _ in 0 ..< display.drawn {
+		fmt.print("\r\x1b[2K\n")
+	}
+	fmt.printf("\x1b[%dA", display.drawn)
+	display.drawn = 0
+}
+
+station_block_lines :: proc(x, step: int, facing_right: bool, status: string) -> [STATION_BLOCK_ROWS]string {
+	pad := strings.repeat(" ", x, context.temp_allocator)
 	text := status
 	if len(text) > STATION_STATUS_MAX {
 		text = text[:STATION_STATUS_MAX]
 	}
-	return fmt.tprintf("\r\x1b[2K%s  %s", STATION_FRAMES[frame % len(STATION_FRAMES)], text)
+	lines: [STATION_BLOCK_ROWS]string
+	if facing_right {
+		lines[0] = fmt.tprintf("%s%s", pad, STATION_STEAM_RIGHT[(step / 2) % 2])
+		lines[1] = fmt.tprintf("%s /\\_/\\", pad)
+		lines[2] = fmt.tprintf("%s( o.o )[_]", pad)
+		lines[3] = fmt.tprintf("%s%s", pad, STATION_LEGS_RIGHT[step % 2])
+	} else {
+		lines[0] = fmt.tprintf("%s%s", pad, STATION_STEAM_LEFT[(step / 2) % 2])
+		lines[1] = fmt.tprintf("%s     /\\_/\\", pad)
+		lines[2] = fmt.tprintf("%s[_] ( o.o )", pad)
+		lines[3] = fmt.tprintf("%s%s", pad, STATION_LEGS_LEFT[step % 2])
+	}
+	lines[4] = text
+	return lines
 }
 
 station_display_status :: proc(display: ^Station_Display, text: string) {
@@ -78,14 +129,11 @@ station_display_status :: proc(display: ^Station_Display, text: string) {
 	display.status = strings.clone(text)
 }
 
-// Prints a permanent line above the status line, then draws the status again.
+// Prints a permanent line above the block, then draws the block again below it.
 station_display_line :: proc(display: ^Station_Display, text: string) {
 	sync.mutex_lock(&display.mutex)
 	defer sync.mutex_unlock(&display.mutex)
-	if display.live && display.drawn {
-		fmt.print("\r\x1b[2K")
-		display.drawn = false
-	}
+	station_display_clear_locked(display)
 	fmt.println(text)
 	station_display_draw_locked(display)
 }
@@ -94,8 +142,5 @@ station_display_stop :: proc(display: ^Station_Display) {
 	sync.mutex_lock(&display.mutex)
 	defer sync.mutex_unlock(&display.mutex)
 	display.running = false
-	if display.live && display.drawn {
-		fmt.print("\r\x1b[2K")
-		display.drawn = false
-	}
+	station_display_clear_locked(display)
 }
