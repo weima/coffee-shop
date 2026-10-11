@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
@@ -67,4 +68,9 @@ test_host_relays_station_reports_to_stdout :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(out, `{"type":"station_report","request_id":"order-1","shot_id":"shot-a","kind":"turn_done","description":"turn 1"}`), out)
 	testing.expect(t, strings.contains(out, `{"type":"station_report","request_id":"order-1","shot_id":"shot-a","kind":"agent_exited","description":"Agent exited"}`), out)
 	testing.expect(t, strings.contains(out, `{"type":"stopped","request_id":"done"}`), out)
+
+	history, history_err := os.read_entire_file(fmt.tprintf("%s/host/order-1/history.ndjson", state), context.allocator)
+	defer delete(history)
+	testing.expect_value(t, history_err, os.Error(nil))
+	testing.expect(t, strings.contains(string(history), `"kind":"turn_done"`) && strings.contains(string(history), `"kind":"agent_exited"`), string(history))
 }

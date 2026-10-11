@@ -30,6 +30,8 @@ The implemented `brew`/`status`/`cancel`/`collect` CLI is one-shot. `brew` accep
 | F. Verify the full workflow | Main-agent Order → Coffee Shop → Herdr → interactive Pi worker → main agent | Full E2E passes on Linux and macOS after phases A–E are green; no allocator-leak warnings |
 | G. Optional improvements | Evaluate Oreo for the main or worker agent role, or Rachel as a developer aid, only after the core flow is usable and Oreo is stable | Neither is needed to pass the Coffee Shop usability gate; treat each as a separately approved enhancement |
 
+**Phase E status: implemented.** The host durably records per-request history, lists recovered sessions, reports unconfirmed Stations as unfinished, and performs no automatic replay after restart.
+
 ### Station (phase D design)
 
 A **Station** is a `coffee-shop station` process that runs in a Herdr pane for one Shot. It is harness-neutral:
