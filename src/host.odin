@@ -352,6 +352,7 @@ valid_commit_message :: proc(message: string) -> bool {
 	return strings.trim_space(message) != "" && strings.rune_count(message) <= HOST_COMMIT_MESSAGE_MAX && !strings.contains_any(message, "\r\n")
 }
 
+// shortcut: Shot tabs are not closed when a Shot finishes, so a repository's workspace keeps every tab; close each tab when its Shot ends, once Shots report completion through the host.
 host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, kinds, tastes, messages: []string) {
 	state_root, state_err := default_state_root(context.temp_allocator)
 	if state_err != "" {
@@ -376,7 +377,6 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, kind
 	}
 
 	herdr := "herdr"
-	workspace_id := ""
 	for id, i in ids {
 		prompt_path, _ := filepath.join({prompts_dir, fmt.tprintf("%s.md", id)}, context.temp_allocator)
 		if os.write_entire_file(prompt_path, prompts[i], private_file_permissions()) != nil {
@@ -390,26 +390,10 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, kind
 			continue
 		}
 
-		pane_id: string
-		if workspace_id == "" {
-			workspace, herdr_err := herdr_create_workspace(herdr, station, repository_name(repo), request_id, context.temp_allocator)
-			if herdr_err != "" {
-				host_session_failed(request_id, id, fmt.tprintf("Herdr workspace launch failed: %s", herdr_err))
-				continue
-			}
-			if rename_err := herdr_rename_tab(herdr, workspace.result.tab.tab_id, id); rename_err != "" {
-				host_session_failed(request_id, id, fmt.tprintf("Herdr could not label the Shot tab: %s", rename_err))
-				continue
-			}
-			workspace_id = workspace.result.workspace.workspace_id
-			pane_id = workspace.result.root_pane.pane_id
-		} else {
-			tab, tab_err := herdr_create_tab(herdr, workspace_id, id, station, context.temp_allocator)
-			if tab_err != "" {
-				host_session_failed(request_id, id, fmt.tprintf("Herdr tab launch failed: %s", tab_err))
-				continue
-			}
-			pane_id = tab.result.root_pane.pane_id
+		pane_id, pane_err := host_open_shot_pane(herdr, state_root, repo, id, station)
+		if pane_err != "" {
+			host_session_failed(request_id, id, pane_err)
+			continue
 		}
 
 		command := host_station_command(host_station_executable, host_report_socket, host_extension_path, id, request_id, prompt_path, models[i], kinds[i], tastes[i], messages[i])
@@ -420,6 +404,45 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, kind
 		append(&host_sessions, Host_Session{request_id = strings.clone(request_id), shot_id = strings.clone(id), pane_id = strings.clone(pane_id)})
 		host_emit(Host_Event{type = "session_started", request_id = request_id, shot_id = id, pane_id = pane_id})
 	}
+}
+
+// Opens the Shot's tab in the repository's workspace. The saved workspace is reused.
+// If none is saved or Herdr rejects it, a new workspace is created and saved; its
+// default tab then serves this Shot.
+host_open_shot_pane :: proc(herdr, state_root, repo, shot_id, station: string) -> (pane_id, err: string) {
+	name := repository_name(repo)
+	defer delete(name)
+	workspaces_dir, _ := filepath.join({state_root, "host", "workspaces"}, context.temp_allocator)
+	if os.make_directory_all(workspaces_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil && !os.exists(workspaces_dir) {
+		return "", "could not create the Herdr workspaces directory"
+	}
+	saved_path := state_file_path(workspaces_dir, fmt.tprintf("%s.txt", name), context.temp_allocator)
+	if saved_id := host_saved_workspace_id(saved_path); saved_id != "" {
+		tab, tab_err := herdr_create_tab(herdr, saved_id, shot_id, station, context.temp_allocator)
+		if tab_err == "" {
+			return tab.result.root_pane.pane_id, ""
+		}
+	}
+	workspace, herdr_err := herdr_create_workspace(herdr, station, name, context.temp_allocator)
+	if herdr_err != "" {
+		return "", fmt.tprintf("Herdr workspace launch failed: %s", herdr_err)
+	}
+	if write_err := os.write_entire_file(saved_path, workspace.result.workspace.workspace_id, private_file_permissions()); write_err != nil {
+		return "", "could not save the Herdr workspace id"
+	}
+	if rename_err := herdr_rename_tab(herdr, workspace.result.tab.tab_id, shot_id); rename_err != "" {
+		return "", fmt.tprintf("Herdr could not label the Shot tab: %s", rename_err)
+	}
+	return workspace.result.root_pane.pane_id, ""
+}
+
+// A missing or unreadable file means no workspace is saved for the repository.
+host_saved_workspace_id :: proc(path: string) -> string {
+	data, err := os.read_entire_file(path, context.temp_allocator)
+	if err != nil {
+		return ""
+	}
+	return strings.trim_space(string(data))
 }
 
 // Types a reply into a Station's pane. The Station reads it from stdin and either

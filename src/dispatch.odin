@@ -182,7 +182,7 @@ run_brew_with :: proc(repo_path, recipe_path, state_root, executable, herdr: str
 
 	register.repository_name = repository_name(repo)
 	if name_err := save_register_metadata(brew_dir, register); name_err.kind != .None { return brew_id, state_error_message(name_err) }
-	workspace, herdr_err := herdr_create_workspace(herdr, register.shots[first_station].station_path, register.repository_name, brew_id)
+	workspace, herdr_err := herdr_create_workspace(herdr, register.shots[first_station].station_path, fmt.tprintf("%s · %s", register.repository_name, brew_id))
 	if herdr_err != "" {
 		for shot in register.shots {
 			if shot.status == SHOT_QUEUED {
@@ -331,8 +331,7 @@ create_git_worktree :: proc(repo, branch, path: string, allocator := context.all
 	return ""
 }
 
-herdr_create_workspace :: proc(herdr, cwd, repository_name, brew_id: string, allocator := context.allocator) -> (response: Herdr_Response, err: string) {
-	label := fmt.tprintf("%s · %s", repository_name, brew_id)
+herdr_create_workspace :: proc(herdr, cwd, label: string, allocator := context.allocator) -> (response: Herdr_Response, err: string) {
 	stdout, stderr, run_err := run_herdr(herdr, []string{"workspace", "create", "--cwd", cwd, "--label", label, "--no-focus"}, allocator)
 	defer delete(stdout, allocator)
 	defer delete(stderr, allocator)

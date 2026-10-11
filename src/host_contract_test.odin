@@ -71,7 +71,7 @@ test_foreground_host_accepts_dispatches_and_starts_sessions :: proc(t: ^testing.
 	testing.expect(t, strings.contains(out, `{"type":"dispatch_accepted","request_id":"order-1"}`), out)
 	testing.expect(t, strings.contains(out, `{"type":"session_started","request_id":"order-1","shot_id":"shot-a","pane_id":"p0"}`), out)
 	testing.expect(t, strings.contains(out, `{"type":"dispatch_accepted","request_id":"order-2"}`), out)
-	testing.expect(t, strings.contains(out, `{"type":"session_started","request_id":"order-2","shot_id":"shot-b","pane_id":"p0"}`), out)
+	testing.expect(t, strings.contains(out, `{"type":"session_started","request_id":"order-2","shot_id":"shot-b","pane_id":"p1"}`), out)
 	testing.expect(t, strings.contains(out, `"request_id":"order-3"`) && strings.contains(out, `each shot needs a valid id and a prompt`), out)
 	testing.expect(t, !strings.contains(out, `{"type":"dispatch_accepted","request_id":"order-3"}`), out)
 	testing.expect(t, strings.contains(out, `"request_id":"order-4","shot_id":"shot-c"`) && strings.contains(out, `shot model must be`), out)
@@ -191,7 +191,12 @@ case "$1 $2" in
 "workspace create")
   echo '{"id":"x","result":{"type":"workspace_created","workspace":{"workspace_id":"w1"},"tab":{"tab_id":"t0"},"root_pane":{"pane_id":"p0"}}}' ;;
 "tab create")
-  echo '{"id":"x","result":{"type":"tab_created","tab":{"tab_id":"t1"},"root_pane":{"pane_id":"p1"}}}' ;;
+  if [ "$4" = w1 ]; then
+    echo '{"id":"x","result":{"type":"tab_created","tab":{"tab_id":"t1"},"root_pane":{"pane_id":"p1"}}}'
+  else
+    echo '{"id":"x","error":{"code":"workspace_not_found","message":"no workspace with that id"}}' >&2
+    exit 1
+  fi ;;
 *) echo '{}' ;;
 esac
 `
@@ -204,8 +209,10 @@ Host_Contract_Run :: struct {
 }
 
 // Runs the foreground host on requests in a fresh repository with one commit. The
-// @REPO@ placeholder in the requests becomes the repository path.
-run_host_requests :: proc(t: ^testing.T, prefix, requests: string) -> (run: Host_Contract_Run) {
+// @REPO@ placeholder in the requests becomes the repository path, and @OTHER@ becomes
+// a second repository, "pulses". A non-empty saved_workspace is written as the
+// workspace id already saved for "beans".
+run_host_requests :: proc(t: ^testing.T, prefix, requests: string, saved_workspace := "") -> (run: Host_Contract_Run) {
 	root, make_err := os.make_directory_temp(HOST_TEST_TEMP_DIR, prefix, context.allocator)
 	testing.expect_value(t, make_err, os.Error(nil))
 	if make_err != nil {
@@ -213,6 +220,7 @@ run_host_requests :: proc(t: ^testing.T, prefix, requests: string) -> (run: Host
 	}
 	run.root = root
 	repo := fmt.tprintf("%s/beans", root)
+	other := fmt.tprintf("%s/pulses", root)
 	bin := fmt.tprintf("%s/bin", root)
 	run.state = fmt.aprintf("%s/state", root)
 	rwx := os.Permissions{.Read_User, .Write_User, .Execute_User}
@@ -220,13 +228,20 @@ run_host_requests :: proc(t: ^testing.T, prefix, requests: string) -> (run: Host
 	testing.expect_value(t, os.make_directory_all(bin), os.Error(nil))
 	testing.expect_value(t, os.write_entire_file(fmt.tprintf("%s/herdr", bin), HOST_FAKE_HERDR, rwx), os.Error(nil))
 	git_state, _, git_stderr, git_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `git init -q "$1" && git -C "$1" -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m init`, "host-pull-test", repo},
+		command = {"sh", "-c", `for r in "$@"; do git init -q "$r" && git -C "$r" -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m init || exit 1; done`, "host-pull-test", repo, other},
 	}, context.allocator)
 	defer delete(git_stderr)
 	testing.expect_value(t, git_err, os.Error(nil))
 	testing.expect(t, git_state.success, string(git_stderr))
 
+	if saved_workspace != "" {
+		workspaces := fmt.tprintf("%s/host/workspaces", run.state)
+		testing.expect_value(t, os.make_directory_all(workspaces), os.Error(nil))
+		testing.expect_value(t, os.write_entire_file(fmt.tprintf("%s/beans.txt", workspaces), saved_workspace, rwx), os.Error(nil))
+	}
+
 	input, _ := strings.replace_all(requests, "@REPO@", repo, context.temp_allocator)
+	input, _ = strings.replace_all(input, "@OTHER@", other, context.temp_allocator)
 	input_path := fmt.tprintf("%s/requests.ndjson", root)
 	testing.expect_value(t, os.write_entire_file(input_path, input, rwx), os.Error(nil))
 
@@ -306,4 +321,62 @@ test_foreground_host_rejects_taste_without_valid_message :: proc(t: ^testing.T) 
 	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-t4/stations/shot-m", run.state)), "a refused message must not create a worktree")
 	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-t5/stations/shot-l", run.state)), "a refused message must not create a worktree")
 	testing.expect(t, !strings.contains(run.calls, "shot-m") && !strings.contains(run.calls, "shot-l"), "a refused message must not call Herdr")
+}
+
+// Two dispatches for one repository share one workspace. The first Shot takes the
+// workspace's default tab; the second gets its own tab in that workspace.
+@(test)
+test_host_opens_shots_as_tabs_in_one_workspace_per_repository :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-workspace-*", `{"type":"dispatch","request_id":"order-w1","repo":"@REPO@","recipe":{"order":"first","shots":[{"id":"shot-w1","prompt":"make the change"}]}}
+{"type":"dispatch","request_id":"order-w2","repo":"@REPO@","recipe":{"order":"second","shots":[{"id":"shot-w2","prompt":"make the change"}]}}
+{"type":"shutdown","request_id":"shutdown-1"}
+`)
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-w1","shot_id":"shot-w1","pane_id":"p0"}`), run.out)
+	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-w2","shot_id":"shot-w2","pane_id":"p1"}`), run.out)
+	testing.expect_value(t, strings.count(run.calls, "workspace create"), 1)
+	testing.expect_value(t, strings.count(run.calls, "tab create"), 1)
+	testing.expect(t, strings.contains(run.calls, "--label beans --no-focus"), run.calls)
+	testing.expect(t, strings.contains(run.calls, "tab rename t0 Shot shot-w1"), run.calls)
+	testing.expect(t, strings.contains(run.calls, "tab create --workspace w1 --cwd") && strings.contains(run.calls, "--label Shot shot-w2"), run.calls)
+
+	saved, saved_err := os.read_entire_file(fmt.tprintf("%s/host/workspaces/beans.txt", run.state), context.allocator)
+	defer delete(saved)
+	testing.expect_value(t, saved_err, os.Error(nil))
+	testing.expect_value(t, string(saved), "w1")
+}
+
+// A second repository gets its own workspace, labelled with its own name.
+@(test)
+test_host_opens_a_second_workspace_for_a_second_repository :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-two-repos-*", `{"type":"dispatch","request_id":"order-r1","repo":"@REPO@","recipe":{"order":"beans","shots":[{"id":"shot-r1","prompt":"make the change"}]}}
+{"type":"dispatch","request_id":"order-r2","repo":"@OTHER@","recipe":{"order":"pulses","shots":[{"id":"shot-r2","prompt":"make the change"}]}}
+{"type":"shutdown","request_id":"shutdown-1"}
+`)
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-r1","shot_id":"shot-r1","pane_id":"p0"}`), run.out)
+	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-r2","shot_id":"shot-r2","pane_id":"p0"}`), run.out)
+	testing.expect_value(t, strings.count(run.calls, "workspace create"), 2)
+	testing.expect_value(t, strings.count(run.calls, "tab create"), 0)
+	testing.expect(t, strings.contains(run.calls, "--label beans --no-focus") && strings.contains(run.calls, "--label pulses --no-focus"), run.calls)
+}
+
+// A saved workspace that Herdr rejects is replaced by a new one, saved in its place,
+// and the Shot still starts in that workspace's default tab.
+@(test)
+test_host_replaces_unusable_saved_workspace_and_still_starts_shot :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-stale-workspace-*", `{"type":"dispatch","request_id":"order-s1","repo":"@REPO@","recipe":{"order":"stale","shots":[{"id":"shot-s","prompt":"make the change"}]}}
+{"type":"shutdown","request_id":"shutdown-1"}
+`, "w-stale")
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-s1","shot_id":"shot-s","pane_id":"p0"}`), run.out)
+	testing.expect(t, !strings.contains(run.out, "session_failed"), run.out)
+	testing.expect(t, strings.contains(run.calls, "tab create --workspace w-stale"), run.calls)
+	testing.expect_value(t, strings.count(run.calls, "workspace create"), 1)
+	testing.expect(t, strings.contains(run.calls, "tab rename t0 Shot shot-s"), run.calls)
+
+	saved, saved_err := os.read_entire_file(fmt.tprintf("%s/host/workspaces/beans.txt", run.state), context.allocator)
+	defer delete(saved)
+	testing.expect_value(t, saved_err, os.Error(nil))
+	testing.expect_value(t, string(saved), "w1")
 }

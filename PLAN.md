@@ -42,7 +42,7 @@ A **Station** is a `coffee-shop station` process that runs in a Herdr pane for o
 
 Each Station runs `pi --mode rpc -e <coffee-shop extension>` next to the user's installed extensions. The extension (`extensions/coffee-shop.ts`) is compiled into the binary and written to `<state>/host/extensions/` at host start. It adds the `coffee_shop_ask` tool, which raises a `select` dialog that reaches the main agent as `needs_input`.
 
-Long prompts travel in per-Shot files, and a Shot may choose a model.
+Long prompts travel in per-Shot files, and a Shot may choose a model. Shots open as tabs in one Herdr workspace per repository.
 
 The host relays Station reports to the main agent. Replies go to the Station, never to the host.
 
