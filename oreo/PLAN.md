@@ -19,8 +19,8 @@ Oreo's first milestone is a provider-neutral, long-lived in-process host for tas
 
 ## Current progress
 
-- The SQLite amalgamation and binding are implemented; the session store initializes schema v1, persists/retrieves metadata and ordered records, validates work-item state transitions, and coordinates persisted session-close cancellation.
-- `cd oreo && just test` passes nine binding tests and four store tests against bundled SQLite on macOS. Linux verification and worker execution remain pending.
+- The SQLite amalgamation and binding are implemented; the store applies source-controlled schema migrations in version order, persists/retrieves metadata and ordered records, validates work-item transitions, and coordinates session-close cancellation.
+- `cd oreo && just test` passes nine binding tests and eight store tests against bundled SQLite on macOS. Linux verification and worker execution remain pending.
 - The full Coffee Shop test suite passes after extending an E2E activity readiness window for parallel test load. The provider-neutral host, worker pool, and task lifecycle are the next implementation slices.
 
 ## Confirmed requirements

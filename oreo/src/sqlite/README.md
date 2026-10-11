@@ -4,7 +4,7 @@ A small, first-party Odin binding to the SQLite C API for Oreo. Oreo's session s
 
 ## Status
 
-The official SQLite 3.54.0 amalgamation is bundled. The binding supports connection lifecycle, fixed SQL execution, prepared statements, integer/double/text/blob/null binding, column reads, and transactions. The Oreo store initializes v1 schema, persists/retrieves session, profile, work-item, and ordered-record metadata, guards work-item transitions, and persists session-close cancellation requests. Nine binding tests and four store tests pass on macOS; Linux verification and worker execution remain pending.
+The official SQLite 3.54.0 amalgamation is bundled. The binding supports connection lifecycle, fixed SQL execution, prepared statements, integer/double/text/blob/null binding, column reads, and transactions. The Oreo store applies ordered `PRAGMA user_version` migrations, persists metadata and ordered records, guards work-item transitions, and coordinates session-close cancellation. Nine binding tests and eight store tests pass on macOS; Linux verification and worker execution remain pending.
 
 ## Scope
 

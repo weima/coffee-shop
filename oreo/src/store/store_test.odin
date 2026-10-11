@@ -3,6 +3,16 @@ package store
 import "core:os"
 import "core:path/filepath"
 import "core:testing"
+import sqlite "oreo:sqlite"
+
+TEMP_DIR :: "/private/tmp" when ODIN_OS == .Darwin else "/tmp"
+
+test_schema_migrations :: proc() -> [2]Schema_Migration {
+	return [2]Schema_Migration{
+		{version = 1, sql = `CREATE TABLE migration_v1 (value TEXT NOT NULL); PRAGMA user_version = 1;`},
+		{version = 2, sql = `CREATE TABLE migration_v2 (value TEXT NOT NULL); INSERT INTO migration_v2 SELECT value FROM migration_v1; PRAGMA user_version = 2;`},
+	}
+}
 
 @(test)
 test_store_persists_metadata_and_ordered_records_across_reopen :: proc(t: ^testing.T) {
@@ -255,9 +265,142 @@ test_store_enforces_profile_and_session_foreign_keys :: proc(t: ^testing.T) {
 	testing.expect_value(t, close_err.kind, Store_Error_Kind.None)
 }
 
+@(test)
+test_schema_migrations_apply_sequentially_and_are_idempotent :: proc(t: ^testing.T) {
+	db, open_err := sqlite.open_memory()
+	defer sqlite.error_destroy(&open_err)
+	testing.expect_value(t, open_err.code, 0)
+
+	migrations := test_schema_migrations()
+	migration_err := apply_schema_migrations(db, migrations[:], 2)
+	defer store_error_destroy(&migration_err)
+	testing.expect_value(t, migration_err.kind, Store_Error_Kind.None)
+	version, version_err := read_schema_version(db, context.allocator)
+	defer store_error_destroy(&version_err)
+	testing.expect_value(t, version, i64(2))
+
+	insert_err := sqlite.execute(db, "INSERT INTO migration_v1 VALUES ('one'); INSERT INTO migration_v2 VALUES ('two')")
+	defer sqlite.error_destroy(&insert_err)
+	testing.expect_value(t, insert_err.code, 0)
+	migration_err = apply_schema_migrations(db, migrations[:], 2)
+	testing.expect_value(t, migration_err.kind, Store_Error_Kind.None)
+	store_error_destroy(&migration_err)
+	version, version_err = read_schema_version(db, context.allocator)
+	testing.expect_value(t, version, i64(2))
+	store_error_destroy(&version_err)
+	close_err := sqlite.close(&db)
+	defer sqlite.error_destroy(&close_err)
+	testing.expect_value(t, close_err.code, 0)
+}
+
+@(test)
+test_schema_migrations_preserve_data_when_upgrading :: proc(t: ^testing.T) {
+	db := open_migration_test_database(t)
+	defer close_migration_test_database(&db)
+	execute_migration_test_sql(t, db, "CREATE TABLE migration_v1 (value TEXT NOT NULL); INSERT INTO migration_v1 VALUES ('preserved'); PRAGMA user_version = 1")
+	migrations := test_schema_migrations()
+	migration_err := apply_schema_migrations(db, migrations[:], 2)
+	defer store_error_destroy(&migration_err)
+	testing.expect_value(t, migration_err.kind, Store_Error_Kind.None)
+	expect_migration_text(t, db, "SELECT value FROM migration_v2", "preserved")
+}
+
+@(test)
+test_schema_migration_failure_rolls_back_the_current_step :: proc(t: ^testing.T) {
+	db, open_err := sqlite.open_memory()
+	defer sqlite.error_destroy(&open_err)
+	testing.expect_value(t, open_err.code, 0)
+	seed_err := sqlite.execute(db, "CREATE TABLE migration_v1 (value TEXT NOT NULL); INSERT INTO migration_v1 VALUES ('kept'); PRAGMA user_version = 1")
+	defer sqlite.error_destroy(&seed_err)
+	testing.expect_value(t, seed_err.code, 0)
+	failing_migrations := test_schema_migrations()
+	failing_migrations[1].sql = `CREATE TABLE migration_v2 (value TEXT NOT NULL); INSERT INTO missing_table VALUES ('fail'); PRAGMA user_version = 2;`
+
+	migration_err := apply_schema_migrations(db, failing_migrations[:], 2)
+	defer store_error_destroy(&migration_err)
+	testing.expect_value(t, migration_err.kind, Store_Error_Kind.SQLite)
+	version, version_err := read_schema_version(db, context.allocator)
+	defer store_error_destroy(&version_err)
+	testing.expect_value(t, version, i64(1))
+	_, missing_table_err := sqlite.prepare(db, "SELECT value FROM migration_v2")
+	defer sqlite.error_destroy(&missing_table_err)
+	testing.expect(t, missing_table_err.code != 0, "failed migration DDL must roll back")
+	close_err := sqlite.close(&db)
+	defer sqlite.error_destroy(&close_err)
+	testing.expect_value(t, close_err.code, 0)
+}
+
+@(test)
+test_store_rejects_a_newer_schema_without_rewriting_it :: proc(t: ^testing.T) {
+	directory, path := store_test_database(t)
+	defer {
+		_ = os.remove_all(directory)
+		delete(directory)
+		delete(path)
+	}
+	db, open_err := sqlite.open_file(path)
+	defer sqlite.error_destroy(&open_err)
+	testing.expect_value(t, open_err.code, 0)
+	version_err := sqlite.execute(db, "PRAGMA user_version = 99")
+	defer sqlite.error_destroy(&version_err)
+	testing.expect_value(t, version_err.code, 0)
+	close_err := sqlite.close(&db)
+	defer sqlite.error_destroy(&close_err)
+	testing.expect_value(t, close_err.code, 0)
+
+	_, store_err := open(path)
+	defer store_error_destroy(&store_err)
+	testing.expect_value(t, store_err.kind, Store_Error_Kind.Unsupported_Schema)
+	db, open_err = sqlite.open_file(path)
+	testing.expect_value(t, open_err.code, 0)
+	schema_version, read_err := read_schema_version(db, context.allocator)
+	defer store_error_destroy(&read_err)
+	testing.expect_value(t, schema_version, i64(99))
+	close_err = sqlite.close(&db)
+	testing.expect_value(t, close_err.code, 0)
+}
+
+open_migration_test_database :: proc(t: ^testing.T) -> sqlite.Database {
+	database, err := sqlite.open_memory()
+	defer sqlite.error_destroy(&err)
+	testing.expect_value(t, err.code, 0)
+	return database
+}
+
+execute_migration_test_sql :: proc(t: ^testing.T, database: sqlite.Database, sql: string) {
+	err := sqlite.execute(database, sql)
+	defer sqlite.error_destroy(&err)
+	testing.expect_value(t, err.code, 0)
+}
+
+expect_migration_text :: proc(t: ^testing.T, database: sqlite.Database, sql, expected: string) {
+	statement, prepare_err := sqlite.prepare(database, sql)
+	defer {
+		finalize_err := sqlite.finalize(&statement)
+		sqlite.error_destroy(&finalize_err)
+		sqlite.error_destroy(&prepare_err)
+	}
+	testing.expect_value(t, prepare_err.code, 0)
+	result, step_err := sqlite.step(statement)
+	defer sqlite.error_destroy(&step_err)
+	testing.expect_value(t, step_err.code, 0)
+	testing.expect_value(t, result, sqlite.Step_Result.Row)
+	value, is_null, value_err := sqlite.column_text(statement, 0)
+	defer sqlite.error_destroy(&value_err)
+	defer delete(value)
+	testing.expect_value(t, value_err.code, 0)
+	testing.expect(t, !is_null)
+	testing.expect_value(t, value, expected)
+}
+
+close_migration_test_database :: proc(database: ^sqlite.Database) {
+	err := sqlite.close(database)
+	sqlite.error_destroy(&err)
+}
+
 store_test_database :: proc(t: ^testing.T) -> (directory, path: string) {
 	err: os.Error
-	directory, err = os.make_directory_temp("", "oreo-store-*", context.allocator)
+	directory, err = os.make_directory_temp(TEMP_DIR, "oreo-store-*", context.allocator)
 	testing.expect_value(t, err, os.Error(nil))
 	path, err = filepath.join({directory, "sessions.db"}, context.allocator)
 	testing.expect(t, err == nil)

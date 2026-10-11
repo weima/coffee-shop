@@ -6,7 +6,7 @@ The binding is a narrow, first-party package under `oreo/src/sqlite`. The sessio
 
 - Slice 0: SQLite 3.54.0 is pinned and bundled; provenance and checksums are in [`vendor/README.md`](vendor/README.md). The macOS arm64 C compile/link/open/close spike passes; Linux verification remains open.
 - Slice 1: the binding implements connection lifecycle, fixed SQL execution, prepared statements, integer/double/text/blob/null binding, column reads, transactions, and error reporting. With Odin `dev-2026-10`, the nine real-engine binding tests pass on macOS.
-- Slice 2: the session store applies the canonical schema, persists metadata and ordered records, enforces work-item transitions, and records session-close cancellation requests. Four real-engine store tests pass on macOS; Linux build/test verification remains open.
+- Slice 2: the session store applies ordered, transactional `PRAGMA user_version` migrations, persists metadata and ordered records, enforces work-item transitions, and records session-close cancellation requests. Eight real-engine store tests pass on macOS; Linux build/test verification remains open.
 
 ## Slices
 
