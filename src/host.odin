@@ -20,6 +20,7 @@ HOST_RELAY_POLL :: 20 * time.Millisecond
 host_report_socket: string
 host_station_executable: string
 host_extension_path: string
+host_history_root: string
 
 // The stdin loop and the relay thread both write events; one lock keeps lines whole.
 host_output_mutex: sync.Mutex
@@ -56,12 +57,12 @@ run_host :: proc() -> int {
 		return 1
 	}
 	host_dir, _ := filepath.join({state_root, "host"}, context.temp_allocator)
-	if os.make_directory_all(host_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
+	if !os.is_directory(host_dir) && os.make_directory_all(host_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
 		host_write_line(`{"type":"error","reason":"could not create the host directory"}`)
 		return 1
 	}
 	extension_dir, _ := filepath.join({host_dir, "extensions"}, context.allocator)
-	if os.make_directory_all(extension_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
+	if !os.is_directory(extension_dir) && os.make_directory_all(extension_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
 		host_write_line(`{"type":"error","reason":"could not create the extension directory"}`)
 		return 1
 	}
@@ -71,12 +72,14 @@ run_host :: proc() -> int {
 		return 1
 	}
 	host_extension_path = extension_path
+	host_history_root = strings.clone(host_dir, context.allocator)
 	socket_path, _ := filepath.join({host_dir, "activity.sock"}, context.allocator)
 	listener, listener_ok := activity_listener_open(socket_path)
 	if !listener_ok {
 		host_write_line(`{"type":"error","reason":"could not open the host report socket"}`)
 		return 1
 	}
+	defer activity_listener_close(&listener)
 	executable_info, info_err := os.current_process_info({.Executable_Path}, context.allocator)
 	if info_err != nil || executable_info.executable_path == "" {
 		host_write_line(`{"type":"error","reason":"could not locate the Coffee Shop executable"}`)
@@ -148,13 +151,18 @@ host_handle_line :: proc(line: string) -> bool {
 		return false
 	}
 
+	type_name, _ := root["type"].(json.String)
+	if type_name == "sessions" {
+		host_list_sessions()
+		return false
+	}
+
 	request_id := host_request_id(root)
 	if request_id == "" {
 		host_write_line(`{"type":"error","reason":"request_id must be a valid shot-style identifier (letters, digits, - or _, up to 64)"}`)
 		return false
 	}
 
-	type_name, _ := root["type"].(json.String)
 	switch type_name {
 	case "dispatch":
 		host_dispatch(root, request_id)
@@ -214,7 +222,7 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 		append(&prompts, prompt)
 	}
 
-	host_write_line(fmt.tprintf(`{{"type":"dispatch_accepted","request_id":"%s"}}`, request_id))
+	host_emit(Host_Event{type = "dispatch_accepted", request_id = request_id})
 	host_start_sessions(repo, request_id, ids[:], prompts[:])
 }
 
@@ -296,7 +304,7 @@ host_reply :: proc(root: json.Object, request_id: string) {
 				host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = fmt.tprintf("could not send the reply: %s", err)})
 				return
 			}
-			host_write_line(fmt.tprintf(`{{"type":"reply_sent","request_id":"%s","shot_id":"%s"}}`, request_id, shot_id))
+			host_emit(Host_Event{type = "reply_sent", request_id = request_id, shot_id = shot_id})
 			return
 		}
 	}
@@ -327,7 +335,13 @@ host_emit :: proc(event: Host_Event) {
 		host_write_line(`{"type":"error","reason":"could not encode event"}`)
 		return
 	}
-	host_write_line(string(data))
+
+	sync.mutex_lock(&host_output_mutex)
+	defer sync.mutex_unlock(&host_output_mutex)
+	if host_history_event(event) && !host_history_append(event, data) {
+		return
+	}
+	fmt.println(string(data))
 }
 
 host_write_line :: proc(line: string) {
