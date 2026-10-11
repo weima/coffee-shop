@@ -4,12 +4,11 @@ Implement the smallest useful foreground watcher first. Keep generation and proc
 
 ## Current progress
 
-- Rachel polls every 250 ms, debounces saves for 350 ms, and runs the project's `just check` recipe.
-- Packages containing `*_test.odin` run the project's `just test` recipe; test failures and allocator-leak diagnostics become errors.
-- When no root justfile exists, Rachel creates a non-overwriting starter with `check` and `test` recipes; the recipe names and contract are documented in [architecture.md](architecture.md).
+- Rachel polls every 250 ms, debounces saves for 350 ms, and runs the watched project's `just check` and `just test` recipes.
+- If the target has no root `justfile`, `Justfile`, or `.justfile`, Rachel creates a starter with `check` and `test` recipes. Existing project recipes are run as-is and never replaced; the contract is documented in [architecture.md](architecture.md).
 - Changed production files get a companion test file without overwriting an existing one. Rachel warns about new procedures without intent comments and production-looking content in `*_test.odin` files.
 - A configured `RACHEL_TEST_GENERATOR` executable receives a versioned JSON request over stdin and returns proposed test source as JSON over stdout. Rachel validates the response, writes only the matching test file, and runs the package tests. No harness is bundled.
-- `cd tools/rachel && just test` passes 12 tests without allocator-leak warnings; `just build` passes. Manual temporary-project smoke checks cover watcher feedback, warnings, companion creation, and a fake-generator round trip.
+- `cd tools/rachel && just test` passes 14 tests without allocator-leak warnings; `just build` passes. Manual temporary-project smoke checks cover watcher feedback, warnings, companion creation, and a fake-generator round trip.
 - Linux verification and a real user-configured generator wrapper remain outstanding.
 
 ## Phase 0 — Resolve implementation gates

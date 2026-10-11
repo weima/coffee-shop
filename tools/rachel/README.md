@@ -34,7 +34,7 @@ Generated tests are written directly to the working tree. Rachel rechecks the so
 
 The watcher, compile/test feedback loop, missing-intent warnings, test-filename conflict warnings, companion-test creation, and provider-neutral test-generation adapter are implemented. The adapter can use any trusted local command; Rachel does not own model credentials or depend on Pi. Further test-generation quality tuning and Linux verification remain open.
 
-`cd tools/rachel && just test` passes 12 tests without allocator-leak warnings; `just build` succeeds. Linux verification remains outstanding.
+`cd tools/rachel && just test` passes 14 tests without allocator-leak warnings; `just build` succeeds. Linux verification remains outstanding.
 
 - [Architecture and diagrams](architecture.md)
 - [Implementation plan](PLAN.md)

@@ -285,13 +285,21 @@ test_existing_justfile_is_never_overwritten :: proc(t: ^testing.T) {
 	path, path_err := filepath.join({root, "justfile"})
 	testing.expect(t, path_err == nil)
 	defer delete(path)
-	original := "test:\n    echo user's recipe\n"
+	original := "check:\n    echo custom-check\n\ntest:\n    echo custom-test\n"
 	_ = os.write_entire_file_from_string(path, original, os.Permissions{.Read_User, .Write_User})
 
 	justfile, ensure_err := ensure_project_justfile(root, context.allocator)
 	defer justfile_destroy(&justfile, context.allocator)
 	testing.expect_value(t, ensure_err, os.Error(nil))
 	testing.expect(t, !justfile.generated)
+	check_result := run_just_recipe(justfile, root, "check", "", context.allocator)
+	defer odin_command_result_destroy(&check_result, context.allocator)
+	testing.expect(t, odin_command_succeeded(check_result))
+	testing.expect(t, strings.contains(transmute(string)check_result.stdout, "custom-check"))
+	test_result := run_just_recipe(justfile, root, "test", "", context.allocator)
+	defer odin_command_result_destroy(&test_result, context.allocator)
+	testing.expect(t, odin_command_succeeded(test_result))
+	testing.expect(t, strings.contains(transmute(string)test_result.stdout, "custom-test"))
 	contents, read_err := os.read_entire_file(path, context.allocator)
 	defer delete(contents)
 	testing.expect_value(t, read_err, os.Error(nil))
