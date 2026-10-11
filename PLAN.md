@@ -460,6 +460,8 @@ A Brew for an Order that is too large to brew in one go runs in five steps:
 5. **Blend.** The Barista combines the commits of a Brew's Pulls into one reviewed commit, using the Blend operation. Blend changes the commit history it is given; it does not add work of its own.
    Implemented: the `blend` host request, a temporary worktree under the host directory, and the fail-closed rule (a failed pick removes the worktree and the new branch and reports `blend_failed`); tests `test_blend_combines_non_conflicting_pulls_into_one_commit`, `test_blend_conflict_fails_closed_and_leaves_nothing`, `test_blend_rejects_invalid_requests_before_any_git_change`.
 
+A research Shot and a Pull Shot are one turn: the Station ends the agent after its first turn, so the post-exit checks (incomplete, Taste and commit) run.
+
 Names to avoid for these steps: research (use Cupping), task (use Shot), commit squash (use Blend).
 
 **Gate.** A research-plus-execution Order runs end to end. Cuppers run with read-only tools and leave the Station unchanged, every Pull passes Taste before its commit, and Blend produces one commit whose tree matches the combined Pulls.

@@ -5,6 +5,7 @@ import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import "core:testing"
+import "core:time"
 
 // Each test builds its own binary: parallel `odin run` calls share one output path
 // and can run each other's build. The caller owns the returned path.
@@ -687,4 +688,215 @@ test_station_parse_requires_execute_taste_and_message_together :: proc(t: ^testi
 	testing.expect(t, taste_only_err != "", "a taste without a message must be refused")
 	_, research_err := parse_args({"station", "--report", "/tmp/r.sock", "--station", "shot-a", "--brew", "order-1", "--prompt", "hi", "--kind", "research", "--taste", "just test", "--message", "Add it", "--", "pi"})
 	testing.expect(t, research_err != "", "a research Station must not take a taste")
+}
+
+// Fake agent that answers each prompt with one agent_end and stays alive until its
+// input closes. Its first answer is the only one a one-turn Shot receives.
+FAKE_ONE_TURN_AGENT :: `#!/bin/sh
+while IFS= read -r line; do
+  printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"turn 1"}]}]}'
+done
+`
+
+// Same as FAKE_ONE_TURN_AGENT, but each turn first writes changed.txt.
+FAKE_ONE_TURN_WRITING_AGENT :: `#!/bin/sh
+while IFS= read -r line; do
+  printf 'changed\n' > changed.txt
+  printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"turn 1"}]}]}'
+done
+`
+
+Held_Station_Run :: struct {
+	exit_code:    int,
+	timed_out:    bool,       // the Station was still alive at the timeout and was killed
+	kinds:        [dynamic]string, // report kinds in arrival order; owned
+	descriptions: [dynamic]string, // parallel to kinds; owned
+}
+
+held_station_destroy :: proc(run: ^Held_Station_Run) {
+	for kind in run.kinds {
+		delete(kind)
+	}
+	delete(run.kinds)
+	for description in run.descriptions {
+		delete(description)
+	}
+	delete(run.descriptions)
+}
+
+// Runs one execute or research Station in a fresh one-commit repository, with its stdin
+// held open by the test. Only the Station can end the run: a Station still alive after
+// the timeout is killed and marked timed_out. extra holds the Station's own flags.
+run_station_held_open :: proc(t: ^testing.T, root, agent_script: string, extra: ..string) -> (run: Held_Station_Run) {
+	repo, _ := filepath.join({root, "beans"}, context.temp_allocator)
+	socket, _ := filepath.join({root, "report.sock"}, context.temp_allocator)
+	agent, _ := filepath.join({root, "agent.sh"}, context.temp_allocator)
+	testing.expect_value(t, os.make_directory_all(repo), os.Error(nil))
+	testing.expect_value(t, os.write_entire_file(agent, agent_script, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
+	init_state, _, init_stderr, init_err := os.process_exec(os.Process_Desc{
+		command = {"sh", "-c", `git init -q "$1" && git -C "$1" config user.name test && git -C "$1" config user.email test@example.com && git -C "$1" commit -q --allow-empty -m init`, "held-test", repo},
+	}, context.allocator)
+	defer delete(init_stderr)
+	testing.expect_value(t, init_err, os.Error(nil))
+	testing.expect(t, init_state.success, string(init_stderr))
+
+	binary := build_test_binary(t, root)
+	defer delete(binary)
+	listener, listener_ok := activity_listener_open(socket)
+	testing.expect(t, listener_ok)
+	defer activity_listener_close(&listener)
+
+	command := make([dynamic]string, context.temp_allocator)
+	append(&command, binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt", "hi")
+	append(&command, ..extra)
+	append(&command, "--", "sh", agent)
+
+	stdin_read, stdin_write, pipe_err := os.pipe()
+	testing.expect_value(t, pipe_err, os.Error(nil))
+	defer os.close(stdin_write)
+	process, start_err := os.process_start(os.Process_Desc{command = command[:], working_dir = repo, stdin = stdin_read, stderr = os.stderr})
+	_ = os.close(stdin_read)
+	testing.expect_value(t, start_err, os.Error(nil))
+	if start_err != nil {
+		return
+	}
+	state, wait_err := os.process_wait(process, 10*time.Second)
+	if wait_err == .Timeout {
+		run.timed_out = true
+		_ = os.process_kill(process)
+		_, _ = os.process_wait(process)
+	}
+	run.exit_code = state.exit_code
+
+	for {
+		result := activity_listener_receive(&listener)
+		if result.kind == .Unavailable {
+			break
+		}
+		if result.kind == .Message {
+			append(&run.kinds, strings.clone(result.message.kind))
+			append(&run.descriptions, strings.clone(result.message.description))
+		}
+		destroy_struct(&result.message)
+	}
+	return
+}
+
+@(test)
+test_research_shot_ends_after_its_first_turn :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-one-turn-research-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	run := run_station_held_open(t, root, FAKE_ONE_TURN_AGENT, "--kind", "research")
+	defer held_station_destroy(&run)
+	testing.expect(t, !run.timed_out, "a research Station must end after its first turn")
+	testing.expect_value(t, run.exit_code, 0)
+	testing.expect(t, slice_contains(run.kinds[:], "turn_done"), "the first turn must be reported")
+	testing.expect(t, slice_contains(run.kinds[:], "agent_exited"), "the agent exit must be reported")
+	testing.expect(t, !slice_contains(run.kinds[:], "incomplete"), "a research Shot that changed nothing must not be incomplete")
+}
+
+@(test)
+test_research_shot_reports_incomplete_after_its_first_turn_when_agent_writes :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-one-turn-incomplete-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	run := run_station_held_open(t, root, FAKE_ONE_TURN_WRITING_AGENT, "--kind", "research")
+	defer held_station_destroy(&run)
+	testing.expect(t, !run.timed_out, "an incomplete research Station must still end without waiting for input")
+	testing.expect_value(t, run.exit_code, 1)
+	testing.expect(t, slice_contains(run.kinds[:], "incomplete"), "a research Shot that changed a file must be incomplete")
+	testing.expect(t, slice_contains(run.kinds[:], "agent_exited"), "the agent exit must be reported")
+}
+
+@(test)
+test_pull_shot_ends_after_its_first_turn_and_commits :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-one-turn-pull-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	run := run_station_held_open(t, root, FAKE_ONE_TURN_WRITING_AGENT, "--kind", "execute", "--taste", "true", "--message", "Add the change")
+	defer held_station_destroy(&run)
+	testing.expect(t, !run.timed_out, "a Pull Station must end after its first turn")
+	testing.expect_value(t, run.exit_code, 0)
+	testing.expect(t, slice_contains(run.kinds[:], "agent_exited"), "the agent exit must be reported")
+	testing.expect(t, slice_contains(run.kinds[:], "pulled"), "a passing Taste must report pulled")
+	if len(run.kinds) > 0 {
+		testing.expect_value(t, run.kinds[len(run.kinds)-1], "pulled")
+	}
+
+	repo, _ := filepath.join({root, "beans"}, context.temp_allocator)
+	count := pull_git(t, repo, "rev-list", "--count", "HEAD")
+	defer delete(count)
+	testing.expect_value(t, strings.trim_space(count), "2")
+}
+
+// An interactive Shot stays open after its first turn, so a reply sent a second later
+// still reaches the agent and gets its own turn.
+@(test)
+test_interactive_shot_keeps_input_open_after_its_first_turn :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-interactive-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	socket, _ := filepath.join({root, "report.sock"})
+	agent, _ := filepath.join({root, "agent.sh"})
+	received, _ := filepath.join({root, "received.log"})
+	defer delete(socket)
+	defer delete(agent)
+	defer delete(received)
+	testing.expect_value(t, os.write_entire_file(agent, FAKE_STATION_AGENT, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
+	binary := build_test_binary(t, root)
+	defer delete(binary)
+	listener, listener_ok := activity_listener_open(socket)
+	testing.expect(t, listener_ok)
+	defer activity_listener_close(&listener)
+
+	state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
+		command = {"sh", "-c", `(sleep 1; printf '%s\n' "second question") | "$4" station --report "$1" --station shot-a --brew order-1 --prompt "first question" -- sh "$2" "$3"`, "interactive-test", socket, agent, received, binary},
+	}, context.allocator)
+	defer delete(stdout)
+	defer delete(stderr)
+	testing.expect_value(t, exec_err, os.Error(nil))
+	testing.expect(t, state.success, string(stderr))
+
+	turns: [dynamic]string
+	defer {
+		for turn in turns {
+			delete(turn)
+		}
+		delete(turns)
+	}
+	for {
+		result := activity_listener_receive(&listener)
+		if result.kind == .Unavailable {
+			break
+		}
+		if result.kind == .Message && result.message.kind == "turn_done" {
+			append(&turns, strings.clone(result.message.description))
+		}
+		destroy_struct(&result.message)
+	}
+	testing.expect_value(t, len(turns), 2)
+	if len(turns) == 2 {
+		testing.expect_value(t, turns[1], "turn 2")
+	}
 }

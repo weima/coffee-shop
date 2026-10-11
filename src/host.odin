@@ -1,6 +1,8 @@
 package main
 
 import "core:bufio"
+import "core:crypto/hash"
+import "core:encoding/hex"
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
@@ -390,7 +392,7 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, kind
 			continue
 		}
 
-		pane_id, pane_err := host_open_shot_pane(herdr, state_root, repo, id, station)
+		pane_id, pane_err := host_open_shot_pane(herdr, state_root, repo, request_id, id, station)
 		if pane_err != "" {
 			host_session_failed(request_id, id, pane_err)
 			continue
@@ -408,15 +410,15 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, kind
 
 // Opens the Shot's tab in the repository's workspace. The saved workspace is reused.
 // If none is saved or Herdr rejects it, a new workspace is created and saved; its
-// default tab then serves this Shot.
-host_open_shot_pane :: proc(herdr, state_root, repo, shot_id, station: string) -> (pane_id, err: string) {
+// default tab then serves this Shot. A save that fails only warns: the Shot still runs.
+host_open_shot_pane :: proc(herdr, state_root, repo, request_id, shot_id, station: string) -> (pane_id, err: string) {
 	name := repository_name(repo)
 	defer delete(name)
 	workspaces_dir, _ := filepath.join({state_root, "host", "workspaces"}, context.temp_allocator)
 	if os.make_directory_all(workspaces_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil && !os.exists(workspaces_dir) {
 		return "", "could not create the Herdr workspaces directory"
 	}
-	saved_path := state_file_path(workspaces_dir, fmt.tprintf("%s.txt", name), context.temp_allocator)
+	saved_path := state_file_path(workspaces_dir, host_workspace_file_name(repo), context.temp_allocator)
 	if saved_id := host_saved_workspace_id(saved_path); saved_id != "" {
 		tab, tab_err := herdr_create_tab(herdr, saved_id, shot_id, station, context.temp_allocator)
 		if tab_err == "" {
@@ -428,12 +430,22 @@ host_open_shot_pane :: proc(herdr, state_root, repo, shot_id, station: string) -
 		return "", fmt.tprintf("Herdr workspace launch failed: %s", herdr_err)
 	}
 	if write_err := os.write_entire_file(saved_path, workspace.result.workspace.workspace_id, private_file_permissions()); write_err != nil {
-		return "", "could not save the Herdr workspace id"
+		host_emit(Host_Event{type = "warning", request_id = request_id, shot_id = shot_id, reason = "could not save the workspace id; the next dispatch will create a new workspace"})
 	}
 	if rename_err := herdr_rename_tab(herdr, workspace.result.tab.tab_id, shot_id); rename_err != "" {
 		return "", fmt.tprintf("Herdr could not label the Shot tab: %s", rename_err)
 	}
 	return workspace.result.root_pane.pane_id, ""
+}
+
+// Keyed by the full repository path, so two repositories with the same name never
+// share a workspace. The name part keeps the file readable; both parts are filesystem-safe.
+host_workspace_file_name :: proc(repo: string) -> string {
+	name := repository_name(repo)
+	defer delete(name)
+	digest := hash.hash_string(.SHA256, repo, context.temp_allocator)
+	digest_hex, _ := hex.encode(digest, context.temp_allocator)
+	return fmt.tprintf("%s-%s.txt", name, string(digest_hex))
 }
 
 // A missing or unreadable file means no workspace is saved for the repository.
