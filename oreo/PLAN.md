@@ -32,6 +32,7 @@ Oreo's first milestone is a provider-neutral, long-lived host for task sessions,
   3. No legal or provider-terms check (developer decision, 2026-10-10: Oreo is a pi plugin). Superseded: the pre-release gate (third round, A5).
   4. Delivery stays open to confirm: pi extension for now; library and executable delivery are later (second round, item 1).
   5. Model smoke test: one model request per provider through pi, with the user already logged in to pi. Codex and GitHub Copilot are the first providers to test; Oreo does no auth work (A6; fourth round, F2). Whether Codex stays a first test provider is open.
+  6. **Thinking-enabled requests** (2026-10-11): untested for `forceAdaptiveThinking` models. Decide which store fields the request builder consumes when it is written ([architecture](architecture.md#model-source-2026-10-11)).
 
 ## Confirmed requirements
 
@@ -50,6 +51,7 @@ Oreo's first milestone is a provider-neutral, long-lived host for task sessions,
 - **Work items:** each work item is given an instruction for its provider, model, and thinking level, which is part of its prompt. The chosen values must be supported by the parent pi, and the end user must have logged in to them in pi beforehand. Oreo does not perform login (third round, A2).
 - **Host process:** the host is a separate OS process, started by the pi extension. Sessions run inside that one process (third round, A3).
 - **Tools:** `read`, `write`, and `execute` run in Odin (third round, A4).
+- **Model source:** model metadata is read from pi's live store (`~/.pi/agent/models-store.json`, key `github-copilot` for Copilot), read-only; Oreo uses no bundled static catalog (2026-10-11; [architecture](architecture.md#model-source-2026-10-11)).
 
 ## Implementation work and later gates
 
