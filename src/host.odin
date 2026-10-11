@@ -320,7 +320,11 @@ host_station_command :: proc(executable, report, extension, shot_id, request_id,
 	defer delete(quoted_report)
 	quoted_extension := shell_quote(extension)
 	defer delete(quoted_extension)
-	quoted_prompt := shell_quote(prompt)
+	// A newline in the command would be typed as Enter into the pane's shell and
+	// split the command, so the prompt travels as one line.
+	one_line, _ := strings.replace_all(prompt, "\n", " ", context.temp_allocator)
+	one_line, _ = strings.replace_all(one_line, "\r", " ", context.temp_allocator)
+	quoted_prompt := shell_quote(one_line)
 	defer delete(quoted_prompt)
 	return fmt.tprintf("%s station --report %s --station %s --brew %s --prompt %s -- pi --mode rpc -e %s", quoted_executable, quoted_report, shot_id, request_id, quoted_prompt, quoted_extension)
 }

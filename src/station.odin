@@ -6,6 +6,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sync"
+import "core:terminal/ansi"
 import "core:thread"
 import "core:time"
 
@@ -68,7 +69,7 @@ run_station :: proc(report_path, station_id, brew_id, prompt: string, agent: []s
 	defer activity_sender_close(&sender)
 
 	display := new(Station_Display)
-	station_display_start(display)
+	station_display_start(display, fmt.tprintf("Shot %s  ·  brew %s", station_id, brew_id))
 
 	agent_in_read, agent_in_write, in_err := os.pipe()
 	agent_out_read, agent_out_write, out_err := os.pipe()
@@ -94,7 +95,7 @@ run_station :: proc(report_path, station_id, brew_id, prompt: string, agent: []s
 		write_error("could not send the first prompt to the agent")
 		return 1
 	}
-	station_display_line(display, fmt.tprintf("Station %s: sent the first prompt", station_id))
+	station_display_line(display, station_style(ansi.FAINT, fmt.tprintf("sent the first prompt to the agent")))
 
 	relay := new(Station_Relay)
 	relay.input = os.stdin
@@ -197,7 +198,8 @@ station_dialog_request :: proc(
 	if method == "select" && len(options) > 0 {
 		question = fmt.tprintf("%s [%s]", title, strings.join(options[:], " / ", context.temp_allocator))
 	}
-	station_display_line(relay.display, fmt.tprintf("? %s (reply in this pane or from the main agent)", question))
+	hint := station_style(ansi.FAINT, "  (reply in this pane or from the main agent)")
+	station_display_line(relay.display, fmt.tprintf("%s%s", station_style(ansi.BOLD+";"+ansi.FG_YELLOW, fmt.tprintf("? %s", question)), hint))
 	station_display_status(relay.display, "Waiting for an answer")
 
 	sync.mutex_lock(&relay.mutex)

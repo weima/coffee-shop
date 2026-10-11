@@ -1,9 +1,11 @@
 package main
 
 import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:sync"
-import "core:sys/posix"
+import "core:terminal"
+import "core:terminal/ansi"
 import "core:thread"
 import "core:time"
 
@@ -23,6 +25,9 @@ STATION_LEGS_LEFT := [2]string{"    /   \\", "    \\   /"}
 // One block of lines at the bottom of the pane, animated while the agent works.
 // Permanent lines (replies, questions, the final text) print above it. When stdout
 // is not a terminal, nothing is animated and only permanent lines appear.
+// Escape codes are added only when stdout is a terminal.
+station_styles_on: bool
+
 Station_Display :: struct {
 	mutex:   sync.Mutex,
 	live:    bool,
@@ -34,14 +39,29 @@ Station_Display :: struct {
 	drawn:   int,
 }
 
-station_display_start :: proc(display: ^Station_Display) {
-	display.live = bool(posix.isatty(posix.STDOUT_FILENO))
+// Starts the display. When it is live, the screen is cleared and a header names the
+// Shot, so the pane shows the Station rather than the command that started it.
+station_display_start :: proc(display: ^Station_Display, title: string) {
+	display.live = terminal.is_terminal(os.stdout)
+	station_styles_on = display.live
 	display.running = true
 	display.dir = 1
 	display.status = strings.clone("Starting")
 	if display.live {
+		fmt.print(ansi.CSI + "2" + ansi.ED + ansi.CSI + ansi.CUP)
+		fmt.println(station_style(ansi.BOLD + ";" + ansi.FG_CYAN, title))
+		fmt.println(station_style(ansi.FAINT, "────────────────────────────────────────"))
 		_ = thread.create_and_start_with_data(display, station_display_animate, self_cleanup = true)
 	}
+}
+
+// Wraps text in an SGR style. Plain text is returned unchanged when the display is
+// not live, so logs and tests never see escape codes.
+station_style :: proc(code, text: string) -> string {
+	if !station_styles_on {
+		return text
+	}
+	return fmt.tprintf("%s%s%s%s%s%s%s", ansi.CSI, code, ansi.SGR, text, ansi.CSI, ansi.RESET, ansi.SGR)
 }
 
 station_display_animate :: proc(data: rawptr) {
@@ -81,8 +101,10 @@ station_display_draw_locked :: proc(display: ^Station_Display) {
 		fmt.printf("\x1b[%dA", display.drawn)
 	}
 	lines := station_block_lines(display.x, display.step, display.dir > 0, display.status)
-	for line in lines {
-		fmt.printf("\r\x1b[2K%s\n", line)
+	// Steam is faint, the cat yellow, and the status label faint again.
+	styles := [STATION_BLOCK_ROWS]string{ansi.FAINT, ansi.FG_YELLOW, ansi.FG_YELLOW, ansi.FG_YELLOW, ansi.FAINT}
+	for line, i in lines {
+		fmt.printf("\r\x1b[2K%s\n", station_style(styles[i], line))
 	}
 	display.drawn = STATION_BLOCK_ROWS
 }
