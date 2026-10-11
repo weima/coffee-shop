@@ -20,6 +20,16 @@ host_station_executable: string
 // The stdin loop and the relay thread both write events; one lock keeps lines whole.
 host_output_mutex: sync.Mutex
 
+// Pane of each started Station, so a reply can be typed into the right pane.
+Host_Session :: struct {
+	request_id: string,
+	shot_id:    string,
+	pane_id:    string,
+}
+host_sessions: [dynamic]Host_Session
+
+HOST_REPLY_MAX :: 4096
+
 // One line on stdout per event. Encoded with json.marshal so that free-form
 // reasons from Git or Herdr cannot break the framing.
 Host_Event :: struct {
@@ -133,6 +143,8 @@ host_handle_line :: proc(line: string) -> bool {
 	switch type_name {
 	case "dispatch":
 		host_dispatch(root, request_id)
+	case "reply":
+		host_reply(root, request_id)
 	case "shutdown":
 		host_write_line(fmt.tprintf(`{{"type":"stopped","request_id":"%s"}}`, request_id))
 		return true
@@ -244,8 +256,36 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts: []string) {
 			host_session_failed(request_id, id, fmt.tprintf("could not start the Station: %s", run_err))
 			continue
 		}
+		append(&host_sessions, Host_Session{request_id = strings.clone(request_id), shot_id = strings.clone(id), pane_id = strings.clone(pane_id)})
 		host_emit(Host_Event{type = "session_started", request_id = request_id, shot_id = id, pane_id = pane_id})
 	}
+}
+
+// Types a reply into a Station's pane. The Station reads it from stdin and either
+// answers the agent's pending dialog or sends it as a follow-up prompt.
+host_reply :: proc(root: json.Object, request_id: string) {
+	shot_id, shot_ok := host_string(root, "shot_id")
+	message, message_ok := host_string(root, "message")
+	if !shot_ok || !valid_shot_id(shot_id) {
+		host_emit(Host_Event{type = "error", request_id = request_id, reason = "reply needs a valid shot_id"})
+		return
+	}
+	message = strings.trim_space(message)
+	if !message_ok || message == "" || len(message) > HOST_REPLY_MAX || strings.contains_any(message, "\r\n") {
+		host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = "reply must be one non-empty line"})
+		return
+	}
+	for session in host_sessions {
+		if session.request_id == request_id && session.shot_id == shot_id {
+			if err := herdr_run_worker("herdr", session.pane_id, message); err != "" {
+				host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = fmt.tprintf("could not send the reply: %s", err)})
+				return
+			}
+			host_write_line(fmt.tprintf(`{{"type":"reply_sent","request_id":"%s","shot_id":"%s"}}`, request_id, shot_id))
+			return
+		}
+	}
+	host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = "no Station is running for that shot"})
 }
 
 // The Station runs in the Herdr pane and launches the agent. Only the prompt and

@@ -103,3 +103,100 @@ test_station_reports_each_turn_and_relays_replies :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(log, `"message":"second question"`) && strings.contains(log, `"streamingBehavior":"followUp"`), log)
 	_ = fmt.tprintf
 }
+
+// Fake agent that asks a select dialog for its first prompt and answers the reply
+// with agent_end. Every stdin line is logged to $1.
+FAKE_DIALOG_AGENT :: `#!/bin/sh
+n=0
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$1"
+  case "$line" in
+  *'"extension_ui_response"'*)
+    n=$((n+1))
+    printf '%s\n' "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"answered $n\"}]}]}"
+    ;;
+  *)
+    printf '%s\n' '{"type":"extension_ui_request","id":"d1","method":"select","title":"Pick one","options":["Allow","Block"]}'
+    ;;
+  esac
+done
+`
+
+@(test)
+test_station_forwards_dialog_and_applies_reply :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-dialog-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	socket, _ := filepath.join({root, "report.sock"})
+	agent, _ := filepath.join({root, "agent.sh"})
+	received, _ := filepath.join({root, "received.log"})
+	defer delete(socket)
+	defer delete(agent)
+	defer delete(received)
+	testing.expect_value(t, os.write_entire_file(agent, FAKE_DIALOG_AGENT, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
+	binary := build_test_binary(t, root)
+	defer delete(binary)
+
+	listener, listener_ok := activity_listener_open(socket)
+	testing.expect(t, listener_ok)
+	defer activity_listener_close(&listener)
+
+	// The answer is typed one second after start, once the dialog is pending.
+	state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
+		command = {"sh", "-c", `( sleep 1; printf '%s\n' "Allow"; sleep 1 ) | "$4" station --report "$1" --station shot-a --brew order-1 --prompt "first question" -- sh "$2" "$3"`, "dialog-test", socket, agent, received, binary},
+	}, context.allocator)
+	defer delete(stdout)
+	defer delete(stderr)
+	testing.expect_value(t, exec_err, os.Error(nil))
+	testing.expect(t, state.success, string(stderr))
+
+	needs_input: string
+	turn: string
+	for {
+		result := activity_listener_receive(&listener)
+		if result.kind == .Unavailable {
+			break
+		}
+		if result.kind != .Message {
+			continue
+		}
+		switch result.message.kind {
+		case "needs_input":
+			needs_input = strings.clone(result.message.description)
+		case "turn_done":
+			turn = strings.clone(result.message.description)
+		}
+		destroy_struct(&result.message)
+	}
+	defer delete(needs_input)
+	defer delete(turn)
+	testing.expect_value(t, needs_input, "Pick one [Allow / Block]")
+	testing.expect_value(t, turn, "answered 1")
+
+	log_data, log_err := os.read_entire_file(received, context.allocator)
+	defer delete(log_data)
+	testing.expect_value(t, log_err, os.Error(nil))
+	log := string(log_data)
+	testing.expect(t, strings.contains(log, `{"type":"extension_ui_response","id":"d1","value":"Allow"}`), log)
+}
+
+@(test)
+test_dialog_response_matches_method :: proc(t: ^testing.T) {
+	options := []string{"Allow", "Block"}
+	select_dialog := Station_Dialog{active = true, id = "d1", method = "select", options = options}
+	testing.expect_value(t, station_dialog_response(select_dialog, "Block"), `{"type":"extension_ui_response","id":"d1","value":"Block"}`)
+	testing.expect_value(t, station_dialog_response(select_dialog, "Maybe"), `{"type":"extension_ui_response","id":"d1","cancelled":true}`)
+
+	confirm_dialog := Station_Dialog{active = true, id = "d2", method = "confirm"}
+	testing.expect_value(t, station_dialog_response(confirm_dialog, "YES"), `{"type":"extension_ui_response","id":"d2","confirmed":true}`)
+	testing.expect_value(t, station_dialog_response(confirm_dialog, "n"), `{"type":"extension_ui_response","id":"d2","confirmed":false}`)
+	testing.expect_value(t, station_dialog_response(confirm_dialog, "later"), `{"type":"extension_ui_response","id":"d2","cancelled":true}`)
+
+	input_dialog := Station_Dialog{active = true, id = "d3", method = "input"}
+	testing.expect_value(t, station_dialog_response(input_dialog, "hello"), `{"type":"extension_ui_response","id":"d3","value":"hello"}`)
+}
