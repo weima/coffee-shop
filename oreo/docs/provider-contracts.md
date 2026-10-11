@@ -289,6 +289,8 @@ Documented route: a GitHub OAuth App (or GitHub App) with device flow enabled gi
 
 These statements in [architecture.md](../architecture.md) and [PLAN.md](../PLAN.md) do not match the documented contracts.
 
+Status after the [2026-10-10 decisions](#decisions-2026-10-10): gaps 4 and 5 are resolved by the direct Copilot route, which is undocumented. Gap 3 is to be verified by the smoke test. Gaps 1, 2, 6, and 7 are unchanged; Codex is tabled.
+
 1. **Codex headless path.** The architecture calls Codex device-code login "the headless path". No device-code route is documented for third-party clients (Codex Item 1). The documented headless alternative is credential transfer from a browser-capable machine (C9).
 2. **Codex loopback URI.** The architecture says the user "has approved a loopback redirect URI". The approved value is not recorded in the repo. The documented rule is `http://127.0.0.1:<port>/auth/callback`, with the port free to vary (C2).
 3. **Copilot token exchange.** The architecture lists a "Copilot token exchange" after device flow. No exchange is documented. The SDK uses the GitHub token directly (G2).
@@ -310,31 +312,22 @@ These statements in [architecture.md](../architecture.md) and [PLAN.md](../PLAN.
 - Terms: the OpenAI Terms of Use page returned HTTP 403, so C19 is excerpt-only. The Codex open-source license was not checked. The Copilot CLI bundling license was not checked.
 - Pages read only from search excerpts (C17, C19, C20, G7, G19, G20) were not read in full.
 
-## Open questions for the developer
+## Decisions (2026-10-10)
 
-Reply to each item with a short answer. Q1–Q7 concern Codex; Q8–Q14 concern Copilot; Q15–Q16 apply to both.
+The developer answered the open questions on 2026-10-10. Numbers Q1–Q10 are the decision items, not the retired question numbers. Focus is GitHub Copilot; Codex is tabled.
 
-**Codex**
+| Item | Decision | Status |
+|---|---|---|
+| Q1. Codex | Tabled. The developer has not logged in to Codex yet. Codex personal import and Codex implementation are both tabled. The Codex contract facts above are unchanged. | tabled |
+| Q2. Refresh write-back | Option (b): rotated tokens are saved to Oreo's own `~/.oreo/auth.json`. This makes a copy, which is accepted for personal use. | decided |
+| Q3. README and PLAN | Updated to match the personal import exception in [architecture.md](../architecture.md#personal-import-exception). | decided |
+| Q4. Import flag | `OREO_PERSONAL_IMPORT=codex,copilot`. Name chosen. Only `copilot` is in use while Codex is tabled. | decided (name); Codex value tabled |
+| Q5. Codex plan | Tabled, with Q1. | tabled |
+| Q6. Legal review | No legal review is required before release. | decided |
+| Q7. OAuth App owner | The "Oreo" OAuth App is registered under the developer's personal GitHub account. | decided; registration pending |
+| Q8. Callback URL | `http://127.0.0.1/callback`. Reason: GitHub's device flow never redirects, so no server listens on it. | suggested, pending developer confirmation |
+| Q9. Copilot scopes | Start with no scopes. The smoke test checks whether the Copilot token works without scopes. pi requests `read:user` as a reference only (pi source is not a contract source). | decided (start); verify in smoke test |
+| Q10. Copilot route | Direct. The Copilot SDK and the Copilot CLI are not used. The direct route calls pi's undocumented Copilot endpoints (the token exchange and the API host). | undocumented; pi reference; personal use until a documented API exists |
 
-- **Q1.** Is Oreo an open-source app for the SIWC open-source route? Reply with the license and public repo URL, or reply "request private-client access" to go through the interest form first.
-- **Q2.** What exact `agent_name_hint` should Oreo send on first registration? Example reply: "Oreo". It must stay the same across installs.
-- **Q3.** Which loopback callback should Oreo use? Example reply: "http://127.0.0.1:1455/auth/callback", or "any free port, path /auth/callback".
-- **Q4.** Which ChatGPT plan will the work account use? Docs name only Plus and Pro as eligible. Reply "Plus/Pro only", or "work account is Business/Enterprise; check eligibility first".
-- **Q5.** For headless Codex hosts, reply "accept credential transfer from a browser machine for v1", or "block headless Codex until OpenAI documents a device flow for third-party clients".
-- **Q6.** Should Oreo send `reasoning.effort` on the SIWC route? Reply "send it and verify with a live test", or "omit it until OpenAI confirms support".
-- **Q7.** Which default model should `~/.oreo/config.json` use? Example reply: "gpt-6.1-sol". Note that `gpt-5.5` retires 2026-10-14.
+**Route conflict.** The Copilot SDK route assumed by PLAN slice 6 is replaced by the direct route. PLAN slice 6 now says so.
 
-**GitHub Copilot**
-
-- **Q8.** Which Copilot route should Oreo take? Reply "SDK" (documented, but runs the Copilot CLI and its loop), "direct" (undocumented hosts, not recommended), or "defer" (wait for a documented API, or use BYOK).
-- **Q9.** If the SDK route is chosen, do you accept one Copilot CLI child process per Oreo host, with Copilot's runtime running the Copilot session loop? Reply "accept" or "reject".
-- **Q10.** Who owns the GitHub registration, and what type is it? Example reply: "register an OAuth App named Oreo under <personal account or org>, with device flow enabled". Or reply "GitHub App".
-- **Q11.** What authorization callback URL should the device-only app register? The form requires one. Example reply: "http://127.0.0.1/callback".
-- **Q12.** Keep expiring tokens (8-hour access, 6-month refresh), the GitHub default for new Apps? Reply "keep expiring tokens" or "non-expiring".
-- **Q13.** Which OAuth scopes should Oreo request for Copilot? Reply "no scopes, verify in the manual smoke test", or list the scopes.
-- **Q14.** Should the "Copilot token exchange" step be removed from architecture.md, since no exchange is documented? Reply "remove it" or "keep it, marked undocumented".
-
-**Both providers**
-
-- **Q15.** Do you want a legal review of the GitHub Terms (Sections H and J) and the OpenAI Terms of Use before any live auth? Reply "yes" or "no".
-- **Q16.** Will you run the approved manual smoke tests in slice 4 yourself, with your own Codex and Copilot subscriptions? Reply "yes", or name who else will run them.

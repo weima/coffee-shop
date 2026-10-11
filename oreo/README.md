@@ -15,7 +15,7 @@ A typical workload is about 5 task sessions with 5 concurrent work items each (a
 
 ## Authentication
 
-Oreo will implement the provider-specific OAuth flows directly and store credentials separately in `~/.oreo/auth.json` with owner-only permissions. It will not read or write another harness's credential store. Provider client identifiers and endpoints must be checked for authorized use before release.
+Oreo will implement the provider-specific OAuth flows directly and store credentials separately in `~/.oreo/auth.json` with owner-only permissions. It will not read or write another harness's credential store, except for the personal import exception: until release, personal-account logins may be imported from another harness's store when the user opts in with `OREO_PERSONAL_IMPORT=codex,copilot`. See [architecture](architecture.md#personal-import-exception). Provider client identifiers and endpoints must be checked for authorized use before release.
 
 ## Development
 

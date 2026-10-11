@@ -63,7 +63,7 @@ Oreo coordinates execution of submitted subtask work items through its shared po
 Oreo independently implements the provider-specific flows in Odin, following Pi's flow behavior while calling provider-owned endpoints with client registration authorized for Oreo. Do not assume Pi's client IDs are reusable:
 
 - **OpenAI Codex:** subscription OAuth with PKCE. Browser login uses a temporary callback listener bound to `127.0.0.1`; the user has approved a loopback redirect URI. Codex device-code login is the headless path, subject to provider support and Oreo's client registration.
-- **GitHub Copilot:** subscription login through GitHub's device-code flow, followed by the Copilot token exchange.
+- **GitHub Copilot:** subscription login through GitHub's device-code flow, followed by the Copilot token exchange (undocumented; the smoke test verifies it). The route is direct: Oreo does not use the Copilot SDK or the Copilot CLI. See [GitHub Copilot app plan](#github-copilot-app-plan).
 - **Expiry and manual login:** refresh tokens when possible. For login or re-login, Oreo should expose a copyable URL for the user to open manually and report the resulting authentication state to its caller. The exact provider-specific challenge fields and handoff remain to be specified.
 
 Live auth implementation is deferred until the provider-neutral core is in place. Provider authorization, client registration, endpoint support, and model/API capabilities remain release gates.
@@ -71,6 +71,23 @@ Live auth implementation is deferred until the provider-neutral core is in place
 These are provider-specific flows, not one generic OAuth implementation. Do not assume undocumented provider endpoints are reusable. There is no public Oreo OAuth endpoint. The loopback listener exists only during Codex browser login and closes when the flow ends.
 
 Store credentials in Oreo's separate `~/.oreo/auth.json` with owner-only permissions. It must retain both work and personal accounts. Never log tokens or authorization headers. Reference source links are in [Oreo's README](README.md#reference-implementation).
+
+### Personal import exception
+
+Until release, personal-account logins may be imported from another harness's credential store. This is the only exception to the separate-store rule.
+
+- **Opt-in only:** `OREO_PERSONAL_IMPORT=codex,copilot` names the providers to import. Codex is tabled, so only `copilot` is in use now.
+- **Copy, not share:** the import copies the login. Oreo does not write to the other store. When a refresh rotates a token, the new token is saved to Oreo's own `~/.oreo/auth.json`. This makes a copy. The developer accepts this for personal use.
+- **Scope of the exception:** personal accounts only. It ends at release.
+
+### GitHub Copilot app plan
+
+- **Registration:** an OAuth App named "Oreo", registered under the developer's personal GitHub account. Not registered yet.
+- **Flow:** device flow enabled. No client secret.
+- **Scopes:** none at first. The smoke test checks whether the Copilot token works without scopes. pi requests `read:user` as a reference only; it is not a contract source.
+- **Callback URL:** `http://127.0.0.1/callback`, suggested, pending developer confirmation. GitHub's device flow never redirects, so no server listens on this URL.
+- **Route:** direct, not the SDK. The token exchange and the API host are pi's undocumented Copilot endpoints. Status: undocumented; pi reference; personal use until a documented API exists.
+- **Smoke test order:** device login with the app's client ID and no scopes, then the Copilot token exchange, then one model request. Record the results in [provider contracts](docs/provider-contracts.md).
 
 ### Authentication sequence
 
