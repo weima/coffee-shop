@@ -15,6 +15,7 @@ measures. `session.prompt()` is never called.
 | `spike/in-process.mjs` | N = 1, 10, 50, 100 sessions in ONE node process. |
 | `spike/one-process-each.mjs` | Baseline: one child process per session, N = 1, 5, 10. Also a bare-node reference. |
 | `spike/baseline-guarded.mjs` | Guarded baseline: one child per session, N = 25 then N = 50, with a free-memory guard. Reuses `one-process-each.mjs --child`. |
+| `spike/footprint.mjs` | Physical footprint (macOS `footprint -f bytes -p`): `in-process` (N = 0, 10, 50, 100) and `guarded` (one child per session, N = 10, 25, 50). |
 
 ## How to run
 
@@ -161,3 +162,73 @@ each step, no child and no `oreo-spike-*` temp directory was left.
   toward the cap?
 - Q2: Summed RSS overstates physical use when processes share pages. Should the
   baseline report physical footprint (for example `footprint` or `vmmap`) as well?
+
+## Physical footprint
+
+Run one mode per invocation, so each measurement is a fresh process:
+
+```sh
+node --expose-gc spike/footprint.mjs in-process   # N = 0, 10, 50, 100 in ONE process
+node spike/footprint.mjs guarded                  # one child per session: 10, then 25, then 50
+```
+
+Method, the same for both cases: `footprint -f bytes -p <pid>`, total line
+`Footprint: N B`. RSS is printed next to it (`ps -o rss=`) for comparison. Available
+memory is free + inactive pages from `vm_stat` (16384-byte pages). The guard stops
+starting children below 2.00 GB and kills every child it started. Children start one
+at a time, with a 0.3 s pause. The cap is 50 children for the whole run. The guarded
+steps grow one run: 10 children, then 15 more to 25, then 25 more to 50. Each step
+measures all children alive at that point.
+
+### Table 1: in one process (`node --expose-gc spike/footprint.mjs in-process`)
+
+| N | physical footprint (MB) | per-session cost (MB) = (F_N − F_0) / N | RSS (MB) | available (GB) |
+|---|---|---|---|---|
+| 0 | 105.72 | - | 138.86 | 4.34 |
+| 10 | 107.97 | 0.23 | 141.56 | 4.36 |
+| 50 | 114.25 | 0.17 | 147.28 | 4.36 |
+| 100 | 129.84 | **0.24** | 161.33 | 4.36 |
+| after dispose | 129.89 | - | 161.38 | 4.32 |
+
+Per-session cost at N = 100: (129.84 − 105.72) / 100 = 0.24 MB. No failures. The only
+model note was the usual "No models available" message, since the isolated HOME has no login.
+
+### Table 2: one child per session, guarded (`node spike/footprint.mjs guarded`)
+
+| N requested | N reached | footprint total (MB) | footprint avg per child (MB) | RSS total (MB) | RSS avg per child (MB) | available before step (GB) | available after step, children alive (GB) | stopped early |
+|---|---|---|---|---|---|---|---|---|
+| 10 | 10 | 1044.36 | 104.44 | 1377.75 | 137.78 | 4.41 | 4.34 | no |
+| 25 | 25 | 2399.57 | 95.98 | 2711.81 | 108.47 | 4.34 | 3.84 | no |
+| 50 | 50 | 3842.86 | 76.86 | 5053.50 | 101.07 | 3.84 | 3.23 | no |
+
+After all children stopped: available 6.19 GB, 0 children still alive, 50 children
+started in total. The guard never triggered. The lowest available reading was 3.23 GB,
+about 1.2 GB above the 2 GB limit.
+
+### What this shows
+
+Neither earlier figure is a physical footprint figure. Both are RSS. The 138 MB figure
+matches RSS: this run gave 138.9 MB RSS at N = 0 and 137.8 MB at N = 10. Physical
+footprint for the same process is 105.7 MB at N = 0 and 104.4 MB per child at N = 10,
+so RSS was about 33 MB higher per process. The 89 to 99 MB figure was also RSS. This run
+measured RSS of 108 MB at 25 children and 101 MB at 50, so that figure depends on machine
+state. Physical footprint per child fell from 104 MB at N = 10 to 77 MB at N = 50 in this
+run. I did not establish why. This is one run only, and the mix of shared and compressed
+pages is unknown.
+
+For the design, the measure that matters under memory pressure is about 100 MB of physical
+footprint per pi process, not 138 MB. Ten processes cost about 1 GB and 50 cost about
+3.8 GB by footprint. The in-process cost of one session is about 0.2 MB. What costs 100 MB
+is the Node runtime plus the SDK load. A one-off spot check of a bare `node` process with
+a timer gave 11 MB footprint (not part of the script), so the SDK adds roughly 95 MB on
+top. One process that holds many sessions is therefore far cheaper than one process per
+session. The vm_stat drop during the guarded run (4.41 GB to 3.23 GB) was smaller than the
+summed footprint, so the free + inactive guard is a rough proxy, not an exact measure.
+
+**Questions:**
+
+- Q1: Each guarded step grew the same run (10, then 25, then 50 children), not fresh
+  children per step as in `baseline-guarded.mjs`. Should the next run use fresh children per
+  step?
+- Q2: Footprint per child fell from 104 MB to 77 MB as N grew. Should I check the cause
+  with `footprint --swapped` or `vmmap` on a child set at N = 10 and N = 50?
