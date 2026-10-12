@@ -4,17 +4,22 @@ import "core:fmt"
 import "core:os"
 import "core:strconv"
 import "core:strings"
+import "core:sys/posix"
 import "core:time"
 
 // The argv that starts one child Coffee Shop process: a Station, a brew Worker, or the
 // server. Normally that is this executable. In dev mode (CS_MODE=dev) it is odin run
-// against CS_DEV_REPO/src, so the child builds the current source, and odin run removes
-// its output when the child exits. Dev mode without a usable CS_DEV_REPO refuses to start
+// against CS_DEV_REPO/src, so the child builds the current source. odin run removes its
+// output on a clean exit; a dev launch sweeps the rest. Dev mode without a usable CS_DEV_REPO refuses to start
 // a child, rather than fall back to a path that odin run may have removed.
 child_launch_argv :: proc(exe: string) -> (argv: []string, err: string) {
 	repo := os.get_env("CS_DEV_REPO", context.temp_allocator)
 	has_src := repo != "" && os.is_dir(fmt.tprintf("%s/src", repo))
-	return child_launch_argv_for(os.get_env("CS_MODE", context.temp_allocator), repo, has_src, exe, child_output_path(), context.temp_allocator)
+	mode := os.get_env("CS_MODE", context.temp_allocator)
+	if mode == "dev" {
+		child_sweep_outputs(child_output_dir())
+	}
+	return child_launch_argv_for(mode, repo, has_src, exe, child_output_path(), context.temp_allocator)
 }
 
 // The selection with its inputs passed in, so tests need no process environment.
@@ -52,11 +57,40 @@ child_shell_prefix :: proc(argv: []string) -> string {
 	return joined
 }
 
-// A unique output path per child, so parallel odin runs never share a binary.
-child_output_path :: proc() -> string {
+child_output_dir :: proc() -> string {
 	dir, dir_err := os.temp_directory(context.temp_allocator)
-	base := dir if dir_err == nil else "/tmp"
-	return fmt.tprintf("%s/cs-child-%d-%d.bin", base, os.get_pid(), time.now()._nsec)
+	return dir if dir_err == nil else "/tmp"
+}
+
+// A unique output path per child, named by the launching process, so parallel odin runs
+// never share a binary and a sweep can tell whose output it is.
+child_output_path :: proc() -> string {
+	return fmt.tprintf("%s/cs-child-%d-%d.bin", child_output_dir(), os.get_pid(), time.now()._nsec)
+}
+
+// odin run keeps its output when the child exits non-zero or is killed, and a cancelled
+// Station exits non-zero. A dev launch removes the outputs of launchers that have exited.
+// shortcut: a long-lived host keeps its own children's outputs until it exits, then the next launch sweeps them.
+child_sweep_outputs :: proc(dir: string) {
+	infos, err := os.read_all_directory_by_path(dir, context.temp_allocator)
+	if err != nil {
+		return
+	}
+	for info in infos {
+		name := info.name
+		if !strings.has_prefix(name, "cs-child-") || !strings.has_suffix(name, ".bin") {
+			continue
+		}
+		rest := strings.trim_suffix(strings.trim_prefix(name, "cs-child-"), ".bin")
+		launcher_text, _, _ := strings.partition(rest, "-")
+		launcher, ok := strconv.parse_int(launcher_text)
+		if !ok || launcher <= 0 {
+			continue
+		}
+		if posix.kill(posix.pid_t(launcher), posix.Signal(0)) != .OK && posix.errno() == .ESRCH {
+			_ = os.remove(fmt.tprintf("%s/%s", dir, name))
+		}
+	}
 }
 
 // In dev mode the identified process can be the odin run wrapper, which does not forward

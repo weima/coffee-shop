@@ -1,5 +1,7 @@
 package main
 
+import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:testing"
 
@@ -38,4 +40,26 @@ test_child_launch_refuses_dev_without_a_usable_repo :: proc(t: ^testing.T) {
 test_child_shell_prefix_quotes_every_element :: proc(t: ^testing.T) {
 	prefix := child_shell_prefix([]string{"odin", "run", "/a b/src", "-out:/tmp/x.bin", "--"})
 	testing.expect_value(t, prefix, "'odin' 'run' '/a b/src' '-out:/tmp/x.bin' '--'")
+}
+
+@(test)
+test_child_sweep_removes_only_outputs_of_dead_launchers :: proc(t: ^testing.T) {
+	dir, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-child-sweep-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(dir)
+	defer delete(dir)
+
+	dead := fmt.tprintf("%s/cs-child-2147483000-1.bin", dir)
+	live := fmt.tprintf("%s/cs-child-%d-2.bin", dir, os.get_pid())
+	other := fmt.tprintf("%s/unrelated.bin", dir)
+	for path in ([]string{dead, live, other}) {
+		_ = os.write_entire_file(path, "x", os.Permissions{.Read_User, .Write_User})
+	}
+	child_sweep_outputs(dir)
+	testing.expect(t, !os.exists(dead), "output of a dead launcher must be removed")
+	testing.expect(t, os.exists(live), "output of a live launcher must stay")
+	testing.expect(t, os.exists(other), "unrelated files must stay")
 }
