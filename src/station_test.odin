@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "core:sys/posix"
 import "core:testing"
 import "core:time"
 
@@ -857,6 +858,93 @@ test_pull_shot_ends_after_its_first_turn_and_commits :: proc(t: ^testing.T) {
 	count := pull_git(t, repo, "rev-list", "--count", "HEAD")
 	defer delete(count)
 	testing.expect_value(t, strings.trim_space(count), "2")
+}
+
+// Fake agent that exits when its input closes and records whether the Station was
+// still alive to read one last line. A broken pipe means the Station died first,
+// which is what a killed Station looks like.
+FAKE_GRACEFUL_AGENT :: `#!/bin/sh
+trap 'printf "broken-pipe\n" >> "$1"' PIPE
+trap 'printf "killed-by-term\n" >> "$1"' TERM
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$1"
+done
+if printf 'agent-final\n' >&1 2>/dev/null; then
+  printf 'station-was-alive\n' >> "$1"
+fi
+printf 'input-closed\n' >> "$1"
+`
+
+@(test)
+test_station_sigterm_closes_the_agent_input_and_the_agent_exits_on_its_own :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-sigterm-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	socket, _ := filepath.join({root, "report.sock"})
+	agent, _ := filepath.join({root, "agent.sh"})
+	received, _ := filepath.join({root, "received.log"})
+	defer delete(socket)
+	defer delete(agent)
+	defer delete(received)
+	testing.expect_value(t, os.write_entire_file(agent, FAKE_GRACEFUL_AGENT, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
+	binary := build_test_binary(t, root)
+	defer delete(binary)
+	listener, listener_ok := activity_listener_open(socket)
+	testing.expect(t, listener_ok)
+	defer activity_listener_close(&listener)
+
+	// Hold the Station's stdin open so only the signal can end the session.
+	stdin_read, stdin_write, pipe_err := os.pipe()
+	testing.expect_value(t, pipe_err, os.Error(nil))
+	defer os.close(stdin_write)
+	process, start_err := os.process_start(os.Process_Desc{
+		command = {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt", "hi", "--", "sh", agent, received},
+		stdin = stdin_read,
+		stderr = os.stderr,
+	})
+	_ = os.close(stdin_read)
+	testing.expect_value(t, start_err, os.Error(nil))
+	if start_err != nil {
+		return
+	}
+
+	// Wait for the first prompt, so the handler is installed before the signal.
+	started := false
+	for _ in 0 ..< 100 {
+		if data, read_err := os.read_entire_file(received, context.temp_allocator); read_err == nil && strings.contains(string(data), `"message":"hi"`) {
+			started = true
+			break
+		}
+		time.sleep(30 * time.Millisecond)
+	}
+	testing.expect(t, started, "the agent should receive the first prompt")
+
+	testing.expect_value(t, posix.kill(posix.pid_t(process.pid), .SIGTERM), posix.result.OK)
+	state, wait_err := os.process_wait(process, 10*time.Second)
+	testing.expect(t, wait_err == nil, "the Station must exit after closing the agent input")
+	testing.expect_value(t, state.exit_code, 0)
+
+	log_data, log_err := os.read_entire_file(received, context.allocator)
+	defer delete(log_data)
+	testing.expect_value(t, log_err, os.Error(nil))
+	log := string(log_data)
+	testing.expect(t, strings.contains(log, "input-closed"), log)
+	testing.expect(t, strings.contains(log, "station-was-alive"), log)
+	testing.expect(t, !strings.contains(log, "broken-pipe"), log)
+	testing.expect(t, !strings.contains(log, "killed-by-term"), log)
+
+	for {
+		result := activity_listener_receive(&listener)
+		if result.kind == .Unavailable {
+			break
+		}
+		destroy_struct(&result.message)
+	}
 }
 
 // An interactive Shot stays open after its first turn, so a reply sent a second later
