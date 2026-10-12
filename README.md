@@ -4,7 +4,7 @@
 
 Coffee Shop is a local Odin orchestrator for work initiated from a long-lived main-agent session. Pi is the first user-facing **Barista**: it receives a natural-language **Order**, prepares an explicit **Recipe**, and asks a foreground Coffee Shop host to manage Herdr workspaces, isolated Git worktrees, and worker sessions. The first usable workflow uses Pi for both main and Herdr worker sessions. Oreo may take either agent role once stable; Oreo and Rachel are optional improvements, not prerequisites.
 
-> **Current status:** The implemented `brew`/`status`/`cancel`/`collect` CLI is a one-shot foundation; its Pi Workers run one fixed prompt and exit. The automated vertical-slice suite passes on Linux, WSL and macOS, and a real Pi/Herdr smoke Brew passed on macOS with Pi `1.1.0` and Herdr `0.9.3`. The long-lived host, interactive worker sessions, and live completion/needs-input relay described below are **not implemented yet**.
+> **Current status:** The interactive workflow is implemented — a foreground host dispatches interactive Pi **Stations** into Herdr panes, one isolated Git worktree each, and relays their reports. The `brew`/`status`/`cancel`/`collect` CLI remains as the one-shot compatibility foundation, whose Pi Workers run one fixed prompt and exit. The automated vertical-slice suite passes on Linux, WSL and macOS, and a real Pi/Herdr smoke Brew passed on macOS with Pi `1.1.0` and Herdr `0.9.3`. The long-lived host, interactive worker sessions, and live completion/needs-input relay are **implemented**; `PLAN.md` records what shipped and what is still live.
 
 ## The story behind the names
 
@@ -62,7 +62,7 @@ Two things to know:
 
 **Input boundary:** “Coffee Shop waits for input” means the foreground host waits for structured requests from the active main-agent harness. Raw user text goes to that harness; Coffee Shop does not interpret it.
 
-**Current implementation:** `brew` accepts a prepared JSON Recipe, starts non-interactive `pi --mode json --print --no-session` Workers, waits for terminal Shots, then exits. `status`, `cancel`, and `collect` are separate commands. There is no long-lived host, interactive Worker, or live needs-input/completion relay yet.
+**Current implementation:** two paths exist. `brew` accepts a prepared JSON Recipe, starts non-interactive `pi --mode json --print --no-session` Workers, waits for terminal Shots, then exits — the one-shot foundation, retained for compatibility. The interactive path is the foreground host and its Stations, described in [the architecture](docs/architecture.md), with the tab lifecycle specified in [docs/tab-lifecycle.md](docs/tab-lifecycle.md).
 
 Oreo and Rachel are improvement tracks, not core dependencies: the Coffee Shop workflow must be usable with Pi alone. See [the architecture](docs/architecture.md) for target and current diagrams and boundaries. See [the plan](PLAN.md) for the next implementation phases. See the [vocabulary](specs/UBIQUITOUS_LANGUAGE_LATEST.md) for the coffee-shop terms.
 

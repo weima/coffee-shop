@@ -110,7 +110,7 @@ Oreo coordinates execution of submitted subtask work items through its shared po
 - When a work item needs a user decision, Oreo emits a `Needs_Input` event identifying the session and work item, pauses the work, retains its context in memory, and releases the worker. The caller's response resumes that work item through the pool.
 - A final result completes a work item or turn, not necessarily its parent session. The caller also receives occasional progress updates.
 - Work queue submissions return a clear `Queue_Full` result when capacity is reached. The queue must retain at least 1,000 pending work items. Work items also have a TTL; whether it applies to queue wait, execution time, or session idleness remains open. Expiry must not silently erase persisted session history.
-- Exact event/API shapes, cancellation delivery, and host shutdown behavior remain to be defined.
+- Event and API shapes are defined by the host's wire protocol (`submit`, `resume`, `close_session`, `quit`; `ready`, `accepted`, `closed`, `stopped`, `event`, `error`). What remains open is **cancellation delivery** — a `quit` currently waits for a worker blocked in a model reply to reach its timeout — and a model-reply deadline generally.
 
 ## Structured context storage and database candidates
 

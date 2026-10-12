@@ -16,7 +16,11 @@
 
 ## Current state and gap
 
-The implemented `brew`/`status`/`cancel`/`collect` CLI is one-shot. `brew` accepts a prepared Recipe, runs `pi --mode json --print --no-session` Workers, waits for terminal Shots, and exits. The current activity socket carries best-effort progress only; there is no interactive Worker, persistent foreground control loop, or live `needs_input`/completion bridge to the main agent. The completed slices below are the compatibility foundation, not proof that the target workflow is implemented. Oreo's separate Host/Session work may support a later main or worker harness, but Coffee Shop's first usable path must work with Pi alone and must not depend on Oreo or Rachel.
+**The interactive workflow is implemented.** A foreground host reads one JSON request per line and creates a Herdr workspace with an isolated Git worktree per Shot; each Shot runs in an interactive Pi **Station** in a pane, reporting every turn over the activity socket and accepting lines typed into its pane as replies to its agent. `needs_input` reaches the main agent, and completion is reported with the commit and hash, the failure, or the reason.
+
+The one-shot `brew`/`status`/`cancel`/`collect` CLI remains as the **compatibility foundation**: it runs `pi --mode json --print --no-session` Workers and exits, and its contracts in the appendix must not regress.
+
+What remains is in **v0.4**: Oreo as the runtime, the code mode's token measurement, the profiling, and the Station tab pool whose design is in [docs/tab-lifecycle.md](docs/tab-lifecycle.md). Oreo's separate Host/Session work may take either agent role, but Coffee Shop's first usable path works with Pi alone and does not depend on Oreo or Rachel.
 
 ## Next interactive-workflow phases
 
@@ -139,7 +143,7 @@ Record the decisions in [the architecture](docs/architecture.md) or this plan. P
 
 ## Verification status
 
-Slices 0–7 are implemented. `just test` runs 93 tests, including four end-to-end tests (`src/e2e_test.odin`) that drive the real binary with fake `herdr` and `pi`. The interactive workflow at the top of this plan is not implemented or verified; the evidence below applies to the one-shot foundation. Everything below was also run by hand against real Herdr and Pi, with up to three Shots and two Workers in parallel, from inside a Herdr pane and from a plain terminal with every `HERDR_*` variable removed.
+Slices 0–7 are implemented. `just test` ran 93 tests when these slices landed (277 at the v0.3 release), including four end-to-end tests (`src/e2e_test.odin`) that drive the real binary with fake `herdr` and `pi`. The interactive workflow at the top of this plan is not implemented or verified; the evidence below applies to the one-shot foundation. Everything below was also run by hand against real Herdr and Pi, with up to three Shots and two Workers in parallel, from inside a Herdr pane and from a plain terminal with every `HERDR_*` variable removed.
 
 | Release gate | Evidence |
 | --- | --- |
@@ -167,7 +171,7 @@ Use the [Odin in Practice](https://github.com/weima/odin-in-practice) chapters a
 
 Pass child-process arguments as an argument vector. Distinguish a launch error from a Worker that starts and exits with an error. Give each allocated buffer and operating-system resource a clear owner.
 
-## Roadmap: v0.2.0
+## Appendix: shipped contracts (the one-shot foundation and v0.2)
 
 These items document the one-shot v0.2 foundation built by dogfooding v0.1 on the [Odin in Practice](https://github.com/weima/odin-in-practice) book. They are compatibility contracts, not the target interactive loop above. Items 2–7 are implemented in this Station; acceptance gates not run are explicitly marked pending below. Blend remains a separate proposal and is out of scope.
 
@@ -397,118 +401,99 @@ Gates still not exercised for real: item 6 with a live Pi failure, and the model
 - `status` works with the server absent.
 - The full suite passes three times in a row without a flake.
 
-## Roadmap: v0.3.0 (Station model)
+## Roadmap: v0.3.0 — done, and this is the release
 
-This section targets the Station model: interactive Stations in Herdr panes, one per Shot, run in parallel. It does not target the one-shot `brew` model.
+Everything below shipped. What remains is v0.4. The per-version contracts that used to live under their own roadmap headings are retained as an appendix at the end of this plan, because they describe behaviour that must not regress — not because the versions matter.
 
-After the interactive workflow is verified, Coffee Shop may act as a human manager: a developer delegates several tasks at once, each Station produces its own reviewable change, and five Stations run side by side. The developer reviews and commits each change. That needs two things. It must stay fast enough that the machine does not stall with five Stations running, and it must stay cheap enough that a day of running does not run up a model bill. Both need measurements before anything is tuned, so profiling comes first.
+**The Station model.** A Station is a `coffee-shop station` process in a Herdr pane for one Shot, harness-neutral: it launches the agent, speaks the Pi RPC subset, reports each turn over the activity socket, and forwards lines typed into its pane as replies. The host is a foreground process that reads one JSON request per line, creates a Herdr workspace and an isolated Git worktree per Shot, and relays Station reports to the main agent. Exactly one thread reads the input stream; workers never do. Shots open as tabs in one workspace per repository, and long prompts travel in per-Shot files.
 
-### 1. Profile the code with Spall
+**The Shot surface**, all per Shot and validated before anything is created:
 
-- Use `core:prof/spall` (Odin's Spall trace format) to span: the host, dispatch, Station startup, the report relay, and the Herdr calls.
-- Off by default with no cost when off. A `CS_SPALL_FILE` environment variable names the trace file, as `CS_LOG_LEVEL` does for logs.
-- **Gate.** A trace of a five-Station run opens in the Spall viewer, and the top spans are recorded in this section with their share of wall time.
+| field | contract |
+|---|---|
+| `id`, `prompt` | required; the id is a safe token, the prompt non-empty |
+| `kind` | `execute` or `research`; a research Shot gets a read-only tool allowlist (`read`, `grep`, `find`, `ls`) and can **never** receive `codemode` |
+| `taste`, `message` | a Pull runs its Taste before committing and commits only if it passes; a failed Taste is `incomplete` and makes no commit |
+| `model`, `thinking` | per Shot; a model is **always** supplied and never a provider-less default |
+| `codemode` | `on` or `off`, absent meaning on; an execute Shot gets `--tools +codemode` unless told otherwise, and any other value fails loudly |
 
-### 2. Profile the resource use
+**Oreo code mode is built.** Odin is the script language, compiled and run as a short-lived process (measured at 0.15 s, with no standing engine to amortize); `core/odin` is the static gate that refuses imports outside an allowlist, `foreign` blocks and `#load` before anything runs; the runner carries a wall-clock deadline and a bounded output; a process — not a threadpool — is the containment unit; and the `codemode` tool is in Oreo's default tool set and now reaches execute Shots. What it has never had is its *decision*: the token-delta measurement listed in v0.4.
 
-- Sample each Station and each pi child process: CPU time, resident memory, open file descriptors, and child process count, by platform:
-  - Linux and WSL: from `/proc`.
-  - macOS: from Darwin process APIs (for example `proc_pid_rusage`, which the code already uses for process identity). Fields that Darwin does not expose the same way (open file descriptors, child count) must be marked "to be verified on macOS in the gate".
-  - Native Windows is unsupported, as the v0.2 section already says.
-- Show them with `status --usage`, with per-Station rows and totals.
-- Known starting figure: pi is about 100 MB per process, so five Stations need about 500 MB. The gate uses measured numbers.
-- **Gate.** Five Stations run on this machine with a recorded peak CPU and memory budget, and the default concurrency is chosen from those numbers, not guessed.
+**The working flow ships with it.** Cupping (research Shots that cannot change the Station), Taste before a commit, a Pull whose changes become its own commit only after Taste passes, Blend for combining the 2–20 commits of a multi-Pull run, a Pull → PR operation that verifies recorded Taste evidence and refuses a non-fast-forward, and cleanup that refuses to touch a run whose Station is still alive and names it.
 
-### 3. Account for tokens and cost
+**Reporting and lifecycle.** Every Station reports turn, usage (tokens, and cost when the provider prices the model) and outcome; `status` shows what is in flight and how each Station ended; the register receives a Station's usage and outcome on the production path; a cancelled Station frees what it owns and exits `130`; and the display draws a four-row block in which no row can wrap.
 
-**Confirmed (2026-10-11).** Pi's RPC exposes `{"type":"get_session_stats"}`, which returns `tokens` (`input`, `output`, `cacheRead`, `cacheWrite`, `total`), `cost`, `contextUsage`, and message and tool counts. `tokens` and `cost` cover the whole session: assistant messages, usage reported by tools, and compaction or branch-summary generation. This answers the open question about which fields to rely on; no per-event parsing is needed.
+**Evidence.** The flow ran end to end on pi Stations with independent verification of every Pull; five Stations ran in one batch; the suite passes with `ODIN_TEST_FAIL_ON_BAD_MEMORY=true`; and each fix was verified against its commit, with a load-bearing proof wherever a test claimed a property.
 
-**Observed (2026-10-11, the Oreo v0.1 dogfood runs).** Cost is driven by turn count, not prompt size. Across four Stations, 95% of 18.0M tokens were `cacheRead`: the same context re-read on every turn. The `pool` Station alone spent 96 requests and $0.127 on roughly 700 lines, because it kept iterating on one failing assertion. One Station cost more than the other three combined purely through turn count.
+**Gates deliberately NOT met, and carried into v0.4:** the flow with Oreo as the runtime; the code mode's token-delta measurement; the profiling this milestone listed; and the two checks in v0.4 item 4.
 
-- Record per Station: model, thinking level, input, output and cache tokens, and cost. Keep these in the Register and Receipt, and show running totals in `status`. Record tokens always; record `cost` when Pi reports a non-zero value and say it is unavailable when it does not, because Pi reports `0` for a model its catalog cannot price.
-- Carry the thinking level on the host dispatch path, not only the one-shot Recipe path. The host accepts `shot.model` but has no `shot.thinking`, so every dispatched Station runs at Pi's default (which is `high` on this machine) and its cost cannot be chosen. The one-shot path already validates `thinking` and passes `--thinking`; the host path is the gap.
-- Optional budget, in tokens or estimated cost. Coffee Shop launches no new Station once it is reached. Whether running Stations finish or are cancelled is an open question.
-- **Gate.** For a real Station, the recorded tokens match the provider's usage for the same run, within a stated tolerance.
+## Roadmap: v0.4.0 — everything outstanding
 
-### 4. Five Stations at once
+v0.3 is concluded, and **everything still live lives here** — one milestone ahead instead of a tail of them.
 
-- A machine-wide limit that spans all Brews and Stations on the machine, so five Stations cannot exceed the budget from item 2 together.
-- Five Stations run together, each in its own Git worktree and its own Herdr tab. None of them interferes with another.
-- Coffee Shop does not commit. The developer reviews and commits, as now.
-- **Gate.** Five Stations for five tasks run together with no interference.
+The shape is unchanged. The flow runs on **pi** Stations first, so it works at the scale it already has; then **Oreo** becomes the runtime, which is what makes hundreds of parallel agents affordable. Oreo has its own plan in `oreo/PLAN.md`.
 
-### Open questions
+### 0. Live right now — none of this is in the v0.3 release
 
-- Where the machine-wide limit is kept, since Stations on different repositories have separate servers.
-- Whether a budget stops running Stations or only stops new ones.
-- Whether the Tray shows Station usage.
+Three branches are written, committed and **unmerged**, because each was still awaiting its own verification when v0.3 was cut:
 
-## Roadmap: v0.4.0
+| branch | commit | what it is |
+|---|---|---|
+| `cs-host-codemode-field-1-cmfield` | `b3d6c5b` | codemode as a per-Shot input instead of a process environment variable |
+| `cs-host-oreo-quit-2-oquit2` | `2549f88` | a `quit` wakes a blocked wait instead of waiting out the model timeout |
+| `cs-host-oreo-model-1-omodel` | `d536063` | Oreo's provider and model are supplied together, never defaulted |
 
-The high-automation flow. It is not part of v0.3.
+Still live from v0.3's own dogfooding, and not fixed by any of those:
 
-The plan has two steps. First, the flow is built on pi Stations, so it works at small scale now; its orchestration does not depend on the runtime. Last, Oreo is added as the runtime, once Oreo v0.1 passes its gates. Oreo makes hundreds of parallel agents cheap. Oreo has its own plan in `oreo/PLAN.md`.
+- **The report relay is a single point of failure.** When the host died mid-session, four Stations kept working and committing while their terminal reports were never relayed; two of those completions were found only by inspecting branches by hand. Panes were the accidental backup. This is item 3.1 below, and it gates the pool.
+- **A Station has no model-reply deadline.** A provider response that never arrives hangs the Station and its agent for as long as the turn lasts — measured at over two hours — instead of failing the work item. The Oreo host has such a bound; the pi Station path does not.
 
-- Per-task commits: each task's changes become their own commit, made by a Pull after it passes Taste (see item 1 below). Blend then combines a Brew's commits into one.
+### 1. The flow's two open gates
 
-### 1. Research, then execute in small commits
+The five steps and their implementations are recorded in v0.3. What remains is what they did not prove, plus two defects that verification found.
 
-A Brew for an Order that is too large to brew in one go runs in five steps:
+**Gate.** A research-plus-execution Order runs end to end: Cuppers run with read-only tools and leave the Station unchanged, every Pull passes Taste before its commit, and Blend produces one commit whose tree matches the combined Pulls. Every part exists and is exercised daily, but the gate has never been run as a single demonstration.
 
-1. **Grind.** The Barista splits the Order into very small pieces and tags each as research or execution. This is the Grinder step from the vocabulary, applied before Shots are created.
-2. **Cupping.** A Cupper is a Worker running a research Shot. Cupping has no side effects, like a pure function: it reads the repository and returns findings, and nothing else changes. It runs Pi with read-only tools only (`read`, `grep`, `find`, `ls`, as the Filter's review already does), so it cannot write files, run shell commands, or touch package caches. Its findings are the Shot report, which the supervisor records as it records any other report. A Cupping Shot whose Station changes anyway is `incomplete`.
-   Implemented: the Shot `kind` field (`execute` or `research`), read-only tools for research Shots, and the `incomplete` check in the Station; tests `test_foreground_host_passes_shot_kind_and_rejects_unknown_kind`, `test_research_station_reports_incomplete_when_agent_writes`, `test_research_station_sends_no_incomplete_when_agent_writes_nothing`, `test_execute_station_sends_no_incomplete_when_agent_writes`.
-3. **Dial-in.** The Barista summarises the Cupping notes, decides which pieces can be executed, and re-splits the parallel ones into Pulls. Dependent pieces stay in sequence.
-4. **Pull.** A Pull is an execution Shot, run by a Worker in its own Station. Before it commits, the Worker runs its verification commands and must pass them; this check is the **Taste**. Each Pull that passes Taste makes its own commit on its own branch. A Pull that fails Taste is `incomplete` and makes no commit.
-   Implemented: the Shot `taste` and `message` fields, the Station commit after a passing Taste, and tests `test_foreground_host_passes_taste_and_message_to_station`, `test_foreground_host_omits_taste_for_shot_without_taste`, `test_foreground_host_rejects_taste_on_research_shot`, `test_foreground_host_rejects_taste_without_valid_message`, `test_pull_with_passing_taste_commits_with_message`, `test_pull_with_failing_taste_sends_taste_failed_and_makes_no_commit`, `test_pull_with_passing_taste_and_no_changes_sends_taste_passed`, `test_shot_without_taste_sends_no_taste_report_and_makes_no_commit`.
-5. **Blend.** The Barista combines the commits of a Brew's Pulls into one reviewed commit, using the Blend operation. Blend changes the commit history it is given; it does not add work of its own.
-   Implemented: the `blend` host request, a temporary worktree under the host directory, and the fail-closed rule (a failed pick removes the worktree and the new branch and reports `blend_failed`); tests `test_blend_combines_non_conflicting_pulls_into_one_commit`, `test_blend_conflict_fails_closed_and_leaves_nothing`, `test_blend_rejects_invalid_requests_before_any_git_change`.
+**Gate.** The same run passes with **Oreo as the runtime** (item 2).
 
-A research Shot and a Pull Shot are one turn: the Station ends the agent after its first turn, so the post-exit checks (incomplete, Taste and commit) run.
+Two defects, both found by verification rather than by a failing test, and both open:
 
-Names to avoid for these steps: research (use Cupping), task (use Shot), commit squash (use Blend).
+- **The Taste is bypassed when an agent commits its own Pull.** The Station then finds a clean tree and reports `taste_passed — no changes` instead of `pulled`, so a Taste that failed would leave a commit behind that looks reviewable.
+- **A Shot with no Taste stays interactive by design** (`relay.one_turn = research || taste != ""`), so a verification dispatched without one never ends and holds its tab. Every verification now carries a clean-tree Taste as a workaround; the shape itself is unfixed.
 
-**Gate.** A research-plus-execution Order runs end to end. Cuppers run with read-only tools and leave the Station unchanged, every Pull passes Taste before its commit, and Blend produces one commit whose tree matches the combined Pulls.
+### 2. Oreo as the runtime
 
-**Gate.** The flow runs end to end on Stations first. Then the same run passes with Oreo as the runtime, with the same results.
+**The measurement comes first, because it decides whether any of this is worth building.** v0.5's own gate said so: *"Before any of it is built, measure Pi's own `codemode` on real Stations through the per-Station usage report; if that delta is small, the feature is not worth building in any language."* That measurement has still never been taken, which means the code below was written ahead of its own decision criterion.
 
-### Open questions
+- **Measure Pi's `codemode` on real Stations.** The mechanism now exists: the per-Shot `codemode` field runs the same task with and without the tool, and every Station reports `total` tokens. Dispatch the identical task twice and compare. **Gate.** A repeated task shows a material token delta, or v0.5's conclusion is that code mode was not worth building.
+- **Oreo's code mode** is the script-based execution model in [oreo/code-mode.md](oreo/code-mode.md): Odin as the script language, compiled and run as a short-lived process (measured at 0.15 s, with no standing engine to amortize); `core/odin` as the static gate that refuses imports outside an allowlist, `foreign` blocks and `#load` before anything runs; a process as the containment unit rather than a threadpool. Containment is platform-dependent — macOS does not enforce `RLIMIT_AS` — so any per-script memory ceiling must be verified on each platform. The assumption to test is **model competence**: Odin is stricter than JavaScript, and every rejected script costs a turn, which is the cost the feature exists to reduce.
+- **A per-work-item model route.** Coffee Shop tells Oreo which model to use, per work item, matching the task's complexity; when it has no preference it sends **the model it is itself using**; and in all circumstances it sends one. Oreo must not carry a default of its own. The pi path already does this (`--model` per Shot, defaulting to the orchestrator's own); Oreo's equivalent is the thing to build. **Gate.** No global or provider-less default decides a model anywhere; each work item carries provider and model together, and an incomplete pair fails loudly.
 
-- Whether Dial-in is a Barista step only, or can also be a Worker step.
-- Which Oreo v0.1 gate must pass before v0.4 switches runtime.
+### 3. Station tabs are a pool, not a leak
 
-## Roadmap: v0.5.0
+The design is [the Station tab lifecycle](docs/tab-lifecycle.md): a tab is an **allocated resource**, drawn from a bounded pool and returned for reuse rather than abandoned. This exists because every dispatch created a tab and nothing owned its lifetime: one session left 21 stale panes in the Station workspace, enough that the developer could feel the rendering drag, and the cleanup that followed had to guess from the process list — and closed a pane inside the developer's own workspace while guessing. Lifetime belongs to the **dispatcher**, which knows what an outside script cannot: it allocated the pane, it holds the session table, it receives every report, and it can run a command in an existing pane.
 
-**Priority: Oreo code mode.** The script-based execution model specified in [oreo/code-mode.md](oreo/code-mode.md).
+1. **Durable reports first — the prerequisite, not a companion.** Reclaiming a tab assumes the report channel survived the run, and today it does not: when the host died mid-session, four Stations kept working and committing while their terminal reports were never relayed, and two completions were found only by inspecting branches by hand. Panes were the accidental backup. Write each report durably before relaying it, and recover unrelayed ones on restart. **Gate.** Kill the host mid-run; every completion is still reported or recoverable after restart, without reading a pane.
+2. **The pool.** Dispatch acquires a tab; a terminal report, or a process gone with no report, makes it reclaimable; the pool is bounded by the concurrency limit and emptied when the host exits. **Gate.** Dispatch more Shots than the limit; the workspace never holds more than the limit of tabs, every Shot still runs, and the run ends with no manual cleanup.
+3. **Reuse, not recreate.** Run the next Station command in a freed pane, clearing it and **re-asserting the terminal state** first — auto-wrap on, cursor visible, attributes reset — because the previous occupant may have died mid-draw. **Gate.** A reused tab shows no row from its previous occupant, and two consecutive runs of the same size do not grow the tab count.
+4. **A tab that needs a human is pinned.** `needs_input` holds its tab until the question is answered or the run is cancelled, never released by a timeout. **Gate.** A question stays visible and answerable while other Shots are dispatched, and that tab is not reused meanwhile.
+5. **Exact recovery after a crash.** The host persists the panes it owns, so recovery closes precisely those instead of inferring from process arguments and directories. **Gate.** Kill the host; recovery reclaims exactly its own tabs and touches no other pane.
 
-### 1. Oreo code mode
+### 4. Two checks the flow still needs
 
-Cost is driven by turn count, not prompt size. In the v0.4 dogfood runs, 95% of 18.0M tokens were `cacheRead` — the conversation re-sent on every turn — and one Station spent 96 requests on a single failing assertion. Code mode collapses N tool-call turns into one script and keeps tool results out of the model's context, which attacks both terms of that product.
+6. **A suite never runs concurrently with a Station's own.** Today this is a rule the Barista follows by hand, and this repository has measured what concurrent suites do: failures that vanish on re-run, which is worse than no check because a flake reported as real is a false finding. Make it a check — a lock a suite takes, or the host refusing to dispatch while one is held. **Gate.** Two suites started at once cannot overlap, and the second reports why instead of flaking.
+7. **A cancel is honoured even when the reader is mid-write.** The flag cannot interrupt a reply write blocked on a full agent pipe; the old handler's direct `close` would have raised `EPIPE`, and that mechanism was removed because it read a pointer the main flow frees — a use-after-free. Make the cancel effective again without reintroducing that. **Gate.** A Station blocked writing to a full pipe stops promptly, and the use-after-free stays impossible.
 
-- **Odin is the script language**, compiled and run as a short-lived process. No embedded engine: a standing runtime would tax every session's idle footprint, and the spike measured that footprint at about 0.22 MB per session. Measured compile cost is 0.15 s, so there is no standing engine to amortize.
-- **`core/odin` is the static gate.** Parse the generated script and refuse imports outside an allowlist, `foreign` blocks, and `#load` before anything runs. This is a static capability check in place of a runtime sandbox.
-- **No service and no threadpool.** A threadpool gives scheduling, not containment. The containment unit is a process, because a process can be killed and its memory can be accounted.
-- **Containment is platform-dependent.** macOS does not enforce `RLIMIT_AS`, so a per-script memory ceiling cannot be assumed to work the same way on Linux and macOS; it must be verified on each.
-- **The assumption to test is model competence.** Odin is stricter than JavaScript, and every rejected script costs a model turn, which is the cost this feature exists to reduce.
+### 5. Profiling the host and the Stations
 
-**Gate.** On a repeated task, the Odin script path reduces total tokens materially against the same task without it, with a working output cap and wall-clock deadline on both platforms. Before any of it is built, measure Pi's own `codemode` on real Stations through the per-Station usage report from v0.3; if that delta is small, the feature is not worth building in any language.
+8. **Profile the code with Spall.** Span the host, dispatch, Station startup, the report relay and the Herdr calls; off by default with no cost when off, behind a `CS_SPALL_FILE` variable as `CS_LOG_LEVEL` names logs. **Gate.** A five-Station trace opens in the Spall viewer and the top spans are recorded here.
+9. **Profile the resource use.** Sample each Station and each pi child for CPU, resident memory, open file descriptors and child count: from `/proc` on Linux and WSL, from Darwin's process APIs on macOS, marking anything Darwin cannot expose as "to be verified". **Gate.** Five Stations run with a recorded peak CPU and memory budget, and the default concurrency is chosen from those numbers rather than guessed.
+10. **A machine-wide concurrency limit** spanning Brews and Stations, so five Stations cannot exceed that budget together. **Gate.** Five Stations run together with no interference, and a sixth waits.
 
-### Open questions
+### 6. Residuals carried from dogfooding
 
-- Whether the Odin script path can match an embedded JS engine on model competence.
-- What replaces `RLIMIT_AS` on macOS, and whether a sampling watchdog is fast enough to be worth having.
-
-## Roadmap: v0.6.0
-
-The Barista's working flow — from dispatch to cleanup — becomes part of Coffee Shop instead of a habit re-executed by hand every run. Each step below has already failed by hand: a Station summary was treated as evidence when it was wrong, a workspace was nearly closed while its Station was still working, running Stations became unrecognizable once `odin run` left the executable as a temp binary, and a Station stopped with `pkill` lost its agent's pipe and crashed it with an unhandled `EPIPE`.
-
-1. **In-flight visibility.** `status` reports every Station still in flight with its Herdr pane, elapsed time, tokens, cost, and whether a supervisor is watching it, so a developer never has to ask what is running. Tokens and cost come from the per-Station usage report; a Station with no supervisor is visible as such rather than assumed to be working.
-2. **Completion handling.** A Station that reaches a terminal state is reported with its outcome: the commit and hash for a Pull that passed Taste, or the failure and its reason. The Barista acts on that report instead of polling `status` to find out that a Station finished.
-3. **A Pull becomes a PR.** One operation verifies a Pull's recorded Taste evidence and its terminal state, fast-forwards the base branch to its commit, pushes, and opens the PR, then asks the developer to merge. A single Pull never needs Blend at all; Blend is only for combining the 2–20 commits of a multi-Pull run into one reviewed commit.
-4. **Cleanup after merge.** Once the developer confirms a PR is merged, that run's Herdr workspace and worktrees are removed. A run whose Station is still working is never cleaned up, so a running Station is found by its `--brew` argument, not by process name: under `odin run` the process name is a temp binary that says nothing.
-5. **Enforced checks, not prose.** The rules learned by hand become checks rather than instructions: a workspace with a live Station is never closed, a Station is stopped with `cancel` and never `pkill`, and a verification suite never runs while a Station is running its own.
-
-**Gate.** A developer dispatches a multi-Station run, is never asked what is in flight, merges one PR, and the run removes its own workspace and worktrees, with no manual step between dispatch and merge.
+11. **The display's remaining edges**, from the v0.6 display fix: assert the **emitted escape bytes** in the `clear` path as well as the draw path, and by suffix or exact sequence rather than presence, since swapping the two emissions currently leaves every test green while the terminal is left with auto-wrap off; emit `DECAWM_ON` once at display start so a pane recovers even after a panic abandons it mid-draw (a panic cannot run `defer`, and the developer's shell otherwise inherits no-auto-wrap until `reset`); and treat control characters other than CR and LF, which can still make a row occupy two visual rows.
+12. **`workers.md` and the flow disagree** about committing: the file tells every Worker "Do not commit", while the flow requires the Station to commit the Pull after Taste. An agent obeying the file and an agent committing on its own both occur, and the second bypasses the Taste gate. Decide which is intended and make the two agree.
 
 ## Scope guardrails
 
