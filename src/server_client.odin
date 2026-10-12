@@ -68,6 +68,9 @@ register_sync :: proc(register: ^Register, fresh: Register) {
 		shot.cancel_requested = fresh_shot.cancel_requested
 		delete(shot.detail)
 		shot.detail = strings.clone(fresh_shot.detail)
+		shot.usage = fresh_shot.usage
+		delete(shot.outcome)
+		shot.outcome = strings.clone(fresh_shot.outcome)
 	}
 }
 

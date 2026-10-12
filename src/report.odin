@@ -172,6 +172,7 @@ render_status :: proc(state_root, brew_id: string) -> (output: string, err: stri
 	total_tokens: i64
 	total_cost: f64
 	unavailable_costs := 0
+	known_costs := 0
 	any_usage := false
 	for shot in register.shots {
 		if shot.status == SHOT_RUNNING { running += 1 }
@@ -179,7 +180,13 @@ render_status :: proc(state_root, brew_id: string) -> (output: string, err: stri
 		if !shot.usage.recorded { continue }
 		any_usage = true
 		total_tokens += shot.usage.total
-		if shot.usage.cost_known { total_cost += shot.usage.cost } else { unavailable_costs += 1 }
+		if shot.usage.cost_known {
+			// A separate count distinguishes a known zero from having no known cost.
+			total_cost += shot.usage.cost
+			known_costs += 1
+		} else {
+			unavailable_costs += 1
+		}
 	}
 	fmt.sbprintfln(&builder, "Workers: %d of %d running, %d queued", running, workers_limit(register), queued)
 	if register.preamble_source != "" { fmt.sbprintfln(&builder, "Preamble: %s (%d bytes)", register.preamble_source, len(register.preamble)) }
@@ -227,7 +234,7 @@ render_status :: proc(state_root, brew_id: string) -> (output: string, err: stri
 		switch {
 		case unavailable_costs == 0:
 			fmt.sbprintf(&builder, " cost=%.4f", total_cost)
-		case total_cost == 0:
+		case known_costs == 0:
 			fmt.sbprint(&builder, " cost=unavailable")
 		case:
 			fmt.sbprintf(&builder, " cost=%.4f (%d unavailable)", total_cost, unavailable_costs)

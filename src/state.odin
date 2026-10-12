@@ -3,6 +3,7 @@ package main
 import "core:crypto"
 import "core:encoding/json"
 import "core:fmt"
+import "core:log"
 import "core:os"
 import "core:path/filepath"
 import "core:strconv"
@@ -431,8 +432,11 @@ apply_station_report :: proc(directory: string, register: ^Register, shot_id, ki
 	if index < 0 {
 		return State_Error{kind = .Shot_Not_Found}
 	}
-	usage, has_usage := usage_from_report(kind, detail)
+	usage, has_usage, usage_reason := usage_from_report(kind, detail)
 	outcome := outcome_from_report(kind, detail)
+	if kind == "usage" && !has_usage {
+		log.warnf("ignoring malformed Station usage report: %s (%s)", detail, usage_reason)
+	}
 	if !has_usage && outcome == "" {
 		return State_Error{}
 	}
@@ -493,29 +497,29 @@ apply_station_report :: proc(directory: string, register: ^Register, shot_id, ki
 
 // Parses the description the Station's usage report already sends:
 // `input=N output=N cacheRead=N cacheWrite=N total=N cost=<number|unavailable>`.
-usage_from_report :: proc(kind, detail: string) -> (usage: Station_Usage, ok: bool) {
+usage_from_report :: proc(kind, detail: string) -> (usage: Station_Usage, ok: bool, reason: string) {
 	if kind != "usage" {
-		return {}, false
+		return {}, false, ""
 	}
 	parts := strings.split(detail, " ", context.temp_allocator)
 	if len(parts) != 6 {
-		return {}, false
+		return {}, false, "usage report must contain six fields"
 	}
 	names := [5]string{"input=", "output=", "cacheRead=", "cacheWrite=", "total="}
 	values: [5]i64
 	for name, index in names {
 		if !strings.has_prefix(parts[index], name) {
-			return {}, false
+			return {}, false, "usage report has a field with the wrong name"
 		}
 		value, parsed := strconv.parse_i64(parts[index][len(name):])
 		if !parsed {
-			return {}, false
+			return {}, false, "usage report has a non-integer token count"
 		}
 		values[index] = value
 	}
 	cost_part := parts[5]
 	if !strings.has_prefix(cost_part, "cost=") {
-		return {}, false
+		return {}, false, "usage report has no cost field"
 	}
 	cost := f64(0)
 	cost_known := false
@@ -523,7 +527,7 @@ usage_from_report :: proc(kind, detail: string) -> (usage: Station_Usage, ok: bo
 	if cost_text != "unavailable" {
 		value, parsed := strconv.parse_f64(cost_text)
 		if !parsed {
-			return {}, false
+			return {}, false, "usage report has a non-numeric cost"
 		}
 		cost = value
 		cost_known = true
@@ -537,18 +541,20 @@ usage_from_report :: proc(kind, detail: string) -> (usage: Station_Usage, ok: bo
 		cost = cost,
 		cost_known = cost_known,
 		recorded = true,
-	}, true
+	}, true, ""
 }
 
 // The Station's terminal reports. A Pull that passed Taste reports `pulled` with
-// its short commit hash; the others report a failure reason. Anything else is not
-// an outcome. The returned string is owned by the caller.
+// its short commit hash; Taste and incomplete reports carry their reason. Anything
+// else is not an outcome. The returned string is owned by the caller.
 outcome_from_report :: proc(kind, detail: string) -> string {
 	switch kind {
 	case "pulled":
 		return fmt.aprintf("pull %s", detail)
 	case "taste_failed":
 		return fmt.aprintf("taste failed: %s", detail)
+	case "taste_passed":
+		return fmt.aprintf("taste passed: %s", detail)
 	case "incomplete":
 		return fmt.aprintf("incomplete: %s", detail)
 	}
