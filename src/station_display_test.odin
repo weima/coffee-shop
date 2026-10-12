@@ -4,19 +4,38 @@ import "core:fmt"
 import "core:strings"
 import "core:testing"
 
+// Mirrors a sprite row the way the left-facing cat is built: reverse the padded
+// row, then swap / and \, ( and ), and < and >.
+mirror_sprite_row :: proc(row: string) -> string {
+	flipped := make([dynamic]u8, 0, len(row), context.temp_allocator)
+	for i := len(row); i > 0; i -= 1 {
+		append(&flipped, row[i - 1])
+	}
+	for &c in flipped {
+		switch c {
+		case '/': c = '\\'
+		case '\\': c = '/'
+		case '(': c = ')'
+		case ')': c = '('
+		case '<': c = '>'
+		case '>': c = '<'
+		}
+	}
+	return string(flipped[:])
+}
+
 @(test)
 test_station_block_matches_the_supplied_cat_and_its_mirror :: proc(t: ^testing.T) {
 	// The supplied art, byte for byte, padded to STATION_SPRITE_WIDTH.
 	want_right := [3]string{"     /\\_/\\   ", "  ___( o.o)  ", " /   >  ^  > "}
-	// Mirrored: each line reversed, with / and \, ( and ), and < and > swapped.
-	want_left := [3]string{" /\\_/\\       ", " (o.o )___   ", " <  ^  <   \\ "}
 	right := station_block_lines(0, 0, true, "")
 	left := station_block_lines(0, 0, false, "")
 	for line, i in want_right {
 		testing.expect_value(t, len(line), STATION_SPRITE_WIDTH)
-		testing.expect_value(t, len(want_left[i]), STATION_SPRITE_WIDTH)
 		testing.expect_value(t, right[i + 1], line)
-		testing.expect_value(t, left[i + 1], want_left[i])
+		// The left-facing line must be the true mirror, so editing one side and
+		// forgetting the other fails here rather than shifting the cat.
+		testing.expect_value(t, left[i + 1], mirror_sprite_row(line))
 		testing.expect_value(t, len(right[i + 1]), STATION_SPRITE_WIDTH)
 		testing.expect_value(t, len(left[i + 1]), STATION_SPRITE_WIDTH)
 		testing.expect(t, right[i + 1] != left[i + 1], "directions should differ")

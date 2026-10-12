@@ -22,9 +22,9 @@ STATION_STEAM_LEFT := [2]string{" ~ ~", "~ ~"}
 
 // The supplied art, exactly as given, each line padded to STATION_SPRITE_WIDTH.
 STATION_CAT_RIGHT := [3]string{"     /\\_/\\   ", "  ___( o.o)  ", " /   >  ^  > "}
-// Each supplied line reversed with / and \, ( and ), and < and > swapped, then
-// padded the same way.
-STATION_CAT_LEFT := [3]string{" /\\_/\\       ", " (o.o )___   ", " <  ^  <   \\ "}
+// Each padded right line reversed with / and \, ( and ), and < and > swapped, so
+// the two cats mirror in place at the same columns.
+STATION_CAT_LEFT := [3]string{"   /\\_/\\     ", "  (o.o )___  ", " <  ^  <   \\ "}
 
 // One block of lines at the bottom of the pane, animated while the agent works.
 // Permanent lines (replies, questions, the final text) print above it. When stdout
