@@ -193,49 +193,55 @@ test_foreground_host_passes_shot_kind_and_rejects_unknown_kind :: proc(t: ^testi
 	testing.expect_value(t, strings.count(calls, "--tools"), 2)
 }
 
-// Builds one command with CS_NO_CODEMODE explicitly set or unset, then restores the
-// caller's environment so the test never depends on ambient configuration.
-host_test_station_command_with_no_codemode :: proc(kind: string, no_codemode: bool) -> string {
-	previous, was_set := os.lookup_env("CS_NO_CODEMODE", context.allocator)
-	if no_codemode {
-		_ = os.set_env("CS_NO_CODEMODE", "1")
-	} else {
-		_ = os.unset_env("CS_NO_CODEMODE")
-	}
-	command := host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "shot", "brew", "/tmp/prompt", "", "", kind, "", "")
-	if was_set {
-		_ = os.set_env("CS_NO_CODEMODE", previous)
-	} else {
-		_ = os.unset_env("CS_NO_CODEMODE")
-	}
-	delete(previous)
-	return command
+// Builds a command with an explicit codemode arm. It does not touch the process
+// environment, so parallel tests cannot affect one another.
+host_test_station_command :: proc(kind: string, include_codemode: bool) -> string {
+	return host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "shot", "brew", "/tmp/prompt", "", "", kind, "", "", include_codemode)
 }
 
 @(test)
-test_host_station_command_execute_default_includes_codemode :: proc(t: ^testing.T) {
-	command := host_test_station_command_with_no_codemode(SHOT_KIND_EXECUTE, false)
+test_host_station_command_execute_includes_codemode :: proc(t: ^testing.T) {
+	command := host_test_station_command(SHOT_KIND_EXECUTE, true)
 	testing.expect(t, strings.contains(command, "-- pi --mode rpc --tools +codemode -e"), command)
 }
 
 @(test)
-test_host_station_command_execute_switch_omits_tools :: proc(t: ^testing.T) {
-	command := host_test_station_command_with_no_codemode(SHOT_KIND_EXECUTE, true)
+test_host_station_command_execute_omits_tools :: proc(t: ^testing.T) {
+	command := host_test_station_command(SHOT_KIND_EXECUTE, false)
 	testing.expect(t, !strings.contains(command, "--tools") && !strings.contains(command, "+codemode"), command)
 }
 
 @(test)
-test_host_station_command_research_default_keeps_read_only_tools :: proc(t: ^testing.T) {
-	command := host_test_station_command_with_no_codemode(SHOT_KIND_RESEARCH, false)
+test_host_station_command_research_with_codemode_keeps_read_only_tools :: proc(t: ^testing.T) {
+	command := host_test_station_command(SHOT_KIND_RESEARCH, true)
 	testing.expect(t, strings.contains(command, "-- pi --mode rpc --tools read,grep,find,ls -e"), command)
 	testing.expect(t, !strings.contains(command, "+codemode"), command)
 }
 
 @(test)
-test_host_station_command_research_switch_keeps_read_only_tools :: proc(t: ^testing.T) {
-	command := host_test_station_command_with_no_codemode(SHOT_KIND_RESEARCH, true)
+test_host_station_command_research_without_codemode_keeps_read_only_tools :: proc(t: ^testing.T) {
+	command := host_test_station_command(SHOT_KIND_RESEARCH, false)
 	testing.expect(t, strings.contains(command, "-- pi --mode rpc --tools read,grep,find,ls -e"), command)
 	testing.expect(t, !strings.contains(command, "+codemode"), command)
+}
+
+@(test)
+test_host_codemode_setting_accepts_only_on_or_off :: proc(t: ^testing.T) {
+	include_codemode, reason := host_codemode_setting("", false)
+	testing.expect(t, include_codemode && reason == "", reason)
+
+	include_codemode, reason = host_codemode_setting("on", true)
+	testing.expect(t, include_codemode && reason == "", reason)
+
+	include_codemode, reason = host_codemode_setting("OFF", true)
+	testing.expect(t, !include_codemode && reason == "", reason)
+
+	invalid_values := []string{"0", "1", "true", "", "maybe"}
+	for value in invalid_values {
+		include_codemode, reason = host_codemode_setting(value, true)
+		testing.expect(t, !include_codemode, fmt.tprintf("%q unexpectedly enables codemode", value))
+		testing.expect(t, strings.contains(reason, "CS_CODEMODE") && strings.contains(reason, "on") && strings.contains(reason, "off"), reason)
+	}
 }
 
 HOST_TEST_TEMP_DIR :: "/private/tmp" when ODIN_OS == .Darwin else "/tmp"
