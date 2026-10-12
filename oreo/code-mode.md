@@ -60,8 +60,8 @@ So code mode attacks **both** terms of the cost product: it collapses turns, and
 |---|---|
 | Memory | **No ceiling is enforced on either platform, and this is the sharp edge.** macOS does **not** enforce `RLIMIT_AS` — measured: with `ulimit -v 200000` set, a process allocated 400 MB anyway, and `zsh` does not even accept `-v`. Linux enforces it. On macOS the portable options are a supervisor that samples RSS and kills, or an engine-level heap cap, which only exists if the runtime is a VM-based engine. |
 | Wall clock | A hard deadline per script, enforced by the parent. Portable. |
-| Output | A cap on what a script may return to the model, with the full text written to a file, mirroring Pi's `max_output_tokens` behaviour. Portable. |
-| Filesystem | The script runs in the worktree it was given. It is not sandboxed from it; `execute` already grants that reach. |
+| Output | A cap on what a script may return to the model: 10 000 bytes by default (`SCRIPT_RUN_DEFAULT_MAX_OUTPUT`), keeping the head and tail and naming the dropped byte count in the middle. Nothing a script printed is lost — the complete text is written to a file whose path the caller is given, and the truncated outcome names it: `[output truncated; the complete text is in <path>]`. Portable. |
+| Filesystem | **Not a boundary, and a script is not confined to the work directory it was given:** `execute` accepts a script-supplied `working_directory` (a required field the host passes straight to `/bin/sh -c`), so a script runs a command anywhere its account can reach. What actually constrains a script is static, not spatial — the import allowlist, which admits no package that reaches the file system, processes, or the network, so all of a script's I/O goes through `oreo:script` and the host can account for it. |
 
 The macOS gap is the reason containment cannot be assumed to work the same way on both target platforms, and why it must be tested on each rather than written once.
 
