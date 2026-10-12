@@ -122,6 +122,24 @@ test_status_shows_a_terminal_outcome_without_opening_the_tray :: proc(t: ^testin
 }
 
 @(test)
+test_status_shows_terminal_transition_detail :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	register := make_test_register(t)
+	defer destroy_struct(&register)
+	brew_dir := fmt.tprintf("%s/brew-test", root)
+	_ = create_state(brew_dir, &register)
+	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_RUNNING, "Worker started")
+	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_COMPLETED, "Pi exited with code 0")
+
+	output, err := render_status(root, "brew-test")
+	defer delete(output)
+	testing.expect_value(t, err, "")
+	testing.expect(t, strings.contains(output, "shot-a  completed (Pi exited with code 0)"), output)
+	testing.expect(t, !strings.contains(output, "shot-a  completed (Worker started)"), output)
+}
+
+@(test)
 test_status_shows_runtime_latest_activity_and_quiet_marker :: proc(t: ^testing.T) {
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)

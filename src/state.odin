@@ -362,21 +362,23 @@ apply_transition :: proc(
 	}
 
 	old_state := shot.status
+	old_detail := shot.detail
 	old_sequence := register.event_sequence
 	shot.status = new_state
+	shot.detail = new_detail
 	register.event_sequence = event.sequence
 	register_path := state_file_path(directory, REGISTER_FILE_NAME)
 	defer delete(register_path)
 	if err := write_register_atomic(register_path, register^); err.kind != .None {
 		shot.status = old_state
+		shot.detail = old_detail
 		register.event_sequence = old_sequence
 		delete(new_state)
 		delete(new_detail)
 		return err
 	}
 	delete(old_state)
-	delete(shot.detail)
-	shot.detail = new_detail
+	delete(old_detail)
 	return State_Error{}
 }
 

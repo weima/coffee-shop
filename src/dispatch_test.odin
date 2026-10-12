@@ -238,7 +238,7 @@ test_supervisor_accepts_activity_only_for_running_shots_in_this_brew :: proc(t: 
 	}) {
 		testing.expect(t, activity_sender_send(&sender, message))
 	}
-	drain_worker_activity(brew_dir, register, &listener)
+	drain_worker_activity(brew_dir, &register, &listener)
 
 	record, found := read_activity_record(brew_dir, "shot-a")
 	defer destroy_struct(&record)
@@ -248,6 +248,50 @@ test_supervisor_accepts_activity_only_for_running_shots_in_this_brew :: proc(t: 
 	testing.expect(t, !found)
 	_, found = read_activity_record(brew_dir, "shot-missing")
 	testing.expect(t, !found)
+}
+
+@(test)
+test_worker_activity_records_station_usage_and_outcome_in_register :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	register := make_test_register(t)
+	defer destroy_struct(&register)
+	brew_dir := fmt.tprintf("%s/brew-test", root)
+	_ = create_state(brew_dir, &register)
+	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_RUNNING, "Worker started")
+	workers_dir := state_file_path(brew_dir, "workers")
+	defer delete(workers_dir)
+	_ = os.make_directory_all(workers_dir, os.Permissions{.Read_User, .Write_User, .Execute_User})
+
+	socket_path := activity_socket_path(brew_dir)
+	defer delete(socket_path)
+	listener, listening := activity_listener_open(socket_path)
+	testing.expect(t, listening)
+	defer activity_listener_close(&listener)
+	sender, sending := activity_sender_open(socket_path)
+	testing.expect(t, sending)
+	defer activity_sender_close(&sender)
+
+	testing.expect(t, activity_sender_send(&sender, Activity_Message{
+		brew_id = register.brew_id,
+		shot_id = "shot-a",
+		kind = "usage",
+		description = "input=10 output=5 cacheRead=2 cacheWrite=1 total=18 cost=0.0123",
+		timestamp_ns = 1,
+	}))
+	testing.expect(t, activity_sender_send(&sender, Activity_Message{
+		brew_id = register.brew_id,
+		shot_id = "shot-a",
+		kind = "pulled",
+		description = "a1b2c3d",
+		timestamp_ns = 2,
+	}))
+
+	drain_worker_activity(brew_dir, &register, &listener)
+
+	testing.expect(t, register.shots[0].usage.recorded)
+	testing.expect_value(t, register.shots[0].usage.total, i64(18))
+	testing.expect_value(t, register.shots[0].outcome, "pull a1b2c3d")
 }
 
 @(test)
