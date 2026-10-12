@@ -498,6 +498,18 @@ Cost is driven by turn count, not prompt size. In the v0.4 dogfood runs, 95% of 
 - Whether the Odin script path can match an embedded JS engine on model competence.
 - What replaces `RLIMIT_AS` on macOS, and whether a sampling watchdog is fast enough to be worth having.
 
+## Roadmap: v0.6.0
+
+The Barista's working flow — from dispatch to cleanup — becomes part of Coffee Shop instead of a habit re-executed by hand every run. Each step below has already failed by hand: a Station summary was treated as evidence when it was wrong, a workspace was nearly closed while its Station was still working, running Stations became unrecognizable once `odin run` left the executable as a temp binary, and a Station stopped with `pkill` lost its agent's pipe and crashed it with an unhandled `EPIPE`.
+
+1. **In-flight visibility.** `status` reports every Station still in flight with its Herdr pane, elapsed time, tokens, cost, and whether a supervisor is watching it, so a developer never has to ask what is running. Tokens and cost come from the per-Station usage report; a Station with no supervisor is visible as such rather than assumed to be working.
+2. **Completion handling.** A Station that reaches a terminal state is reported with its outcome: the commit and hash for a Pull that passed Taste, or the failure and its reason. The Barista acts on that report instead of polling `status` to find out that a Station finished.
+3. **A Pull becomes a PR.** One operation verifies a Pull's recorded Taste evidence and its terminal state, fast-forwards the base branch to its commit, pushes, and opens the PR, then asks the developer to merge. A single Pull never needs Blend at all; Blend is only for combining the 2–20 commits of a multi-Pull run into one reviewed commit.
+4. **Cleanup after merge.** Once the developer confirms a PR is merged, that run's Herdr workspace and worktrees are removed. A run whose Station is still working is never cleaned up, so a running Station is found by its `--brew` argument, not by process name: under `odin run` the process name is a temp binary that says nothing.
+5. **Enforced checks, not prose.** The rules learned by hand become checks rather than instructions: a workspace with a live Station is never closed, a Station is stopped with `cancel` and never `pkill`, and a verification suite never runs while a Station is running its own.
+
+**Gate.** A developer dispatches a multi-Station run, is never asked what is in flight, merges one PR, and the run removes its own workspace and worktrees, with no manual step between dispatch and merge.
+
 ## Scope guardrails
 
 The target is one machine, a main-agent/Barista session (Pi first), a foreground Coffee Shop host, and Herdr. Pi is required for the first usable path. Oreo may take the main or worker agent role after the Pi-based flow is usable and Oreo is stable; Rachel is an optional developer aid. Neither is a core dependency. Keep task decomposition with the Barista and integration decisions with the developer. The foreground host is in scope; a detached daemon is not. Do not add remote workers, unrelated agent harnesses, tmux or zmx backends, Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.
