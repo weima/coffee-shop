@@ -373,3 +373,116 @@ test_host_receives_every_line_written :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"recv-b","bytes":%d}}`, len(last))), run.out)
 	testing.expect(t, strings.contains(run.out, `{"type":"stopped","request_id":"recv-b"}`), run.out)
 }
+
+// A request that always produces exactly one terminal reply: a cancel with no
+// Station running gives one cancelled event. With its received event that is two
+// request-id references per request.
+host_load_request_line :: proc(id: string) -> string {
+	return fmt.tprintf(`{{"type":"cancel","request_id":"%s"}}`, id)
+}
+
+// One valid request in its own FIFO write.
+host_load_write :: proc(b: ^strings.Builder, id: string) {
+	strings.write_string(b, fmt.tprintf("printf '%%s\\n' '%s' >&3\n", host_load_request_line(id)))
+}
+
+// A contiguous block of valid requests, each in its own write.
+host_load_range :: proc(b: ^strings.Builder, ids: ^[dynamic]string, prefix: string, from, to: int) {
+	for i in from..<to {
+		id := fmt.tprintf("%s-%03d", prefix, i)
+		append(ids, id)
+		host_load_write(b, id)
+	}
+}
+
+// A request line split across two writes. A gate request is written in the same
+// write as the first half, and the second half waits until the gate's reply shows
+// in stdout: that reply proves the host read and buffered the first half, so the
+// split is ordered by the FIFO instead of guessed with a sleep.
+host_load_split :: proc(b: ^strings.Builder, ids: ^[dynamic]string, tag: string, index: int) {
+	gate_id := fmt.tprintf("%s-gate-%03d", tag, index)
+	split_id := fmt.tprintf("%s-split-%03d", tag, index)
+	append(ids, gate_id)
+	append(ids, split_id)
+	line := host_load_request_line(split_id)
+	half := len(line) / 2
+	strings.write_string(b, fmt.tprintf("printf '%%s\\n%%s' '%s' '%s' >&3\n", host_load_request_line(gate_id), line[:half]))
+	marker := fmt.tprintf(`"type":"cancelled","request_id":"%s"`, gate_id)
+	strings.write_string(b, fmt.tprintf("i=0\nwhile ! grep -F -q '%s' \"$out\" && [ $i -lt 500 ]; do sleep 0.02; i=$((i+1)); done\n", marker))
+	strings.write_string(b, fmt.tprintf("printf '%%s\\n' '%s' >&3\n", line[half:]))
+}
+
+// Drives the host with 250 requests in the write patterns a line reader can
+// mishandle, then asserts that every one produced exactly one received event and
+// exactly one terminal reply. A missing received is the original dropped-request
+// bug; a duplicate is a different one. Five over-long lines must be dropped
+// without stopping the reader.
+@(test)
+test_host_reads_and_answers_every_request_under_load :: proc(t: ^testing.T) {
+	ids := make([dynamic]string, context.temp_allocator)
+	b := strings.builder_make(context.temp_allocator)
+
+	// 1. 120 requests, each written on its own.
+	host_load_range(&b, &ids, "many", 0, 120)
+
+	// 2. 40 complete lines delivered in one write.
+	burst := strings.builder_make(context.temp_allocator)
+	for i in 0..<40 {
+		id := fmt.tprintf("burst-%03d", i)
+		append(&ids, id)
+		if i > 0 {
+			strings.write_byte(&burst, '\n')
+		}
+		strings.write_string(&burst, host_load_request_line(id))
+	}
+	strings.write_string(&b, fmt.tprintf("printf '%%s\\n' '%s' >&3\n", strings.to_string(burst)))
+
+	// 3. 6 lines split across two writes, with a pause enforced by the gate.
+	for i in 0..<6 {
+		host_load_split(&b, &ids, "p3", i)
+	}
+
+	// 4. 3 over-long lines interleaved with valid requests; each over-long line is
+	// dropped and the valid requests after it still work.
+	for g in 0..<3 {
+		strings.write_string(&b, "long=$(head -c 70000 /dev/zero | tr '\\000' x)\nprintf '%s\\n' \"$long\" >&3\n")
+		host_load_range(&b, &ids, fmt.tprintf("long-%d", g), 0, 12)
+	}
+
+	// 5. A mixed stream: valid requests around an over-long line split across two
+	// writes and a split line delivered while the over-long line is in flight.
+	host_load_range(&b, &ids, "mix", 0, 10)
+	strings.write_string(&b, "long=$(head -c 40000 /dev/zero | tr '\\000' x)\nprintf '%s' \"$long\" >&3\n")
+	strings.write_string(&b, "long=$(head -c 30000 /dev/zero | tr '\\000' x)\nprintf '%s\\n' \"$long\" >&3\n")
+	host_load_range(&b, &ids, "mix", 10, 20)
+	host_load_split(&b, &ids, "p5", 0)
+	host_load_range(&b, &ids, "mix", 20, 30)
+	strings.write_string(&b, "long=$(head -c 70000 /dev/zero | tr '\\000' x)\nprintf '%s\\n' \"$long\" >&3\n")
+	host_load_range(&b, &ids, "mix", 30, 40)
+	// An explicit shutdown ends the loop, as the rest of the harness does.
+	strings.write_string(&b, "printf '%s\\n' '{\"type\":\"shutdown\",\"request_id\":\"load-done\"}' >&3\n")
+
+	run := run_host_writes(t, "coffee-shop-load-*", strings.to_string(b))
+	defer host_contract_destroy(run)
+	out := run.out
+
+	total := len(ids)
+	testing.expect_value(t, total, 250)
+	// Every valid request plus the shutdown line was received; each valid request
+	// got its one terminal reply.
+	testing.expect_value(t, strings.count(out, `{"type":"received"`), total + 1)
+	testing.expect_value(t, strings.count(out, `{"type":"cancelled"`), total)
+	testing.expect(t, strings.contains(out, `{"type":"stopped","request_id":"load-done"}`), out)
+	// Each over-long line was actually sent and dropped, so the reader did not stop
+	// before the valid requests that followed it.
+	testing.expect_value(t, strings.count(out, "exceeds the 65536-byte limit"), 5)
+
+	for id in ids {
+		received := strings.concatenate({`{"type":"received","request_id":"`, id, `"`}, context.temp_allocator)
+		terminal := strings.concatenate({`{"type":"cancelled","request_id":"`, id, `"`}, context.temp_allocator)
+		received_count := strings.count(out, received)
+		terminal_count := strings.count(out, terminal)
+		testing.expectf(t, received_count == 1, "request %s: %d received events, expected exactly 1", id, received_count)
+		testing.expectf(t, terminal_count == 1, "request %s: %d terminal replies, expected exactly 1", id, terminal_count)
+	}
+}
