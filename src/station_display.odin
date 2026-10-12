@@ -45,7 +45,6 @@ Station_Display :: struct {
 	dir:             int,
 	step:            int,
 	drawn:           int,
-	wrap_off:        bool,
 }
 
 // Starts the display. When it is live, the screen is cleared and a header names the
@@ -106,27 +105,13 @@ station_display_advance_locked :: proc(display: ^Station_Display) {
 // on a panic (the process dies on SIGTRAP) or a signal, so a crash inside a
 // draw/erase body can leave the terminal's auto-wrap off. The Station's signal
 // handler is a single atomic store, so there is no handler hook to restore it.
-station_display_wrap_off :: proc(display: ^Station_Display) {
-	if display.live {
-		fmt.print(ansi.CSI + ansi.DECAWM_OFF)
-		display.wrap_off = true
-	}
-}
 
-station_display_wrap_on :: proc(display: ^Station_Display) {
-	if display.live {
-		fmt.print(ansi.CSI + ansi.DECAWM_ON)
-	}
-	display.wrap_off = false
-}
 
 // Moves the cursor back to the top of the block, then rewrites every row.
 station_display_draw_locked :: proc(display: ^Station_Display) {
 	if !display.live {
 		return
 	}
-	station_display_wrap_off(display)
-	defer station_display_wrap_on(display)
 	if display.drawn > 0 {
 		fmt.printf("\x1b[%dA", display.drawn)
 	}
@@ -146,8 +131,6 @@ station_display_clear_locked :: proc(display: ^Station_Display) {
 	if !display.live || display.drawn == 0 {
 		return
 	}
-	station_display_wrap_off(display)
-	defer station_display_wrap_on(display)
 	fmt.printf("\x1b[%dA", display.drawn)
 	for _ in 0 ..< display.drawn {
 		fmt.print("\r\x1b[2K\n")
