@@ -8,15 +8,19 @@ import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
-import "core:sync"
-import "core:thread"
-import "core:time"
+import "core:sys/posix"
 
 HOST_PROTOCOL :: 1
 
 // Compiled into the binary, so a Station can load it from any install location.
 HOST_EXTENSION_SOURCE :: #load("../extensions/coffee-shop.ts", string)
-HOST_RELAY_POLL :: 20 * time.Millisecond
+
+// Byte limit for one request line, the scanner token limit this loop replaces.
+HOST_LINE_MAX :: bufio.DEFAULT_MAX_SCAN_TOKEN_SIZE
+
+// A short poll wait, so a Station report is relayed promptly while an idle host
+// still sleeps instead of spinning.
+HOST_LOOP_POLL_MS :: 20
 
 // Set once by run_host and read by dispatch when it launches Station panes.
 host_report_socket: string
@@ -25,9 +29,6 @@ host_extension_path: string
 host_history_root: string
 
 HOST_LOCK_FILE_NAME :: "host.lock"
-
-// The stdin loop and the relay thread both write events; one lock keeps lines whole.
-host_output_mutex: sync.Mutex
 
 // Pane of each started Station, so a reply can be typed into the right pane.
 Host_Session :: struct {
@@ -113,40 +114,66 @@ run_host :: proc() -> int {
 	host_report_socket = socket_path
 	host_station_executable = executable_info.executable_path
 
-	relay := new(Host_Relay)
-	relay.listener = listener
-	_ = thread.create_and_start_with_data(relay, host_relay_reports, self_cleanup = true)
-
 	host_write_line(fmt.tprintf(`{{"type":"ready","protocol":%d}}`, HOST_PROTOCOL))
-	scanner: bufio.Scanner
-	bufio.scanner_init(&scanner, os.to_reader(os.stdin))
-	defer bufio.scanner_destroy(&scanner)
-	for bufio.scanner_scan(&scanner) {
-		line := bufio.scanner_text(&scanner)
-		host_emit_received(line)
-		stop := host_handle_line(line)
-		free_all(context.temp_allocator)
-		if stop {
-			break
-		}
-	}
-	// A scan failure ends the loop like a clean shutdown; name it instead.
-	if scan_err := bufio.scanner_error(&scanner); scan_err != nil {
-		host_emit(Host_Event{type = "error", reason = fmt.tprintf("stdin scan failed: %v", scan_err)})
-	}
+	host_loop(&listener)
 	return 0
 }
 
-Host_Relay :: struct {
-	listener: Activity_Listener,
+// One request line accumulated across stdin reads. The buffer is owned by the loop
+// rather than the temp allocator, so the per-line free cannot disturb it.
+Host_Line :: struct {
+	data:       [HOST_LINE_MAX]u8,
+	len:        int,
+	discarding: bool, // an overlong line is being dropped up to its newline
+	dropped:    int,  // bytes counted in the overlong line, for the error event
 }
 
-// Owns the listener: only this thread reads it. Polls because the listener is
-// non-blocking and must not hold up the stdin loop.
-host_relay_reports :: proc(data: rawptr) {
-	relay := (^Host_Relay)(data)
+// Serves stdin requests and Station reports from one poll over two descriptors on
+// one thread. stdin keeps the blocking default and is read only after poll reports
+// it ready; the listener is non-blocking and is drained every turn.
+host_loop :: proc(listener: ^Activity_Listener) {
+	line: Host_Line
+	chunk: [4096]u8
 	for {
-		result := activity_listener_receive(&relay.listener)
+		fds := [2]posix.pollfd{
+			{fd = posix.STDIN_FILENO, events = {.IN}},
+			{fd = listener.fd, events = {.IN}},
+		}
+		_ = posix.poll(raw_data(fds[:]), posix.nfds_t(len(fds)), HOST_LOOP_POLL_MS)
+
+		// Reports arrive on accepted clients, which poll on the listener cannot
+		// signal, so drain every turn instead of only on a new connection.
+		host_relay_pending(listener)
+
+		if fds[0].revents == {} {
+			continue
+		}
+		count := posix.read(posix.STDIN_FILENO, raw_data(chunk[:]), len(chunk))
+		if count > 0 {
+			if host_stdin_consume(&line, chunk[:int(count)]) {
+				return
+			}
+			continue
+		}
+		if count < 0 {
+			err := posix.get_errno()
+			if err == .EINTR || err == .EAGAIN || err == .EWOULDBLOCK {
+				continue
+			}
+			host_emit(Host_Event{type = "error", reason = fmt.tprintf("stdin read failed: %v", err)})
+		}
+		// End of input. A last line without its newline is still a request, as the
+		// scanner treated it.
+		host_stdin_finish(&line)
+		return
+	}
+}
+
+// Forwards every Station report already waiting, then returns. The listener and
+// its clients are non-blocking, so this never holds up stdin.
+host_relay_pending :: proc(listener: ^Activity_Listener) {
+	for {
+		result := activity_listener_receive(listener)
 		switch result.kind {
 		case .Message:
 			host_emit(Host_Event{
@@ -158,13 +185,88 @@ host_relay_reports :: proc(data: rawptr) {
 			})
 			destroy_struct(&result.message)
 		case .Unavailable:
-			time.sleep(HOST_RELAY_POLL)
+			return
 		case .Malformed:
 		case .Failed:
 			return
 		}
 		free_all(context.temp_allocator)
 	}
+}
+
+// Appends one stdin read to the accumulator and handles every complete line in it.
+// A read may carry several lines or half of one; only a newline releases a line.
+// Returns true when a handled line asked the host to stop.
+host_stdin_consume :: proc(line: ^Host_Line, chunk: []u8) -> bool {
+	for byte in chunk {
+		if byte == '\n' {
+			if line.discarding {
+				host_emit_overlong(line.dropped)
+				line.discarding = false
+				line.dropped = 0
+				line.len = 0
+				continue
+			}
+			stop := host_handle_stdin_line(host_line_text(line))
+			line.len = 0
+			if stop {
+				return true
+			}
+			continue
+		}
+		if line.discarding {
+			line.dropped += 1
+			continue
+		}
+		if line.len == HOST_LINE_MAX {
+			line.discarding = true
+			line.dropped = line.len + 1
+			line.len = 0
+			continue
+		}
+		line.data[line.len] = byte
+		line.len += 1
+	}
+	return false
+}
+
+// End of input. A pending line that never got its newline is still a request; a
+// pending overlong line reports its limit error. Either way the loop then stops.
+host_stdin_finish :: proc(line: ^Host_Line) {
+	if line.discarding {
+		host_emit_overlong(line.dropped)
+		return
+	}
+	if line.len == 0 {
+		return
+	}
+	_ = host_handle_stdin_line(host_line_text(line))
+}
+
+// The line as the scanner yielded it: without the newline and without one trailing
+// carriage return.
+host_line_text :: proc(line: ^Host_Line) -> string {
+	text := string(line.data[:line.len])
+	if strings.has_suffix(text, "\r") {
+		text = text[:len(text) - 1]
+	}
+	return text
+}
+
+// One received event per line, emitted before the line is handled. Returns true
+// when the host must stop.
+host_handle_stdin_line :: proc(text: string) -> bool {
+	host_emit_received(text)
+	stop := host_handle_line(text)
+	free_all(context.temp_allocator)
+	return stop
+}
+
+// The line limit is a protocol guard, not a fatal error: name the limit and the
+// byte count, drop the rest of the line, and keep serving.
+host_emit_overlong :: proc(bytes: int) {
+	host_emit(Host_Event{type = "error", reason = fmt.tprintf("stdin line of %d bytes exceeds the %d-byte limit", bytes, HOST_LINE_MAX)})
+	free_all(context.temp_allocator)
 }
 
 // A Station sends a long report as "file:<path>". Only regular files resolved
@@ -604,6 +706,8 @@ valid_host_model :: proc(model: string) -> bool {
 	return true
 }
 
+// Every caller runs on the one loop thread, so stdout writes cannot interleave and
+// need no lock.
 host_emit :: proc(event: Host_Event) {
 	data, err := json.marshal(event, {}, context.temp_allocator)
 	if err != nil {
@@ -611,8 +715,6 @@ host_emit :: proc(event: Host_Event) {
 		return
 	}
 
-	sync.mutex_lock(&host_output_mutex)
-	defer sync.mutex_unlock(&host_output_mutex)
 	if host_history_event(event) && !host_history_append(event, data) {
 		return
 	}
@@ -620,8 +722,6 @@ host_emit :: proc(event: Host_Event) {
 }
 
 host_write_line :: proc(line: string) {
-	sync.mutex_lock(&host_output_mutex)
-	defer sync.mutex_unlock(&host_output_mutex)
 	fmt.println(line)
 }
 

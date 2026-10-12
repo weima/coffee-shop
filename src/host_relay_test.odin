@@ -257,3 +257,121 @@ test_host_starts_over_stale_socket_file :: proc(t: ^testing.T) {
 	testing.expect(t, state_run.success, string(stderr))
 	testing.expect(t, strings.contains(string(stdout), `{"type":"ready","protocol":1}`), string(stdout))
 }
+
+// Starts the host with its stdin on a FIFO and sources the actions fragment as soon
+// as the host is ready, so a test can control exactly when each write arrives.
+HOST_STDIN_SCRIPT :: `set -u
+state="$1"; fifo="$2"; out="$3"; err="$4"; bin="$5"; actions="$6"
+export CS_STATE_DIR="$state"
+mkfifo "$fifo"
+"$bin" host < "$fifo" > "$out" 2> "$err" &
+pid=$!
+exec 3> "$fifo"
+sock="$state/host/activity.sock"
+i=0
+while [ ! -S "$sock" ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i+1)); done
+. "$actions"
+exec 3>&-
+wait $pid
+`
+
+// Runs the host with stdin on a FIFO and feeds it the actions fragment, which writes
+// to its inherited fd 3. The caller owns run.root, run.state and run.out through
+// host_contract_destroy.
+run_host_writes :: proc(t: ^testing.T, prefix, actions: string) -> (run: Host_Contract_Run) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, prefix, context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	run.root = root
+	run.state = fmt.tprintf("%s/state", root)
+	fifo := fmt.tprintf("%s/in.fifo", root)
+	out_path := fmt.tprintf("%s/host.out", root)
+	err_path := fmt.tprintf("%s/host.err", root)
+	actions_path := fmt.tprintf("%s/actions.sh", root)
+	defer delete(fifo)
+	defer delete(out_path)
+	defer delete(err_path)
+	defer delete(actions_path)
+	rwx := os.Permissions{.Read_User, .Write_User, .Execute_User}
+	testing.expect_value(t, os.write_entire_file(actions_path, actions, rwx), os.Error(nil))
+
+	binary := build_test_binary(t, root)
+	defer delete(binary)
+	script_state, script_out, script_err, exec_err := os.process_exec(os.Process_Desc{
+		command = {"sh", "-c", HOST_STDIN_SCRIPT, "stdin-test", run.state, fifo, out_path, err_path, binary, actions_path},
+	}, context.allocator)
+	defer delete(script_out)
+	defer delete(script_err)
+	testing.expect_value(t, exec_err, os.Error(nil))
+	testing.expect(t, script_state.success, string(script_err))
+
+	out_data, out_err := os.read_entire_file(out_path, context.allocator)
+	testing.expect_value(t, out_err, os.Error(nil))
+	run.out = string(out_data)
+	return
+}
+
+// Two complete request lines in one write are both handled, in the order written.
+@(test)
+test_host_handles_two_request_lines_in_one_write :: proc(t: ^testing.T) {
+	first := `{"type":"sessions","request_id":"one"}`
+	second := `{"type":"sessions","request_id":"two"}`
+	shutdown := `{"type":"shutdown","request_id":"done"}`
+	actions := fmt.aprintf("printf '%%s\\n%%s\\n' '%s' '%s' >&3\nsleep 0.4\nprintf '%%s\\n' '%s' >&3\n", first, second, shutdown)
+	defer delete(actions)
+	run := run_host_writes(t, "coffee-shop-stdin-two-*", actions)
+	defer host_contract_destroy(run)
+	one := fmt.tprintf(`{{"type":"received","request_id":"one","bytes":%d}}`, len(first))
+	two := fmt.tprintf(`{{"type":"received","request_id":"two","bytes":%d}}`, len(second))
+	testing.expect(t, strings.contains(run.out, one) && strings.contains(run.out, two), run.out)
+	testing.expect(t, strings.index(run.out, one) < strings.index(run.out, two), run.out)
+	testing.expect_value(t, strings.count(run.out, `{"type":"sessions","sessions":[]}`), 2)
+	testing.expect(t, strings.contains(run.out, `{"type":"stopped","request_id":"done"}`), run.out)
+}
+
+// One request line split across two writes is buffered until its newline and then
+// handled exactly once. The fragment checks stdout mid-run to prove the first half
+// was held rather than handled alone.
+@(test)
+test_host_handles_request_line_split_across_writes :: proc(t: ^testing.T) {
+	split := `{"type":"bogus","request_id":"split"}`
+	half := len(split) / 2
+	shutdown := `{"type":"shutdown","request_id":"done"}`
+	actions := fmt.aprintf(`printf '%%s' '%s' >&3
+i=0
+while ! grep -q '"type":"ready"' "$out" && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+sleep 0.4
+if ! grep -q '"type":"ready"' "$out"; then echo "host was not ready" >&2; exit 1; fi
+if grep -q '"type":"received"' "$out"; then echo "unterminated line was handled" >&2; exit 1; fi
+printf '%%s\n' '%s' >&3
+sleep 0.4
+printf '%%s\n' '%s' >&3
+`, split[:half], split[half:], shutdown)
+	defer delete(actions)
+	run := run_host_writes(t, "coffee-shop-stdin-split-*", actions)
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"split","bytes":%d}}`, len(split))), run.out)
+	// Received plus the unknown-request error: handled once, not once per write.
+	testing.expect_value(t, strings.count(run.out, `"request_id":"split"`), 2)
+	testing.expect_value(t, strings.count(run.out, `"reason":"unknown request type"`), 1)
+	testing.expect(t, strings.contains(run.out, `{"type":"stopped","request_id":"done"}`), run.out)
+}
+
+// Every line, valid or not, still produces exactly one received event before it is
+// handled, with its own byte length.
+@(test)
+test_host_receives_every_line_written :: proc(t: ^testing.T) {
+	first := `{"type":"sessions","request_id":"recv-a"}`
+	bad := "not json"
+	last := `{"type":"shutdown","request_id":"recv-b"}`
+	actions := fmt.aprintf("printf '%%s\\n' '%s' >&3\nsleep 0.3\nprintf '%%s\\n' '%s' >&3\nsleep 0.3\nprintf '%%s\\n' '%s' >&3\n", first, bad, last)
+	defer delete(actions)
+	run := run_host_writes(t, "coffee-shop-stdin-recv-*", actions)
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"recv-a","bytes":%d}}`, len(first))), run.out)
+	testing.expect(t, strings.contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"","bytes":%d}}`, len(bad))), run.out)
+	testing.expect(t, strings.contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"recv-b","bytes":%d}}`, len(last))), run.out)
+	testing.expect(t, strings.contains(run.out, `{"type":"stopped","request_id":"recv-b"}`), run.out)
+}
