@@ -12,6 +12,8 @@ Command_Kind :: enum {
 	Worker,
 	Host,
 	Station,
+	Pr,
+	Cleanup,
 }
 
 Command :: struct {
@@ -29,6 +31,11 @@ Command :: struct {
 	taste: string,
 	message: string,
 	agent: []string,
+	run_id: string,
+	branch: string,
+	remote: string,
+	workspace: string,
+	blend: bool,
 }
 
 Brew_Arguments :: struct {
@@ -43,6 +50,21 @@ Brew_ID_Arguments :: struct {
 Server_Arguments :: struct {
 	state_root: string `args:"required" usage:"Coffee Shop state directory."`,
 	repository: string `args:"required" usage:"Beans Git repository path."`,
+}
+
+Pr_Arguments :: struct {
+	run_id:  string `args:"pos=0,required" usage:"Run identifier."`,
+	shot_id: string `args:"pos=1,required" usage:"Pull (Shot) identifier."`,
+	branch:  string `usage:"Branch the Pull is based on; discovered from the run's workspace when omitted."`,
+	remote:  string `usage:"Git remote to push to (default origin)."`,
+	blend:   bool `usage:"Combine the run's 2 to 20 Pull commits into one commit before opening the PR."`,
+	message: string `usage:"Commit message for --blend."`,
+}
+
+Cleanup_Arguments :: struct {
+	run_id:    string `args:"pos=0,required" usage:"Run identifier."`,
+	branch:    string `usage:"Base branch whose worktree to remove; discovered from the PR record when omitted."`,
+	workspace: string `usage:"Herdr workspace to consider; discovered from the run's Stations when omitted."`,
 }
 
 Station_Arguments :: struct {
@@ -70,6 +92,8 @@ Usage:
   coffee-shop status <brew-id>
   coffee-shop cancel <brew-id>
   coffee-shop collect <brew-id>
+  coffee-shop pr <run-id> <shot-id> [--branch <name>] [--blend --message <text>]
+  coffee-shop cleanup <run-id> [--branch <name>]
   coffee-shop host
   coffee-shop --help
 `
@@ -107,6 +131,18 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 			return Command{kind = .Help}, "invalid Worker arguments"
 		}
 		return Command{kind = .Worker, brew_id = options.brew_id, shot_id = options.shot_id, state_root = options.state_root, token = options.token}, ""
+	case "pr":
+		options: Pr_Arguments
+		if flags.parse(&options, args[1:], .Unix) != nil {
+			return Command{kind = .Help}, "invalid pr arguments"
+		}
+		return Command{kind = .Pr, run_id = options.run_id, shot_id = options.shot_id, branch = options.branch, remote = options.remote, message = options.message, blend = options.blend}, ""
+	case "cleanup":
+		options: Cleanup_Arguments
+		if flags.parse(&options, args[1:], .Unix) != nil {
+			return Command{kind = .Help}, "invalid cleanup arguments"
+		}
+		return Command{kind = .Cleanup, run_id = options.run_id, branch = options.branch, workspace = options.workspace}, ""
 	case "status", "cancel", "collect":
 		options: Brew_ID_Arguments
 		if flags.parse(&options, args[1:], .Unix) != nil {
