@@ -754,7 +754,11 @@ host_station_command :: proc(executable, report, extension, shot_id, request_id,
 		// scripts, so it stays off the read-only allowlist.
 		tools_argument = " --tools read,grep,find,ls"
 	} else if kind == SHOT_KIND_EXECUTE {
-		tools_argument = " --tools +codemode"
+		// CS_NO_CODEMODE exists for the v0.5 measurement, not as a general configuration option.
+		_, no_codemode := os.lookup_env("CS_NO_CODEMODE", context.temp_allocator)
+		if !no_codemode {
+			tools_argument = " --tools +codemode"
+		}
 	}
 	taste_argument := ""
 	if taste != "" {
