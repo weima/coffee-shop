@@ -504,16 +504,6 @@ valid_commit_message :: proc(message: string) -> bool {
 
 // shortcut: Shot tabs are not closed when a Shot finishes, so a repository's workspace keeps every tab; close each tab when its Shot ends, once Shots report completion through the host.
 host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, thinkings, kinds, tastes, messages: []string) {
-	codemode_value, codemode_set := os.lookup_env("CS_CODEMODE", context.temp_allocator)
-	defer delete(codemode_value)
-	include_codemode, codemode_err := host_codemode_setting(codemode_value, codemode_set)
-	if codemode_err != "" {
-		for id in ids {
-			host_session_failed(request_id, id, codemode_err)
-		}
-		return
-	}
-
 	state_root, state_err := default_state_root(context.temp_allocator)
 	if state_err != "" {
 		for id in ids {
@@ -556,7 +546,7 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, thin
 			continue
 		}
 
-		command := host_station_command(host_station_executable, host_report_socket, host_extension_path, id, request_id, prompt_path, models[i], thinkings[i], kinds[i], tastes[i], messages[i], include_codemode)
+		command := host_station_command(host_station_executable, host_report_socket, host_extension_path, id, request_id, prompt_path, models[i], thinkings[i], kinds[i], tastes[i], messages[i])
 		if run_err := herdr_run_worker(herdr, pane_id, command); run_err != "" {
 			host_session_failed(request_id, id, fmt.tprintf("could not start the Station: %s", run_err))
 			continue
@@ -735,9 +725,9 @@ host_reply :: proc(root: json.Object, request_id: string) {
 // The Station runs in the Herdr pane and launches the agent. Paths and the
 // optional model and thinking level are quoted; the IDs are already restricted
 // to safe characters.
-// A research Shot gets read-only tools; the Station then checks that it changed nothing.
+// A research Shot gets scratch-write tools; the Station then checks that it left the source as it found it.
 // A Pull passes its taste and message to the Station, which commits only if the taste passes.
-host_station_command :: proc(executable, report, extension, shot_id, request_id, prompt_file, model, thinking, kind, taste, message: string, include_codemode: bool) -> string {
+host_station_command :: proc(executable, report, extension, shot_id, request_id, prompt_file, model, thinking, kind, taste, message: string) -> string {
 	quoted_executable := shell_quote(executable)
 	defer delete(quoted_executable)
 	quoted_report := shell_quote(report)
@@ -760,10 +750,9 @@ host_station_command :: proc(executable, report, extension, shot_id, request_id,
 	}
 	tools_argument := ""
 	if kind == SHOT_KIND_RESEARCH {
-		// A research Shot must not write or run shell commands, and codemode runs
-		// scripts, so it stays off the read-only allowlist.
-		tools_argument = " --tools read,grep,find,ls"
-	} else if kind == SHOT_KIND_EXECUTE && include_codemode {
+		tools_argument = " --tools " + SCRATCH_WRITE_TOOLS
+	} else {
+		// Every execute Shot runs codemode; there is no switch to turn it off.
 		tools_argument = " --tools +codemode"
 	}
 	taste_argument := ""
@@ -775,19 +764,6 @@ host_station_command :: proc(executable, report, extension, shot_id, request_id,
 		taste_argument = fmt.tprintf(" --taste %s --message %s", quoted_taste, quoted_message)
 	}
 	return fmt.tprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- pi --mode rpc%s%s%s -e %s", quoted_executable, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, tools_argument, model_argument, thinking_argument, quoted_extension)
-}
-
-host_codemode_setting :: proc(value: string, is_set: bool) -> (include_codemode: bool, reason: string) {
-	if !is_set {
-		return true, ""
-	}
-	if strings.equal_fold(value, "on") {
-		return true, ""
-	}
-	if strings.equal_fold(value, "off") {
-		return false, ""
-	}
-	return false, "CS_CODEMODE must be unset, on, or off (case-insensitive)"
 }
 
 // A Blend request is validated in full before any Git call. Its repository and
@@ -810,6 +786,8 @@ host_session_failed :: proc(request_id, shot_id, reason: string) {
 
 SHOT_KIND_EXECUTE :: "execute"
 SHOT_KIND_RESEARCH :: "research"
+// Research and review may write scratch files and run codemode; the Station or review checks the source.
+SCRATCH_WRITE_TOOLS :: "read,grep,find,ls,write,codemode"
 
 valid_shot_kind :: proc(kind: string) -> bool {
 	return kind == SHOT_KIND_EXECUTE || kind == SHOT_KIND_RESEARCH

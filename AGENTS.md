@@ -24,7 +24,7 @@
 
 - Every Pi session — the Barista and every Station — runs with Pi's `codemode` tool enabled. Cost here is driven by turn count, not prompt size: `cacheRead` was 95% of 18.0M tokens across the v0.4 dogfood runs, so collapsing N tool-call turns into one script is the point.
 - It is enabled by `"defaultTools": ["+codemode"]` in the user settings (`~/.pi/agent/settings.json`), so it holds for every project. Do not remove it to "simplify" a run; if a run should not use it, say why in the report.
-- **A research (Cupping) Shot is the deliberate exception.** It must not be able to write files or run shell commands, so the host gives it a plain `--tools read,grep,find,ls` allowlist, which *replaces* the defaults. Never add `+codemode` to a research Shot: `codemode` runs scripts, so it would quietly hand that Shot write access and break the guarantee its tests assert.
+- **"Read-only" means read-only to the source, not to scratch.** Research (Cupping) and review Shots get `--tools read,grep,find,ls,write,codemode`, so they can write scratch files and run codemode scripts. Scratch files go under `.scratch/`. They must never change any other file: the research Station and the review each check the source afterwards and report the Shot as incomplete if it changed.
 - The host also passes `+codemode` explicitly for execute Shots, so Stations do not depend on a user settings file being present.
 
 ## Development commands

@@ -47,8 +47,8 @@ Enable it once in your Pi user settings (`~/.pi/agent/settings.json`):
 
 Two things to know:
 
-- **A research (Cupping) Shot is the deliberate exception.** It must not write files or run shell commands, so Coffee Shop gives it a plain `--tools read,grep,find,ls` allowlist. A plain name list *replaces* the defaults, so such a Shot stays read-only even with codemode enabled. Do not add `+codemode` to a research Shot: `codemode` runs scripts, so it would quietly give that Shot write access.
-- **Coffee Shop also passes `+codemode` explicitly** when it launches an execute Shot, so Stations do not depend on your settings file being present.
+- **Read-only means read-only to the source, not to scratch.** Research (Cupping) and review Shots get `--tools read,grep,find,ls,write,codemode`. They may write scratch files under `.scratch/` and run codemode scripts, but must not change any other file. The research Station and the review each check the source afterwards and report the Shot as incomplete if it changed.
+- **Coffee Shop passes `+codemode` explicitly for every execute Shot**, Station or brew worker, so they do not depend on your settings file. There is no switch to turn it off.
 
 ## Intended interaction flow
 
@@ -126,7 +126,7 @@ coffee-shop collect <brew-id>
 - At most two Workers run at once by default; `workers` can opt into a limit up to five.
 - `status` prints the Brew and each Shot's status. Running Shots also show elapsed time and the latest Pi activity; activity older than 12 minutes is marked quiet. Activity is only a progress hint: process identity remains the liveness authority, and quiet Workers are never killed automatically.
 - `cancel` requests cancellation; repeating it is safe.
-- `collect` prints each Shot's outcome, Worker report and Station changes, then runs the Filter once per completed Shot: a read-only Pi review against the repository's `standards.md` and the repository's own test commands. The saved evidence is reused on later collections. It ends with the decisions that need a human, and exits non-zero unless every Shot completed. See [the architecture](docs/architecture.md#filter-and-tray).
+- `collect` prints each Shot's outcome, Worker report and Station changes, then runs the Filter once per completed Shot: a Pi review against the repository's `standards.md` that must leave the source unchanged and the repository's own test commands. The saved evidence is reused on later collections. It ends with the decisions that need a human, and exits non-zero unless every Shot completed. See [the architecture](docs/architecture.md#filter-and-tray).
 - Brew state is stored under `$CS_STATE_DIR/<brew-id>` when `CS_STATE_DIR` is set, or `~/.coffee-shop/<brew-id>` otherwise. `CS_STATE_DIR` must be an absolute path.
 - Stations and Brew state are never deleted automatically; `collect` preserves them.
 

@@ -469,6 +469,12 @@ printf 'changed\n' > changed.txt
 cat > /dev/null
 `
 
+// Fake agent that writes only a scratch file, which research must allow.
+FAKE_SCRATCH_AGENT :: `#!/bin/sh
+mkdir -p .scratch && printf 'notes\n' > .scratch/notes.txt
+cat > /dev/null
+`
+
 // Fake agent that changes nothing and exits when stdin closes.
 FAKE_SILENT_AGENT :: `#!/bin/sh
 cat > /dev/null
@@ -535,6 +541,22 @@ test_research_station_reports_incomplete_when_agent_writes :: proc(t: ^testing.T
 	defer delete(run.incomplete)
 	testing.expect_value(t, run.incomplete, "Cupping Station changed 1 paths")
 	testing.expect_value(t, run.exit_code, 1)
+}
+
+@(test)
+test_research_station_allows_scratch_writes_outside_the_source :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-research-scratch-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	run := run_station_kind(t, root, "research", FAKE_SCRATCH_AGENT)
+	defer delete(run.incomplete)
+	testing.expect_value(t, run.incomplete, "")
+	testing.expect_value(t, run.exit_code, 0)
 }
 
 @(test)

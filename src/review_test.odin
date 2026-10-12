@@ -10,8 +10,8 @@ test_review_prompt_contains_instructions_diff_and_untracked_files :: proc(t: ^te
 	prompt := review_prompt("DIFF", "new.txt\n", true)
 	defer delete(prompt)
 	for expected in ([]string{
-		"read-only review", "standards.md", "file and line", "high/medium/low",
-		"No findings", "never modify files", "under 400 words", "truncated",
+		"performing a review", "standards.md", "file and line", "high/medium/low",
+		"No findings", "never modify any other file", "under 400 words", "truncated",
 		"DIFF", "new.txt",
 	}) {
 		testing.expect(t, strings.contains(prompt, expected), expected)
@@ -60,10 +60,10 @@ test_review_runs_pi_with_exact_read_only_arguments_and_preserves_station :: proc
 	argv, _ := os.read_entire_file(fmt.tprintf("%s/argv", root), context.allocator)
 	defer delete(argv)
 	args := transmute(string)argv
-	for expected in ([]string{"--print", "--no-session", "--no-extensions", "--no-mcp", "--tools", "read,grep,find,ls", "--"}) {
+	for expected in ([]string{"--print", "--no-session", "--no-extensions", "-e", "builtin:codemode", "--no-mcp", "--tools", "read,grep,find,ls,write,codemode", "--"}) {
 		testing.expect(t, strings.contains(args, expected), fmt.tprintf("missing %s from %s", expected, args))
 	}
-	testing.expect(t, strings.has_prefix(args, fmt.tprintf("%s\n--print\n--no-session\n--no-extensions\n--no-mcp\n--tools\nread,grep,find,ls\n--\n", pi)))
+	testing.expect(t, strings.has_prefix(args, fmt.tprintf("%s\n--print\n--no-session\n--no-extensions\n-e\nbuiltin:codemode\n--no-mcp\n--tools\nread,grep,find,ls,write,codemode\n--\n", pi)))
 	testing.expect(t, strings.has_suffix(args, "Untracked files:\nchange.txt\nnew.txt\n\n"))
 	after, _ := os.read_entire_file(fmt.tprintf("%s/change.txt", station), context.allocator)
 	defer delete(after)
@@ -129,4 +129,30 @@ review_test_pi :: proc(t: ^testing.T, root, body: string) -> string {
 	defer delete(script)
 	testing.expect_value(t, os.write_entire_file(path, script, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
 	return path
+}
+
+@(test)
+test_review_allows_scratch_writes_outside_the_source :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	station := review_test_station(t, root)
+	_ = os.write_entire_file(fmt.tprintf("%s/change.txt", station), "changed\n", os.Permissions{.Read_User, .Write_User})
+	pi := review_test_pi(t, root, "mkdir -p .scratch && printf 'x\\n' > .scratch/notes.txt\nprintf 'ok\\n'\n")
+	result := review_station(station, "HEAD", pi)
+	defer destroy_struct(&result)
+	testing.expect(t, result.performed, result.detail)
+	testing.expect_value(t, result.findings, "ok")
+}
+
+@(test)
+test_review_fails_when_pi_changes_source :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	station := review_test_station(t, root)
+	_ = os.write_entire_file(fmt.tprintf("%s/change.txt", station), "changed\n", os.Permissions{.Read_User, .Write_User})
+	pi := review_test_pi(t, root, "printf 'x\\n' > leak.txt\nprintf 'ok\\n'\n")
+	result := review_station(station, "HEAD", pi)
+	defer destroy_struct(&result)
+	testing.expect(t, !result.performed)
+	testing.expect_value(t, result.detail, "review changed the Station's source files")
 }

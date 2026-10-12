@@ -117,7 +117,7 @@ test_foreground_host_accepts_dispatches_and_starts_sessions :: proc(t: ^testing.
 	testing.expect(t, !strings.contains(calls, "shot-c"), "invalid model must not call Herdr")
 }
 
-// A research Shot gets read-only tools, an execute Shot does not, and an unknown kind
+// A research Shot gets scratch-write tools, an execute Shot gets codemode, and an unknown kind
 // is refused before any worktree or Herdr call for that dispatch.
 @(test)
 test_foreground_host_passes_shot_kind_and_rejects_unknown_kind :: proc(t: ^testing.T) {
@@ -177,9 +177,7 @@ test_foreground_host_passes_shot_kind_and_rejects_unknown_kind :: proc(t: ^testi
 	testing.expect_value(t, calls_err, os.Error(nil))
 	calls := string(calls_data)
 	testing.expect(t, !strings.contains(calls, "shot-w"), "unknown kind must not call Herdr")
-	testing.expect(t, strings.contains(calls, "station --kind research --report") && strings.contains(calls, "-- pi --mode rpc --tools read,grep,find,ls -e"), calls)
-	// The read-only boundary: an execute Shot may run scripts through codemode; a
-	// research Shot must not be handed that capability.
+	testing.expect(t, strings.contains(calls, "station --kind research --report") && strings.contains(calls, "-- pi --mode rpc --tools read,grep,find,ls,write,codemode -e"), calls)
 	research_command_start := strings.index(calls, "station --kind research --report")
 	research_command_end := strings.index_byte(calls[research_command_start:], '\n')
 	if research_command_end < 0 {
@@ -188,60 +186,25 @@ test_foreground_host_passes_shot_kind_and_rejects_unknown_kind :: proc(t: ^testi
 		research_command_end += research_command_start
 	}
 	research_command := calls[research_command_start:research_command_end]
-	testing.expect(t, !strings.contains(research_command, "+codemode"), research_command)
+	testing.expect(t, strings.contains(research_command, "codemode"), research_command)
 	testing.expect(t, strings.contains(calls, "station --kind execute --report") && strings.contains(calls, "-- pi --mode rpc --tools +codemode -e"), calls)
 	testing.expect_value(t, strings.count(calls, "--tools"), 2)
 }
 
-// Builds a command with an explicit codemode arm. It does not touch the process
-// environment, so parallel tests cannot affect one another.
-host_test_station_command :: proc(kind: string, include_codemode: bool) -> string {
-	return host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "shot", "brew", "/tmp/prompt", "", "", kind, "", "", include_codemode)
+host_test_station_command :: proc(kind: string) -> string {
+	return host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "shot", "brew", "/tmp/prompt", "", "", kind, "", "")
 }
 
 @(test)
-test_host_station_command_execute_includes_codemode :: proc(t: ^testing.T) {
-	command := host_test_station_command(SHOT_KIND_EXECUTE, true)
+test_host_station_command_execute_always_includes_codemode :: proc(t: ^testing.T) {
+	command := host_test_station_command(SHOT_KIND_EXECUTE)
 	testing.expect(t, strings.contains(command, "-- pi --mode rpc --tools +codemode -e"), command)
 }
 
 @(test)
-test_host_station_command_execute_omits_tools :: proc(t: ^testing.T) {
-	command := host_test_station_command(SHOT_KIND_EXECUTE, false)
-	testing.expect(t, !strings.contains(command, "--tools") && !strings.contains(command, "+codemode"), command)
-}
-
-@(test)
-test_host_station_command_research_with_codemode_keeps_read_only_tools :: proc(t: ^testing.T) {
-	command := host_test_station_command(SHOT_KIND_RESEARCH, true)
-	testing.expect(t, strings.contains(command, "-- pi --mode rpc --tools read,grep,find,ls -e"), command)
-	testing.expect(t, !strings.contains(command, "+codemode"), command)
-}
-
-@(test)
-test_host_station_command_research_without_codemode_keeps_read_only_tools :: proc(t: ^testing.T) {
-	command := host_test_station_command(SHOT_KIND_RESEARCH, false)
-	testing.expect(t, strings.contains(command, "-- pi --mode rpc --tools read,grep,find,ls -e"), command)
-	testing.expect(t, !strings.contains(command, "+codemode"), command)
-}
-
-@(test)
-test_host_codemode_setting_accepts_only_on_or_off :: proc(t: ^testing.T) {
-	include_codemode, reason := host_codemode_setting("", false)
-	testing.expect(t, include_codemode && reason == "", reason)
-
-	include_codemode, reason = host_codemode_setting("on", true)
-	testing.expect(t, include_codemode && reason == "", reason)
-
-	include_codemode, reason = host_codemode_setting("OFF", true)
-	testing.expect(t, !include_codemode && reason == "", reason)
-
-	invalid_values := []string{"0", "1", "true", "", "maybe"}
-	for value in invalid_values {
-		include_codemode, reason = host_codemode_setting(value, true)
-		testing.expect(t, !include_codemode, fmt.tprintf("%q unexpectedly enables codemode", value))
-		testing.expect(t, strings.contains(reason, "CS_CODEMODE") && strings.contains(reason, "on") && strings.contains(reason, "off"), reason)
-	}
+test_host_station_command_research_gets_scratch_write_tools :: proc(t: ^testing.T) {
+	command := host_test_station_command(SHOT_KIND_RESEARCH)
+	testing.expect(t, strings.contains(command, "-- pi --mode rpc --tools read,grep,find,ls,write,codemode -e"), command)
 }
 
 HOST_TEST_TEMP_DIR :: "/private/tmp" when ODIN_OS == .Darwin else "/tmp"
