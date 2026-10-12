@@ -14,7 +14,6 @@ package oreo
 import "base:runtime"
 import "core:fmt"
 import "core:os"
-import "core:path/filepath"
 import "core:strings"
 
 CODEMODE_TOOL_NAME :: "codemode"
@@ -23,7 +22,19 @@ CODEMODE_TOOL_NAME :: "codemode"
 // under this prefix in the temporary directory.
 CODEMODE_WORK_DIR_PATTERN :: "oreo-codemode-*"
 
-CODEMODE_TOOL_DESCRIPTION :: "Run one Odin script that makes several tool calls, or filters large output, in one turn, so only the script's result reaches you. The argument is the complete Odin source, raw: not JSON and not a markdown fence. The script language is Odin, not JavaScript. A script may import only core:fmt, core:strings, core:strconv, core:slice, core:sort, core:encoding/json, core:math, and oreo:script; core:os and every other import are refused before anything is compiled. It reaches the outside world through oreo:script: read(path, offset, limit) returns a numbered line window, write(path, content) writes a file, execute(command, working_directory) runs a command and returns its merged output with its exit code, and text(value) adds a value to this tool's output, which is what you see."
+// The directory inside the work directory that holds the script package a
+// generated script imports. It is not called "script": script_run writes its
+// compiled binary to <work_dir>/script.
+CODEMODE_COLLECTION_DIR :: "oreo"
+
+// The script package's source, read from this source tree while the host is
+// built. codemode_invoke writes it into each call's work directory, so a
+// generated script's "oreo:script" import resolves without naming any path the
+// host was built with. #load resolves against this file's directory, so the
+// build needs the tree and the run does not.
+CODEMODE_SCRIPT_SOURCE :: #load("script/script.odin", string)
+
+CODEMODE_TOOL_DESCRIPTION :: "Run one Odin script that makes several tool calls, or filters large output, in one turn, so only the script's result reaches you. The argument is the complete Odin source, raw: not JSON and not a markdown fence. The script language is Odin, not JavaScript. A script may import only core:fmt, core:strings, core:strconv, core:slice, core:sort, core:encoding/json, core:math, and oreo:script; core:os and every other import are refused before anything is compiled. It reaches the outside world through oreo:script: read(path, offset, limit) returns a numbered line window, write(path, content) writes a file, execute(command, working_directory) runs a command and returns its merged output with its exit code, and text(value) adds a value to this tool's output, which is what you see. A script can end itself too: exit(code) stops it with that status, and fail(reason) stops it as a failure that reports reason."
 
 CODEMODE_TOOL_PARAMETERS_JSON :: `{"type":"object","properties":{"source":{"type":"string","description":"The complete Odin script source, raw and without a markdown fence."}},"required":["source"]}`
 
@@ -68,10 +79,29 @@ codemode_invoke :: proc(name, arguments_json: string, allocator: runtime.Allocat
 	}
 
 	// A generated script that imports "oreo:script" needs the compiler to
-	// resolve the collection this package was built with. #file names the
-	// source tree, and the compiler runs with the work directory as its own, so
-	// the collection path cannot be relative to it.
-	collection := fmt.aprintf("-collection:oreo=%s", filepath.dir(#file), allocator = allocator)
+	// resolve a collection named oreo. #file names the source tree as the build
+	// saw it, and the script compiler runs with this work directory as its own,
+	// so a collection path derived from #file points at the build directory and
+	// says nothing about where the host is running. The package is written out
+	// here instead, from bytes that already live in the host, and the collection
+	// names this directory.
+	package_dir := fmt.aprintf("%s/%s/script", work_dir, CODEMODE_COLLECTION_DIR, allocator = allocator)
+	defer delete(package_dir, allocator)
+	if mkdir_err := os.make_directory_all(package_dir); mkdir_err != nil {
+		return Tool_Outcome {
+			ok     = false,
+			output = fmt.aprintf("%s could not prepare the oreo:script collection: %v", name, mkdir_err, allocator = allocator),
+		}
+	}
+	source_path := fmt.aprintf("%s/script.odin", package_dir, allocator = allocator)
+	defer delete(source_path, allocator)
+	if write_err := os.write_entire_file_from_string(source_path, CODEMODE_SCRIPT_SOURCE); write_err != nil {
+		return Tool_Outcome {
+			ok     = false,
+			output = fmt.aprintf("%s could not write the oreo:script collection: %v", name, write_err, allocator = allocator),
+		}
+	}
+	collection := fmt.aprintf("-collection:oreo=%s/%s", work_dir, CODEMODE_COLLECTION_DIR, allocator = allocator)
 	defer delete(collection, allocator)
 
 	result := script_run(

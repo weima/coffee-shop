@@ -3,7 +3,9 @@ package oreo
 // The codemode tool's tests: the default set carries it, one real script runs
 // in a temporary work directory and reports its output, a gate rejection
 // compiles and runs nothing, a script reaches the tool API, a non-zero exit
-// keeps its output, and no call leaves its work directory behind.
+// keeps its output, a generated script importing oreo:script still compiles
+// when the process is started away from the directory it was built in, and no
+// call leaves its work directory behind.
 //
 // Every case that runs the tool goes through codemode_test_run, which is
 // serialized by codemode_test_lock so the work directory it observes belongs to
@@ -15,6 +17,7 @@ import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:testing"
+import "core:time"
 
 @(test)
 test_codemode_tool_is_in_the_default_set :: proc(t: ^testing.T) {
@@ -26,6 +29,10 @@ test_codemode_tool_is_in_the_default_set :: proc(t: ^testing.T) {
 		found = true
 		testing.expect(t, len(spec.description) > 0)
 		testing.expect(t, strings.contains(spec.description, "Odin"))
+		// script.exit and script.fail are the only way a script can fail on
+		// purpose, so the description has to name them.
+		testing.expect(t, strings.contains(spec.description, "exit("))
+		testing.expect(t, strings.contains(spec.description, "fail("))
 		testing.expect(t, codemode_test_schema_requires_source(spec.parameters_json))
 	}
 	testing.expect(t, found, "the default tool set does not include codemode")
@@ -131,6 +138,92 @@ main :: proc() {
 	testing.expect(t, outcome.ok)
 	testing.expect(t, strings.contains(outcome.output, "codemode-execute"))
 	testing.expect(t, strings.contains(outcome.output, "code=0"))
+}
+
+// Printed by the test below, but only after its script compiled and ran. Its
+// absence from a captured child means the child ran no test at all.
+@(private)
+CODEMODE_TEST_IMPORT_MARKER :: "codemode-import-ran-away-from-the-build-directory"
+
+// This script imports oreo:script and calls it, so ok proves the collection
+// resolved. The test below runs this same test in a child process that starts
+// somewhere else; run here it is just another case.
+@(test)
+test_codemode_script_importing_oreo_script :: proc(t: ^testing.T) {
+	outcome, work_dir := codemode_test_run(
+		t,
+		`
+package main
+
+import "oreo:script"
+
+main :: proc() {
+	script.text("oreo:script resolved")
+}
+`,
+	)
+	defer delete(work_dir)
+	defer delete(outcome.output)
+
+	testing.expectf(t, outcome.ok, "the script importing oreo:script did not run: %s", outcome.output)
+	testing.expect(t, strings.contains(outcome.output, "oreo:script resolved"))
+	fmt.println(CODEMODE_TEST_IMPORT_MARKER)
+}
+
+// This process was built with the repository as its working directory; the
+// child below is the same binary started in a temporary directory instead, so a
+// collection path taken from the build directory cannot resolve there. The
+// child runs one test by name and prints the marker only when its script
+// compiled and ran, which also proves the name filtered nothing out.
+@(test)
+test_codemode_script_compiles_away_from_the_build_directory :: proc(t: ^testing.T) {
+	run_dir, dir_err := os.make_directory_temp("", "oreo-codemode-cwd-*", context.allocator)
+	testing.expect_value(t, dir_err, os.Error(nil))
+	defer {
+		_ = os.remove_all(run_dir)
+		delete(run_dir)
+	}
+
+	executable, exe_err := os.get_executable_path(context.allocator)
+	testing.expect_value(t, exe_err, os.Error(nil))
+	defer delete(executable)
+
+	log_path := fmt.aprintf("%s/child.log", run_dir, allocator = context.allocator)
+	defer delete(log_path)
+	log_file, log_err := os.create(log_path)
+	testing.expect_value(t, log_err, os.Error(nil))
+
+	process, start_err := os.process_start(
+		os.Process_Desc {
+			working_dir = run_dir,
+			command = []string{executable, "-tests:test_codemode_script_importing_oreo_script"},
+			stdout = log_file,
+			stderr = log_file,
+		},
+	)
+	_ = os.close(log_file)
+	if start_err != nil {
+		testing.fail_now(t, "the child test process could not be started")
+	}
+	state, wait_err := os.process_wait(process, 2 * time.Minute)
+	testing.expect_value(t, wait_err, os.Error(nil))
+
+	child_output, read_err := os.read_entire_file_from_path(log_path, context.allocator)
+	defer delete(child_output)
+	testing.expect_value(t, read_err, os.Error(nil))
+
+	testing.expectf(
+		t,
+		strings.contains(string(child_output), CODEMODE_TEST_IMPORT_MARKER),
+		"the child did not run the import test:\n%s",
+		child_output,
+	)
+	testing.expectf(
+		t,
+		state.exited && state.exit_code == 0,
+		"a script importing oreo:script did not compile away from the build directory:\n%s",
+		child_output,
+	)
 }
 
 @(test)
