@@ -116,6 +116,36 @@ test_station_elapsed_label_formats_minutes_and_seconds :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_station_display_draw_restores_auto_wrap :: proc(t: ^testing.T) {
+	display := Station_Display{live = true, started_at_ns = 1_000_000_000}
+	station_display_draw_locked(&display)
+	testing.expect(t, !display.wrap_off, "draw must restore auto-wrap")
+}
+
+@(test)
+test_station_display_clear_restores_auto_wrap :: proc(t: ^testing.T) {
+	display := Station_Display{live = true, drawn = 1}
+	station_display_clear_locked(&display)
+	testing.expect(t, !display.wrap_off, "erase must restore auto-wrap")
+}
+
+@(test)
+test_station_display_stop_restores_auto_wrap :: proc(t: ^testing.T) {
+	display := Station_Display{live = true, running = true, drawn = 1}
+	station_display_stop(&display)
+	testing.expect(t, !display.wrap_off, "stop must restore auto-wrap")
+}
+
+@(test)
+test_station_display_non_live_early_paths_leave_auto_wrap_on :: proc(t: ^testing.T) {
+	display: Station_Display
+	station_display_draw_locked(&display)
+	station_display_clear_locked(&display)
+	station_display_stop(&display)
+	testing.expect(t, !display.wrap_off, "non-live paths must leave auto-wrap on")
+}
+
+@(test)
 test_station_walker_turns_at_both_ends :: proc(t: ^testing.T) {
 	display: Station_Display
 	display.dir = 1
