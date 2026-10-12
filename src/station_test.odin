@@ -1051,6 +1051,34 @@ test_station_orderly_shutdown_releases_cancelled_relay :: proc(t: ^testing.T) {
 	_ = os.close(input_write)
 }
 
+// A cancel that arrives after the relay's own flag was sampled — the signal that
+// lands while shutdown is already running — must still exit 130. The relay's flag
+// is false here and only the handler's flag is set, which is the case that used to
+// return 0 because the status came from the earlier snapshot.
+@(test)
+test_station_orderly_shutdown_reports_a_late_cancel :: proc(t: ^testing.T) {
+	input_read, input_write, input_err := os.pipe()
+	agent_read, agent_write, agent_err := os.pipe()
+	testing.expect_value(t, input_err, os.Error(nil))
+	testing.expect_value(t, agent_err, os.Error(nil))
+	defer os.close(input_write)
+	defer os.close(agent_read)
+
+	display := new(Station_Display)
+	station_display_start(display, "late cancel test")
+	relay := new(Station_Relay)
+	relay.input = input_read
+	relay.agent = agent_write
+	relay.display = display
+	// The handler's flag is process-wide, so this test must clear it again.
+	defer sync.atomic_store(&station_cancel_requested, false)
+	sync.atomic_store(&station_cancel_requested, true)
+
+	status := station_orderly_shutdown(&relay, nil)
+	testing.expect_value(t, status, STATION_CANCELLED_EXIT_CODE)
+	testing.expect(t, relay == nil, "orderly shutdown must release the relay")
+}
+
 // An interactive Shot stays open after its first turn, so a reply sent a second later
 // still reaches the agent and gets its own turn.
 @(test)

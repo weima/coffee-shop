@@ -1,6 +1,5 @@
 package main
 
-import "base:runtime"
 import "core:bufio"
 import "core:encoding/json"
 import "core:fmt"
@@ -63,8 +62,8 @@ Station_Dialog :: struct {
 }
 
 // The mutex guards the dialog and the agent's input: a reply is written before the
-// input is closed, or it is dropped. `agent_closed` is atomic because the SIGTERM
-// handler closes the input without taking the mutex.
+// input is closed, or it is dropped. `agent_closed` is atomic because the reader
+// thread and the main flow can both close the input.
 Station_Relay :: struct {
 	input:        ^os.File,
 	agent:        ^os.File,
@@ -77,9 +76,11 @@ Station_Relay :: struct {
 	reader_done:  ^bool,
 }
 
-// The SIGTERM handler needs the relay without a lookup; it is set before the
-// first prompt is sent.
-station_signal_relay: ^Station_Relay
+// The SIGTERM handler sets only this flag. It must never read the relay: the main
+// flow frees the relay, so a handler on another thread could read freed memory.
+// The reader polls this flag every STATION_RELAY_POLL_MS, and the main flow reads
+// it at the point it decides the exit status.
+station_cancel_requested: bool
 
 STATION_CANCELLED_EXIT_CODE :: 130
 STATION_RELAY_POLL_MS :: 100
@@ -101,19 +102,15 @@ station_free_display :: proc(display: ^^Station_Display) {
 	display^ = nil
 }
 
-// The handler only marks cancellation and closes the agent descriptor. The main
-// flow owns the rest of shutdown, including all allocation and terminal cleanup.
+// The main flow owns all of shutdown, including the join, the cleanup and the
+// exit status. Marking the relay cancelled wakes the polling reader on ordinary
+// EOF paths too.
 station_orderly_shutdown :: proc(relay_ptr: ^^Station_Relay, reader: ^thread.Thread) -> int {
 	relay := relay_ptr^
 	if relay == nil {
 		return 0
 	}
-	cancelled := sync.atomic_load(&relay.cancelled)
-	// Stop new signal-handler work before the relay allocation is released. Marking
-	// shutdown as cancellation also wakes the polling reader on ordinary EOF paths.
-	if station_signal_relay == relay {
-		station_signal_relay = nil
-	}
+	cancelled_before := sync.atomic_load(&relay.cancelled)
 	sync.atomic_store(&relay.cancelled, true)
 	sync.atomic_store(&relay.agent_closed, true)
 	if reader != nil {
@@ -128,7 +125,9 @@ station_orderly_shutdown :: proc(relay_ptr: ^^Station_Relay, reader: ^thread.Thr
 	station_close_file(&relay.agent)
 	free(relay)
 	relay_ptr^ = nil
-	if cancelled {
+	// Decide the status only now, so a cancel that arrived while shutdown was
+	// running is not lost. A cancel can still arrive after this read.
+	if cancelled_before || sync.atomic_load(&station_cancel_requested) {
 		return STATION_CANCELLED_EXIT_CODE
 	}
 	return 0
@@ -201,7 +200,6 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 	relay.agent = agent_in_write
 	relay.display = display
 	relay.one_turn = shot_kind == SHOT_KIND_RESEARCH || taste != ""
-	station_signal_relay = relay
 	station_install_sigterm()
 	if !station_write_prompt(agent_in_write, first_prompt, "") {
 		write_error("could not send the first prompt to the agent")
@@ -479,22 +477,11 @@ station_relay_close_agent :: proc(relay: ^Station_Relay) {
 	_ = os.close(relay.agent)
 }
 
-// The SIGTERM handler only sets the atomic decision flag and closes the agent's
-// descriptor. It never allocates, frees, locks, or waits; the main flow performs
-// the join and all remaining cleanup.
-station_close_agent_once :: proc "contextless" (relay: ^Station_Relay) {
-	sync.atomic_store(&relay.cancelled, true)
-	if sync.atomic_exchange(&relay.agent_closed, true) {
-		return
-	}
-	context = runtime.default_context()
-	_ = posix.close(posix.FD(os.fd(relay.agent)))
-}
-
+// The SIGTERM handler sets one atomic flag and nothing else: no relay read, no
+// close, no allocation, no lock, no wait. The reader sees the flag within one
+// poll interval and closes the agent's input; the main flow joins it.
 station_signal_term :: proc "c" (sig: posix.Signal) {
-	if relay := station_signal_relay; relay != nil {
-		station_close_agent_once(relay)
-	}
+	sync.atomic_store(&station_cancel_requested, true)
 }
 
 station_install_sigterm :: proc() {
@@ -622,7 +609,7 @@ station_relay_replies :: proc(data: rawptr) {
 	line: [dynamic]byte
 	defer delete(line)
 	for {
-		if sync.atomic_load(&relay.cancelled) {
+		if sync.atomic_load(&relay.cancelled) || sync.atomic_load(&station_cancel_requested) {
 			break
 		}
 		fds := [1]posix.pollfd{{
@@ -653,7 +640,7 @@ station_relay_replies :: proc(data: rawptr) {
 		}
 		append(&line, character)
 	}
-	if len(line) > 0 && !sync.atomic_load(&relay.cancelled) {
+	if len(line) > 0 && !sync.atomic_load(&relay.cancelled) && !sync.atomic_load(&station_cancel_requested) {
 		_ = station_relay_reply_line(relay, string(line[:]))
 	}
 }
