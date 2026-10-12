@@ -1,6 +1,6 @@
 # Oreo code mode
 
-**Status:** planned for v0.5. Priority item. Not implemented.
+**Status:** v0.5, the priority item. The static gate, the runner, the host server and the script API are implemented in `oreo/src/`, each with tests. The model-facing `codemode` tool now exists and is wired into the default tool set. The token-reduction gate below has not been measured.
 
 Oreo's cost problem, and the design that answers it. This document records the measurements, the rejected alternative, and the containment rules, so the work does not restart from a guess.
 
@@ -58,7 +58,7 @@ So code mode attacks **both** terms of the cost product: it collapses turns, and
 
 | Limit | Mechanism |
 |---|---|
-| Memory | **Platform-dependent, and this is the sharp edge.** macOS does **not** enforce `RLIMIT_AS` — measured: with `ulimit -v 200000` set, a process allocated 400 MB anyway, and `zsh` does not even accept `-v`. Linux enforces it. On macOS the portable options are a supervisor that samples RSS and kills, or an engine-level heap cap, which only exists if the runtime is a VM-based engine. |
+| Memory | **No ceiling is enforced on either platform, and this is the sharp edge.** macOS does **not** enforce `RLIMIT_AS` — measured: with `ulimit -v 200000` set, a process allocated 400 MB anyway, and `zsh` does not even accept `-v`. Linux enforces it. On macOS the portable options are a supervisor that samples RSS and kills, or an engine-level heap cap, which only exists if the runtime is a VM-based engine. |
 | Wall clock | A hard deadline per script, enforced by the parent. Portable. |
 | Output | A cap on what a script may return to the model, with the full text written to a file, mirroring Pi's `max_output_tokens` behaviour. Portable. |
 | Filesystem | The script runs in the worktree it was given. It is not sandboxed from it; `execute` already grants that reach. |
@@ -69,7 +69,7 @@ The macOS gap is the reason containment cannot be assumed to work the same way o
 
 Before compiling anything, parse the generated source with `core:odin/parser` and refuse a script that:
 
-- imports anything outside an allowlist (`core:fmt`, `core:os`, `core:strings`, `core:encoding/json`, `core:slice`, `oreo:script`, and the standard library subset needed to be useful);
+- imports anything outside the allowlist: `core:fmt`, `core:strings`, `core:strconv`, `core:slice`, `core:sort`, `core:encoding/json`, `core:math`, and `oreo:script`. The rule behind the list is that no package reaching the file system, processes, or the network is allowed, so a script does its I/O through `oreo:script` and the host can account for it. `core:os` was deliberately removed for exactly that reason — it exposes `process_exec`, `process_start`, `write_entire_file`, and `remove_all`. `core:fmt` stays because `text()` writes to stdout;
 - contains a `foreign` block or `#load`, which reach outside the language;
 - fails to parse at all.
 
@@ -82,13 +82,25 @@ A package the generated script imports, so tool calls are typed:
 ```odin
 package script
 
-execute :: proc(command: string) -> (output: string, exit_code: int)
-read :: proc(path: string, offset, limit: int) -> string
-write :: proc(path, content: string) -> bool
-text :: proc(value: any)      // adds a bounded item to the model-visible output
+execute :: proc(command: string, working_directory := "", allocator := context.allocator) -> (output: string, exit_code: int, err: Error)
+read :: proc(path: string, offset := 0, limit := 0, allocator := context.allocator) -> (content: string, err: Error)
+write :: proc(path, content: string) -> Error
+text :: proc(value: any)               // adds a bounded item to the model-visible output
+exit :: proc(code: int) -> !           // ends the process with the given status
+fail :: proc(reason: string) -> !      // reports reason on stderr, ends the process with status 1
 ```
 
-Tool calls go back to the host over the existing JSON-lines transport, so the script is a client of the same protocol the extension already speaks. Reusing that transport is deliberate: one protocol, one place to change.
+`exit` and `fail` exist because `core:os` is not on the allowlist: that omission is what makes the gate a real capability boundary, and it would otherwise leave a script with no way to choose its own exit code. Both call `os.exit`, so `@(fini)` blocks do not run, and neither sends anything over the socket.
+
+Tool calls do not use the extension's JSON-lines pipe. The runner binds a Unix stream socket inside the work directory, passes its path to the child in `OREO_SCRIPT_SOCKET`, and the script opens one connection on its first call and reuses it for the rest of the run. One JSON object per line, both directions:
+
+    script -> host  {"type":"call","id":"<unique>","tool":"read|write|execute","args":{...}}
+                    read:    path, offset, limit
+                    write:   path, content
+                    execute: command, working_directory
+    host -> script  {"type":"result","id":"<the same id>","ok":bool,"output":string,"exit_code":int}
+
+Every line gets exactly one reply. A malformed line, an unknown tool, or unreadable args all get `ok = false`, and the connection keeps serving. A non-zero exit from `execute` is a normal result: `ok` stays true and the code comes back in `exit_code`.
 
 ## Non-goals
 
@@ -99,12 +111,12 @@ Tool calls go back to the host over the existing JSON-lines transport, so the sc
 ## Verification and gate
 
 1. **Measure Pi's `codemode` first.** It already exists and is enabled with `pi --tools +codemode`. A/B the *same* task on real Stations, comparing tokens through the per-Station usage report added for v0.3. This gives the upper bound any Odin implementation could deliver, for the price of two runs. **If the delta is small, this feature is not worth building in any language.**
-2. **Then prototype**: `core:odin` gate, one generated script, one process, bounded output, measured RSS while running.
-3. **Gate:** on a repeated task, the Odin script path reduces total tokens materially against the same task without it, with a hard output cap and a working wall-clock deadline on both Linux and macOS.
+2. **Then prototype**: `core:odin` gate, one generated script, one process, bounded output, measured RSS while running. **Built.** The gate, the runner, the host server and the script API are in `oreo/src/`, and each has tests.
+3. **Gate:** on a repeated task, the Odin script path reduces total tokens materially against the same task without it, with a hard output cap and a working wall-clock deadline on both Linux and macOS. **Not measured.** The runner, the host server, the script API and the tools they call all have tests, but no repeated task has been run to compare tokens, so nothing recorded here shows the saving the feature exists for. The output cap and the deadline are the parts with test coverage, and that coverage is macOS only so far; Linux verification is still pending.
 
 ## Open questions
 
-- The exact `oreo:script` surface, and whether `text()` should accept images as Pi's does.
+- Whether `text()` should accept images as Pi's does.
 - Whether the script API should be prebuilt as an object file, given compile is already 0.15 s.
 - How a script's tool calls are authorized against the session that wrote it.
 - Whether the model needs the script API's declarations inline (Pi budgets 3000 estimated tokens for this).
