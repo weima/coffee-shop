@@ -48,7 +48,7 @@ Enable it once in your Pi user settings (`~/.pi/agent/settings.json`):
 Two things to know:
 
 - **A research (Cupping) Shot is the deliberate exception.** It must not write files or run shell commands, so Coffee Shop gives it a plain `--tools read,grep,find,ls` allowlist. A plain name list *replaces* the defaults, so such a Shot stays read-only even with codemode enabled. Do not add `+codemode` to a research Shot: `codemode` runs scripts, so it would quietly give that Shot write access.
-- **Coffee Shop also passes `+codemode` explicitly** when it launches an execute Shot, so Stations do not depend on your settings file being present.
+- **Coffee Shop passes `+codemode` explicitly for every execute Shot**, Station or brew worker, so they do not depend on your settings file. There is no switch to turn it off.
 
 ## Intended interaction flow
 

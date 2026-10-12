@@ -553,7 +553,7 @@ run_pi_json_with_activity :: proc(
 	}
 	defer os.close(stdout_read)
 	command: [dynamic]string
-	append(&command, pi, "--mode", "json", "--print", "--no-session")
+	append(&command, pi, "--mode", "json", "--print", "--no-session", "--tools", "+codemode")
 	if model != "" { append(&command, "--model", model) }
 	if thinking != "" { append(&command, "--thinking", thinking) }
 	if preamble != "" { append(&command, "--append-system-prompt", preamble) }
