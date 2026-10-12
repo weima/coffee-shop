@@ -110,6 +110,33 @@ text :: proc(value: any) {
 }
 
 /*
+	exit ends the script with the given status, immediately. It is the supported
+	way for a script to report failure: the runner reports the child's exit code
+	as its own, so exit(7) makes script_run answer exit_code = 7 and ok = false.
+
+	A generated script cannot import core:os itself. The command line allowlist
+	that constrains a script's imports deliberately omits it, which is what makes
+	the gate a real capability boundary, and that omission would also leave a
+	script with no way to say it failed. This package is not constrained by the
+	allowlist and already imports core:os, so the exit is exposed here instead of
+	authorizing core:os for the script. Nothing is sent over the socket; the
+	process ends here, and @(fini) blocks do not run.
+*/
+exit :: proc(code: int) -> ! {
+	os.exit(code)
+}
+
+/*
+	fail ends the script as a failure. reason is written to stderr, where the
+	runner's merged output shows both that the script failed and why, and the
+	status is 1 - never 0. Like exit, it sends nothing over the socket.
+*/
+fail :: proc(reason: string) -> ! {
+	fmt.eprintfln("script.fail: %s", reason)
+	os.exit(1)
+}
+
+/*
 	error_destroy releases the message owned by err. Safe on a zero value. The
 	message was allocated with the allocator passed to the call that produced the
 	Error, so pass the same one here.

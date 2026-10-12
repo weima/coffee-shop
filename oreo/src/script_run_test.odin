@@ -150,8 +150,8 @@ test_script_run_nonzero_exit_keeps_its_output :: proc(t: ^testing.T) {
 
 	result := script_run(
 		Script_Run_Config {
-			// No allowlisted package can choose an exit code, so the script dies
-			// by panicking on an out-of-bounds index after it prints.
+			// A crash, not a chosen exit code: the script dies by panicking on an
+			// out-of-bounds index after it prints.
 			source = `
 package script
 
@@ -175,6 +175,118 @@ main :: proc() {
 	// report that instead, so only non-zero is asserted.
 	testing.expect(t, result.exit_code != 0)
 	testing.expect(t, strings.contains(result.output, "about to stop"))
+	script_run_test_expect_no_socket(t, dir)
+}
+
+@(test)
+test_script_run_script_exit_code_reaches_the_result :: proc(t: ^testing.T) {
+	dir := script_run_test_work_dir(t)
+	defer delete(dir)
+	defer os.remove_all(dir)
+
+	collection := script_run_test_collection()
+	defer delete(collection)
+
+	source := `
+package main
+
+import "core:fmt"
+import "oreo:script"
+
+main :: proc() {
+	fmt.println("before the exit")
+	script.exit(7)
+}
+`
+
+	result := script_run(
+		Script_Run_Config {
+			source             = source,
+			work_dir           = dir,
+			extra_compile_args = []string{collection},
+		},
+	)
+	defer script_run_test_result_destroy(&result)
+
+	testing.expect(t, !result.ok)
+	testing.expect_value(t, result.exit_code, 7)
+	testing.expect(t, !result.timed_out)
+	// The code is reported as the script chose it, and what it printed first is
+	// not lost to the exit.
+	testing.expect(t, strings.contains(result.reason, "7"))
+	testing.expect(t, strings.contains(result.output, "before the exit"))
+	script_run_test_expect_no_socket(t, dir)
+}
+
+@(test)
+test_script_run_script_fail_shows_the_reason :: proc(t: ^testing.T) {
+	dir := script_run_test_work_dir(t)
+	defer delete(dir)
+	defer os.remove_all(dir)
+
+	collection := script_run_test_collection()
+	defer delete(collection)
+
+	source := `
+package main
+
+import "oreo:script"
+
+main :: proc() {
+	script.fail("something went wrong")
+}
+`
+
+	result := script_run(
+		Script_Run_Config {
+			source             = source,
+			work_dir           = dir,
+			extra_compile_args = []string{collection},
+		},
+	)
+	defer script_run_test_result_destroy(&result)
+
+	testing.expect(t, !result.ok)
+	testing.expect(t, result.exit_code != 0)
+	testing.expect(t, !result.timed_out)
+	testing.expect(t, strings.contains(result.output, "something went wrong"))
+	script_run_test_expect_no_socket(t, dir)
+}
+
+@(test)
+test_script_run_script_exit_zero_is_success :: proc(t: ^testing.T) {
+	dir := script_run_test_work_dir(t)
+	defer delete(dir)
+	defer os.remove_all(dir)
+
+	collection := script_run_test_collection()
+	defer delete(collection)
+
+	source := `
+package main
+
+import "core:fmt"
+import "oreo:script"
+
+main :: proc() {
+	fmt.println("finished cleanly")
+	script.exit(0)
+}
+`
+
+	result := script_run(
+		Script_Run_Config {
+			source             = source,
+			work_dir           = dir,
+			extra_compile_args = []string{collection},
+		},
+	)
+	defer script_run_test_result_destroy(&result)
+
+	testing.expect(t, result.ok)
+	testing.expect_value(t, result.exit_code, 0)
+	testing.expect(t, !result.timed_out)
+	testing.expect(t, strings.contains(result.output, "finished cleanly"))
 	script_run_test_expect_no_socket(t, dir)
 }
 
