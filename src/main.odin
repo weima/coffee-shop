@@ -5,6 +5,9 @@ import "core:os"
 
 main :: proc() {
 	context.logger = setup_logging()
+	if guard_code := dev_guard_check(); guard_code != 0 {
+		os.exit(guard_code)
+	}
 	exit_code := run_cli(os.args[1:])
 	if exit_code != 0 {
 		os.exit(exit_code)
