@@ -1,7 +1,9 @@
 package main
 
 import "core:fmt"
+import "core:os"
 import "core:strings"
+import "core:terminal/ansi"
 import "core:testing"
 
 // Mirrors a sprite row the way the left-facing cat is built: reverse the padded
@@ -32,13 +34,13 @@ test_station_block_matches_the_supplied_cat_and_its_mirror :: proc(t: ^testing.T
 	left := station_block_lines(0, 0, false, "")
 	for line, i in want_right {
 		testing.expect_value(t, len(line), STATION_SPRITE_WIDTH)
-		testing.expect_value(t, right[i + 1], line)
+		testing.expect_value(t, right[i], line)
 		// The left-facing line must be the true mirror, so editing one side and
 		// forgetting the other fails here rather than shifting the cat.
-		testing.expect_value(t, left[i + 1], mirror_sprite_row(line))
-		testing.expect_value(t, len(right[i + 1]), STATION_SPRITE_WIDTH)
-		testing.expect_value(t, len(left[i + 1]), STATION_SPRITE_WIDTH)
-		testing.expect(t, right[i + 1] != left[i + 1], "directions should differ")
+		testing.expect_value(t, left[i], mirror_sprite_row(line))
+		testing.expect_value(t, len(right[i]), STATION_SPRITE_WIDTH)
+		testing.expect_value(t, len(left[i]), STATION_SPRITE_WIDTH)
+		testing.expect(t, right[i] != left[i], "directions should differ")
 	}
 }
 
@@ -46,25 +48,53 @@ test_station_block_matches_the_supplied_cat_and_its_mirror :: proc(t: ^testing.T
 test_station_block_indents_the_cat_and_keeps_the_status :: proc(t: ^testing.T) {
 	lines := station_block_lines(5, 0, true, "Running tool: read")
 	want_ears := "     /\\_/\\   " // the supplied ears row, padded to STATION_SPRITE_WIDTH
-	testing.expect_value(t, lines[1], fmt.tprintf("     %s", want_ears))
-	testing.expect_value(t, lines[4], "Running tool: read")
+	testing.expect_value(t, lines[0], fmt.tprintf("     %s", want_ears))
+	testing.expect_value(t, lines[3], "Running tool: read")
 }
 
 @(test)
-test_station_block_cat_is_static_while_steam_alternates :: proc(t: ^testing.T) {
+test_station_block_cat_is_static :: proc(t: ^testing.T) {
 	first := station_block_lines(0, 0, true, "")
 	next := station_block_lines(0, 1, true, "")
-	testing.expect_value(t, first[3], next[3])
 	testing.expect_value(t, first[2], next[2])
-	later := station_block_lines(0, 2, true, "")
-	testing.expect(t, first[0] != later[0], "steam should change every two frames")
+	testing.expect_value(t, first[1], next[1])
 }
 
 @(test)
 test_station_block_truncates_long_status :: proc(t: ^testing.T) {
 	long := strings.repeat("x", STATION_STATUS_MAX + 20, context.temp_allocator)
 	lines := station_block_lines(0, 0, true, long)
-	testing.expect_value(t, len(lines[4]), STATION_STATUS_MAX)
+	testing.expect_value(t, len(lines[3]), STATION_STATUS_MAX)
+}
+
+@(test)
+test_station_block_strips_line_breaks_from_status :: proc(t: ^testing.T) {
+	lines := station_block_lines(0, 0, true, "one\ntwo\rthree")
+	testing.expect_value(t, lines[3], "onetwothree")
+	// No row carries CR or LF, so the four rows written with a `\n` between them
+	// stay exactly STATION_BLOCK_ROWS visual rows.
+	breaks := 0
+	for row, i in lines {
+		for r in row {
+			if r == '\n' || r == '\r' {
+				breaks += 1
+			}
+		}
+		testing.expectf(t, !strings.contains_any(row, "\r\n"), "row %d must not contain a line break: %q", i, row)
+	}
+	testing.expect_value(t, breaks, 0)
+}
+
+@(test)
+test_station_block_clamps_multi_byte_status_on_a_rune_boundary :: proc(t: ^testing.T) {
+	// 4 bytes per rune, so the byte clamp must stop before a rune that would
+	// straddle STATION_STATUS_MAX.
+	long := strings.repeat("\u00e9\u00e9", STATION_STATUS_MAX, context.temp_allocator)
+	lines := station_block_lines(0, 0, true, long)
+	testing.expect(t, len(lines[3]) <= STATION_STATUS_MAX, "clamp must not exceed the byte cap")
+	for r in lines[3] {
+		testing.expect(t, r != '\uFFFD', "clamp must not cut a rune in half")
+	}
 }
 
 @(test)
@@ -115,6 +145,73 @@ test_station_elapsed_label_formats_minutes_and_seconds :: proc(t: ^testing.T) {
 	label := station_elapsed_label(1_000_000_000, 81_000_000_000)
 	defer delete(label)
 	testing.expect_value(t, label, "1m20s")
+}
+
+@(test)
+test_station_display_draw_restores_auto_wrap :: proc(t: ^testing.T) {
+	display := Station_Display{live = true, started_at_ns = 1_000_000_000}
+	station_display_draw_locked(&display)
+	testing.expect(t, !display.wrap_off, "draw must restore auto-wrap")
+}
+
+@(test)
+test_station_display_draw_writes_the_auto_wrap_escapes :: proc(t: ^testing.T) {
+	// wrap_off is bookkeeping with no production reader, so assert the bytes that
+	// actually reach stdout. Capturing means pointing os.stdout at a temp file for
+	// the call (the test runner holds its own stream, and no other test prints via
+	// fmt.print).
+	dir, dir_err := os.temp_directory(context.temp_allocator)
+	base := dir if dir_err == nil else "/tmp"
+	name := fmt.aprintf("%s/station-wrap-%d.txt", base, os.get_pid())
+	defer delete(name)
+	out, create_err := os.create(name)
+	if create_err != nil {
+		testing.fail(t)
+		return
+	}
+	defer os.close(out)
+	defer os.remove(name)
+
+	old := os.stdout
+	os.stdout = out
+	defer os.stdout = old
+
+	display := Station_Display{live = true, started_at_ns = 1_000_000_000}
+	station_display_draw_locked(&display)
+
+	os.seek(out, 0, .Start)
+	data, read_err := os.read_entire_file_from_file(out, context.allocator)
+	if read_err != nil {
+		testing.fail(t)
+		return
+	}
+	defer delete(data)
+	captured := string(data)
+	testing.expect(t, strings.contains(captured, ansi.CSI + ansi.DECAWM_OFF), "draw must emit auto-wrap off")
+	testing.expect(t, strings.contains(captured, ansi.CSI + ansi.DECAWM_ON), "draw must emit auto-wrap on")
+}
+
+@(test)
+test_station_display_clear_restores_auto_wrap :: proc(t: ^testing.T) {
+	display := Station_Display{live = true, drawn = 1}
+	station_display_clear_locked(&display)
+	testing.expect(t, !display.wrap_off, "erase must restore auto-wrap")
+}
+
+@(test)
+test_station_display_stop_restores_auto_wrap :: proc(t: ^testing.T) {
+	display := Station_Display{live = true, running = true, drawn = 1}
+	station_display_stop(&display)
+	testing.expect(t, !display.wrap_off, "stop must restore auto-wrap")
+}
+
+@(test)
+test_station_display_non_live_early_paths_leave_auto_wrap_on :: proc(t: ^testing.T) {
+	display: Station_Display
+	station_display_draw_locked(&display)
+	station_display_clear_locked(&display)
+	station_display_stop(&display)
+	testing.expect(t, !display.wrap_off, "non-live paths must leave auto-wrap on")
 }
 
 @(test)
