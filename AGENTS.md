@@ -23,3 +23,4 @@
 ## Development commands
 
 - Use `just` recipes for build, check, and test workflows. Do not add bespoke shell test-runner scripts when `just` can express the workflow.
+- **Never launch a previously-built binary.** Do not run `./coffee-shop`, `~/.coffee-shop/dogfood/coffee-shop`, or any other copied build artifact. Launch through `odin run <package> -- <args>`, or a `just` recipe that compiles first, so the code being exercised is always the current source. A copied binary goes stale silently: the dogfood host once ran a build from hours earlier and kept rendering behaviour the source had already changed, so a whole change was invisible and time went into diagnosing a bug that no longer existed. `just test` and `odin test` already compile, so they are unaffected.
