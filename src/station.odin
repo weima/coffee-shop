@@ -1,6 +1,5 @@
 package main
 
-import "base:runtime"
 import "core:bufio"
 import "core:encoding/json"
 import "core:fmt"
@@ -63,8 +62,8 @@ Station_Dialog :: struct {
 }
 
 // The mutex guards the dialog and the agent's input: a reply is written before the
-// input is closed, or it is dropped. `agent_closed` is atomic because the SIGTERM
-// handler closes the input without taking the mutex.
+// input is closed, or it is dropped. `agent_closed` is atomic because the reader
+// thread and the main flow can both close the input.
 Station_Relay :: struct {
 	input:        ^os.File,
 	agent:        ^os.File,
@@ -73,11 +72,66 @@ Station_Relay :: struct {
 	display:      ^Station_Display,
 	one_turn:     bool,
 	agent_closed: bool,
+	cancelled:    bool,
+	reader_done:  ^bool,
 }
 
-// The SIGTERM handler needs the relay without a lookup; it is set before the
-// first prompt is sent.
-station_signal_relay: ^Station_Relay
+// The SIGTERM handler sets only this flag. It must never read the relay: the main
+// flow frees the relay, so a handler on another thread could read freed memory.
+// The reader polls this flag every STATION_RELAY_POLL_MS, and the main flow reads
+// it at the point it decides the exit status.
+station_cancel_requested: bool
+
+STATION_CANCELLED_EXIT_CODE :: 130
+STATION_RELAY_POLL_MS :: 100
+
+station_close_file :: proc(file: ^^os.File) {
+	if file^ == nil {
+		return
+	}
+	_ = os.close(file^)
+	file^ = nil
+}
+
+station_free_display :: proc(display: ^^Station_Display) {
+	if display^ == nil {
+		return
+	}
+	station_display_stop(display^)
+	free(display^)
+	display^ = nil
+}
+
+// The main flow owns all of shutdown, including the join, the cleanup and the
+// exit status. Marking the relay cancelled wakes the polling reader on ordinary
+// EOF paths too.
+station_orderly_shutdown :: proc(relay_ptr: ^^Station_Relay, reader: ^thread.Thread) -> int {
+	relay := relay_ptr^
+	if relay == nil {
+		return 0
+	}
+	cancelled_before := sync.atomic_load(&relay.cancelled)
+	sync.atomic_store(&relay.cancelled, true)
+	sync.atomic_store(&relay.agent_closed, true)
+	if reader != nil {
+		thread.join(reader)
+		thread.destroy(reader)
+	}
+	sync.mutex_lock(&relay.mutex)
+	station_dialog_clear(&relay.dialog)
+	sync.mutex_unlock(&relay.mutex)
+	station_free_display(&relay.display)
+	station_close_file(&relay.input)
+	station_close_file(&relay.agent)
+	free(relay)
+	relay_ptr^ = nil
+	// Decide the status only now, so a cancel that arrived while shutdown was
+	// running is not lost. A cancel can still arrive after this read.
+	if cancelled_before || sync.atomic_load(&station_cancel_requested) {
+		return STATION_CANCELLED_EXIT_CODE
+	}
+	return 0
+}
 
 run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_kind, taste, message: string, agent: []string) -> int {
 	first_prompt := prompt
@@ -105,7 +159,22 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 	agent_in_read, agent_in_write, in_err := os.pipe()
 	agent_out_read, agent_out_write, out_err := os.pipe()
 	if in_err != nil || out_err != nil {
+		station_close_file(&agent_in_read)
+		station_close_file(&agent_in_write)
+		station_close_file(&agent_out_read)
+		station_close_file(&agent_out_write)
+		station_free_display(&display)
 		write_error("could not create the agent pipes")
+		return 1
+	}
+	input, input_err := os.clone(os.stdin)
+	if input_err != nil {
+		station_close_file(&agent_in_read)
+		station_close_file(&agent_in_write)
+		station_close_file(&agent_out_read)
+		station_close_file(&agent_out_write)
+		station_free_display(&display)
+		write_error("could not clone Station input")
 		return 1
 	}
 	process, start_err := os.process_start(os.Process_Desc{
@@ -114,29 +183,39 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 		stdout = agent_out_write,
 		stderr = os.stderr,
 	})
-	_ = os.close(agent_in_read)
-	_ = os.close(agent_out_write)
-	defer os.close(agent_out_read)
+	station_close_file(&agent_in_read)
+	station_close_file(&agent_out_write)
 	if start_err != nil {
-		_ = os.close(agent_in_write)
+		station_close_file(&agent_in_write)
+		station_close_file(&agent_out_read)
+		station_close_file(&input)
+		station_free_display(&display)
 		write_error("could not start the agent")
 		return 1
 	}
 	// Install the handler before the first prompt, so a cancel that arrives once the
 	// agent is running is always handled.
 	relay := new(Station_Relay)
-	relay.input = os.stdin
+	relay.input = input
 	relay.agent = agent_in_write
 	relay.display = display
 	relay.one_turn = shot_kind == SHOT_KIND_RESEARCH || taste != ""
-	station_signal_relay = relay
 	station_install_sigterm()
 	if !station_write_prompt(agent_in_write, first_prompt, "") {
 		write_error("could not send the first prompt to the agent")
+		_ = station_orderly_shutdown(&relay, nil)
+		_, _ = os.process_wait(process)
+		station_close_file(&agent_out_read)
 		return 1
 	}
 	station_display_line(display, station_style(ansi.FAINT, fmt.tprintf("sent the first prompt to the agent")))
-	_ = thread.create_and_start_with_data(relay, station_relay_replies, self_cleanup = true)
+	reader_thread := thread.create_and_start_with_data(relay, station_relay_replies, self_cleanup = false)
+	if reader_thread == nil {
+		_ = station_orderly_shutdown(&relay, nil)
+		_, _ = os.process_wait(process)
+		station_close_file(&agent_out_read)
+		return 1
+	}
 
 	parser: Pi_Event_State
 	reader: bufio.Reader
@@ -153,9 +232,13 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 	}
 
 	state, wait_err := os.process_wait(process)
-	station_display_stop(display)
+	shutdown_status := station_orderly_shutdown(&relay, reader_thread)
+	station_close_file(&agent_out_read)
 	fmt.println("Agent exited.")
 	station_report(&sender, brew_id, station_id, "agent_exited", "Agent exited")
+	if shutdown_status == STATION_CANCELLED_EXIT_CODE {
+		return shutdown_status
+	}
 	if shot_kind == SHOT_KIND_RESEARCH && !station_research_clean(&sender, brew_id, station_id) {
 		return 1
 	}
@@ -394,25 +477,11 @@ station_relay_close_agent :: proc(relay: ^Station_Relay) {
 	_ = os.close(relay.agent)
 }
 
-// The SIGTERM handler closes the agent's input so the agent can exit on its own
-// instead of dying when the Station's pipes go away. It deliberately takes no
-// mutex: a signal can interrupt the one thread holding the relay mutex, so locking
-// here would deadlock. The atomic exchange is the single decider for the close, and
-// the handler never waits, so it cannot leave the Station stuck. The raw close is
-// async-signal-safe; the File's memory is left for process exit rather than freed
-// from the handler.
-station_close_agent_once :: proc "contextless" (relay: ^Station_Relay) {
-	if sync.atomic_exchange(&relay.agent_closed, true) {
-		return
-	}
-	context = runtime.default_context()
-	_ = posix.close(posix.FD(os.fd(relay.agent)))
-}
-
+// The SIGTERM handler sets one atomic flag and nothing else: no relay read, no
+// close, no allocation, no lock, no wait. The reader sees the flag within one
+// poll interval and closes the agent's input; the main flow joins it.
 station_signal_term :: proc "c" (sig: posix.Signal) {
-	if relay := station_signal_relay; relay != nil {
-		station_close_agent_once(relay)
-	}
+	sync.atomic_store(&station_cancel_requested, true)
 }
 
 station_install_sigterm :: proc() {
@@ -506,38 +575,73 @@ station_dialog_clear :: proc(dialog: ^Station_Dialog) {
 }
 
 // Every non-empty stdin line is a reply: it answers the pending dialog if there is
-// one, otherwise it is a follow-up prompt. End of stdin closes the agent's input,
-// which ends the agent and therefore the Station.
+// one, otherwise it is a follow-up prompt. Polling gives cancellation a bounded
+// wake-up time, so the main flow can always join this thread.
+station_relay_reply_line :: proc(relay: ^Station_Relay, text: string) -> bool {
+	trimmed := strings.trim_space(text)
+	if trimmed == "" {
+		return true
+	}
+
+	// A reply after the close is dropped without a report.
+	sync.mutex_lock(&relay.mutex)
+	defer sync.mutex_unlock(&relay.mutex)
+	if sync.atomic_load(&relay.agent_closed) {
+		return false
+	}
+	if relay.dialog.active {
+		response := station_dialog_response(relay.dialog, trimmed)
+		station_dialog_clear(&relay.dialog)
+		return station_write_line(relay.agent, response)
+	}
+	return station_write_prompt(relay.agent, trimmed, "followUp")
+}
+
 station_relay_replies :: proc(data: rawptr) {
 	relay := (^Station_Relay)(data)
-	scanner: bufio.Scanner
-	bufio.scanner_init(&scanner, os.to_reader(relay.input))
-	defer bufio.scanner_destroy(&scanner)
+	defer {
+		if relay.reader_done != nil {
+			sync.atomic_store(relay.reader_done, true)
+		}
+	}
 	defer station_relay_close_agent(relay)
-	for bufio.scanner_scan(&scanner) {
-		text := strings.trim_space(bufio.scanner_text(&scanner))
-		if text == "" {
+
+	line: [dynamic]byte
+	defer delete(line)
+	for {
+		if sync.atomic_load(&relay.cancelled) || sync.atomic_load(&station_cancel_requested) {
+			break
+		}
+		fds := [1]posix.pollfd{{
+			fd = posix.FD(os.fd(relay.input)),
+			events = {.IN, .HUP, .ERR},
+		}}
+		poll_result := posix.poll(&fds[0], 1, STATION_RELAY_POLL_MS)
+		if poll_result < 0 {
+			break
+		}
+		if poll_result == 0 {
 			continue
 		}
-
-		// A reply after the close is dropped without a report.
-		sync.mutex_lock(&relay.mutex)
-		if sync.atomic_load(&relay.agent_closed) {
-			sync.mutex_unlock(&relay.mutex)
+		if .IN not_in fds[0].revents && .HUP not_in fds[0].revents {
 			break
 		}
-		written: bool
-		if relay.dialog.active {
-			response := station_dialog_response(relay.dialog, text)
-			station_dialog_clear(&relay.dialog)
-			written = station_write_line(relay.agent, response)
-		} else {
-			written = station_write_prompt(relay.agent, text, "followUp")
-		}
-		sync.mutex_unlock(&relay.mutex)
-		if !written {
+		character: byte
+		read_count := posix.read(fds[0].fd, &character, 1)
+		if read_count <= 0 {
 			break
 		}
+		if character == '\n' {
+			if !station_relay_reply_line(relay, string(line[:])) {
+				break
+			}
+			resize(&line, 0)
+			continue
+		}
+		append(&line, character)
+	}
+	if len(line) > 0 && !sync.atomic_load(&relay.cancelled) && !sync.atomic_load(&station_cancel_requested) {
+		_ = station_relay_reply_line(relay, string(line[:]))
 	}
 }
 

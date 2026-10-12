@@ -40,6 +40,7 @@ Station_Display :: struct {
 	turn_count:      int,
 	tool_count:      int,
 	active_tool_count: int,
+	animation_thread: ^thread.Thread,
 	started_at_ns:   i64,
 	x:               int,
 	dir:             int,
@@ -60,7 +61,7 @@ station_display_start :: proc(display: ^Station_Display, title: string) {
 		fmt.print(ansi.CSI + "2" + ansi.ED + ansi.CSI + ansi.CUP)
 		fmt.println(station_style(ansi.BOLD + ";" + ansi.FG_CYAN, title))
 		fmt.println(station_style(ansi.FAINT, "────────────────────────────────────────"))
-		_ = thread.create_and_start_with_data(display, station_display_animate, self_cleanup = true)
+		display.animation_thread = thread.create_and_start_with_data(display, station_display_animate, self_cleanup = false)
 	}
 }
 
@@ -213,7 +214,14 @@ station_display_line :: proc(display: ^Station_Display, text: string) {
 
 station_display_stop :: proc(display: ^Station_Display) {
 	sync.mutex_lock(&display.mutex)
-	defer sync.mutex_unlock(&display.mutex)
 	display.running = false
 	station_display_clear_locked(display)
+	sync.mutex_unlock(&display.mutex)
+
+	if display.animation_thread != nil {
+		thread.join(display.animation_thread)
+		thread.destroy(display.animation_thread)
+		display.animation_thread = nil
+	}
+	delete(display.status)
 }
