@@ -47,6 +47,11 @@ Dialog_Cancel_Response :: struct {
 	cancelled: bool `json:"cancelled"`,
 }
 
+// Asks Pi for its session stats. The Station sends it once, as the session ends.
+Station_Stats_Request :: struct {
+	type: string `json:"type"`,
+}
+
 // A dialog the agent is blocked on. Strings are owned.
 Station_Dialog :: struct {
 	active:  bool,
@@ -321,10 +326,18 @@ station_handle_agent_line :: proc(
 ) {
 	value, parse_err := json.parse_string(text, .JSON, false, context.temp_allocator)
 	if parse_err == .None {
-		if root, ok := value.(json.Object); ok && pi_event_string(root, "type") == "extension_ui_request" {
-			// Only dialogs need handling; other UI requests are display-only.
-			_ = station_dialog_request(relay, sender, brew_id, station_id, root)
-			return
+		if root, ok := value.(json.Object); ok {
+			switch pi_event_string(root, "type") {
+			case "extension_ui_request":
+				// Only dialogs need handling; other UI requests are display-only.
+				_ = station_dialog_request(relay, sender, brew_id, station_id, root)
+				return
+			case "response":
+				if pi_event_string(root, "command") == "get_session_stats" {
+					station_report_session_stats(sender, brew_id, station_id, root)
+					return
+				}
+			}
 		}
 	}
 
@@ -354,15 +367,39 @@ station_handle_agent_line :: proc(
 }
 
 // Closes the agent's input once. The agent exits when its input closes, and the
-// relay thread may still be writing, so both happen under the relay's mutex.
+// relay thread may still be writing, so both happen under the relay's mutex. Pi is
+// asked for its stats first, so it can answer before the Station exits.
 station_relay_close_agent :: proc(relay: ^Station_Relay) {
 	sync.mutex_lock(&relay.mutex)
 	defer sync.mutex_unlock(&relay.mutex)
 	if relay.agent_closed {
 		return
 	}
+	station_write_stats_request(relay.agent)
 	relay.agent_closed = true
 	_ = os.close(relay.agent)
+}
+
+// A usage report is advisory: a failed or unreadable response sends nothing and
+// never fails the Station, the same rule the activity reports follow.
+station_report_session_stats :: proc(sender: ^Activity_Sender, brew_id, station_id: string, root: json.Object) {
+	success, success_ok := root["success"].(json.Boolean)
+	if !success_ok || !success {
+		return
+	}
+	data_value, found := root["data"]
+	if !found {
+		return
+	}
+	data, marshal_err := json.marshal(data_value, {}, context.temp_allocator)
+	if marshal_err != nil {
+		return
+	}
+	stats, ok := pi_session_stats_parse(data)
+	if !ok {
+		return
+	}
+	station_report(sender, brew_id, station_id, "usage", pi_session_stats_description(stats))
 }
 
 // Fire-and-forget UI requests need no answer. Dialogs make the agent wait, so they
@@ -503,6 +540,14 @@ slice_contains :: proc(items: []string, value: string) -> bool {
 
 station_write_prompt :: proc(file: ^os.File, message, behavior: string) -> bool {
 	data, err := json.marshal(Station_Prompt{type = "prompt", message = message, streamingBehavior = behavior}, {}, context.temp_allocator)
+	if err != nil {
+		return false
+	}
+	return station_write_line(file, string(data))
+}
+
+station_write_stats_request :: proc(file: ^os.File) -> bool {
+	data, err := json.marshal(Station_Stats_Request{type = "get_session_stats"}, {}, context.temp_allocator)
 	if err != nil {
 		return false
 	}
