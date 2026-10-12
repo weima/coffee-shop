@@ -21,11 +21,15 @@ build_test_binary :: proc(t: ^testing.T, root: string) -> string {
 }
 
 // Fake agent: logs each stdin line, then answers every prompt with one agent_end
-// whose text counts the turns. It exits when its stdin closes.
+// whose text counts the turns. The stats control line is not a prompt, so it is
+// logged but not answered. It exits when its stdin closes.
 FAKE_STATION_AGENT :: `#!/bin/sh
 n=0
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$1"
+  case "$line" in
+  *get_session_stats*) continue ;;
+  esac
   n=$((n+1))
   printf '%s\n' "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"turn $n\"}]}]}"
 done
@@ -161,6 +165,7 @@ n=0
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$1"
   case "$line" in
+  *get_session_stats*) ;;
   *'"extension_ui_response"'*)
     n=$((n+1))
     printf '%s\n' "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"answered $n\"}]}]}"
@@ -343,6 +348,9 @@ test_station_report_falls_back_when_reports_directory_is_unwritable :: proc(t: ^
 // Fake agent whose every turn answers with a 3000-character report.
 FAKE_LONG_AGENT :: `#!/bin/sh
 while IFS= read -r line; do
+  case "$line" in
+  *get_session_stats*) continue ;;
+  esac
   text=$(head -c 3000 /dev/zero | tr '\0' 'x')
   printf '%s\n' "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"$text\"}]}]}"
 done
@@ -694,6 +702,9 @@ test_station_parse_requires_execute_taste_and_message_together :: proc(t: ^testi
 // input closes. Its first answer is the only one a one-turn Shot receives.
 FAKE_ONE_TURN_AGENT :: `#!/bin/sh
 while IFS= read -r line; do
+  case "$line" in
+  *get_session_stats*) continue ;;
+  esac
   printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"turn 1"}]}]}'
 done
 `
@@ -701,6 +712,9 @@ done
 // Same as FAKE_ONE_TURN_AGENT, but each turn first writes changed.txt.
 FAKE_ONE_TURN_WRITING_AGENT :: `#!/bin/sh
 while IFS= read -r line; do
+  case "$line" in
+  *get_session_stats*) continue ;;
+  esac
   printf 'changed\n' > changed.txt
   printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"turn 1"}]}]}'
 done
@@ -899,4 +913,119 @@ test_interactive_shot_keeps_input_open_after_its_first_turn :: proc(t: ^testing.
 	if len(turns) == 2 {
 		testing.expect_value(t, turns[1], "turn 2")
 	}
+}
+
+// Returns the number of usage reports and the last one's description, borrowed from
+// the run.
+station_usage_of :: proc(run: ^Held_Station_Run) -> (count: int, description: string) {
+	for kind, index in run.kinds {
+		if kind == "usage" {
+			count += 1
+			description = run.descriptions[index]
+		}
+	}
+	return
+}
+
+// Fake Pi that ends each turn, answers the stats request with a priced response, and
+// exits when its input closes.
+FAKE_STATS_AGENT :: `#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+  *get_session_stats*)
+    printf '%s\n' '{"type":"response","command":"get_session_stats","success":true,"data":{"tokens":{"input":10,"output":5,"cacheRead":2,"cacheWrite":1,"total":18},"cost":0.0123}}'
+    ;;
+  *)
+    printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}]}]}'
+    ;;
+  esac
+done
+`
+
+// Same as FAKE_STATS_AGENT, but Pi cannot price the model, so it reports zero cost.
+FAKE_ZERO_COST_AGENT :: `#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+  *get_session_stats*)
+    printf '%s\n' '{"type":"response","command":"get_session_stats","success":true,"data":{"tokens":{"input":10,"output":5,"cacheRead":2,"cacheWrite":1,"total":18},"cost":0}}'
+    ;;
+  *)
+    printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}]}]}'
+    ;;
+  esac
+done
+`
+
+// Fake Pi that ends each turn but never answers the stats request.
+FAKE_UNANSWERED_STATS_AGENT :: `#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+  *get_session_stats*) ;;
+  *)
+    printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}]}]}'
+    ;;
+  esac
+done
+`
+
+@(test)
+test_station_reports_session_usage :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-usage-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	run := run_station_held_open(t, root, FAKE_STATS_AGENT, "--kind", "research")
+	defer held_station_destroy(&run)
+	testing.expect(t, !run.timed_out, "the Station must not wait for input")
+	testing.expect_value(t, run.exit_code, 0)
+	count, usage := station_usage_of(&run)
+	testing.expect_value(t, count, 1)
+	testing.expect(t, strings.contains(usage, "input=10"), usage)
+	testing.expect(t, strings.contains(usage, "output=5"), usage)
+	testing.expect(t, strings.contains(usage, "cacheRead=2"), usage)
+	testing.expect(t, strings.contains(usage, "cacheWrite=1"), usage)
+	testing.expect(t, strings.contains(usage, "total=18"), usage)
+	testing.expect(t, strings.contains(usage, "cost=0.0123"), usage)
+}
+
+@(test)
+test_station_usage_reports_unavailable_cost :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-usage-zero-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	run := run_station_held_open(t, root, FAKE_ZERO_COST_AGENT, "--kind", "research")
+	defer held_station_destroy(&run)
+	testing.expect(t, !run.timed_out, "the Station must not wait for input")
+	testing.expect_value(t, run.exit_code, 0)
+	count, usage := station_usage_of(&run)
+	testing.expect_value(t, count, 1)
+	testing.expect(t, strings.contains(usage, "total=18"), usage)
+	testing.expect(t, strings.contains(usage, "cost=unavailable"), usage)
+}
+
+@(test)
+test_station_sends_no_usage_when_pi_does_not_answer :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-usage-silent-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	run := run_station_held_open(t, root, FAKE_UNANSWERED_STATS_AGENT, "--kind", "research")
+	defer held_station_destroy(&run)
+	testing.expect(t, !run.timed_out, "the Station must end when the agent exits")
+	testing.expect_value(t, run.exit_code, 0)
+	count, _ := station_usage_of(&run)
+	testing.expect_value(t, count, 0)
 }
