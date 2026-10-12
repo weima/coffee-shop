@@ -285,15 +285,13 @@ run_host_writes :: proc(t: ^testing.T, prefix, actions: string) -> (run: Host_Co
 		return
 	}
 	run.root = root
-	run.state = fmt.tprintf("%s/state", root)
+	// run.state is owned by the caller (host_contract_destroy), so it must come from a
+	// real allocator; the temp strings below are owned by context.temp_allocator.
+	run.state = fmt.aprintf("%s/state", root)
 	fifo := fmt.tprintf("%s/in.fifo", root)
 	out_path := fmt.tprintf("%s/host.out", root)
 	err_path := fmt.tprintf("%s/host.err", root)
 	actions_path := fmt.tprintf("%s/actions.sh", root)
-	defer delete(fifo)
-	defer delete(out_path)
-	defer delete(err_path)
-	defer delete(actions_path)
 	rwx := os.Permissions{.Read_User, .Write_User, .Execute_User}
 	testing.expect_value(t, os.write_entire_file(actions_path, actions, rwx), os.Error(nil))
 
