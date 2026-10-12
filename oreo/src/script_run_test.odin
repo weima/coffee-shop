@@ -127,15 +127,18 @@ test_script_run_nonzero_exit_keeps_its_output :: proc(t: ^testing.T) {
 
 	result := script_run(
 		Script_Run_Config {
+			// No allowlisted package can choose an exit code, so the script dies
+			// by panicking on an out-of-bounds index after it prints.
 			source = `
 package script
 
 import "core:fmt"
-import "core:os"
 
 main :: proc() {
 	fmt.println("about to stop")
-	os.exit(7)
+	values := []int{0}
+	index := 1
+	fmt.println(values[index])
 }
 `,
 			work_dir = dir,
@@ -144,8 +147,10 @@ main :: proc() {
 	defer script_run_test_result_destroy(&result)
 
 	testing.expect(t, !result.ok)
-	testing.expect_value(t, result.exit_code, 7)
 	testing.expect_value(t, result.timed_out, false)
+	// A panic exits with a plain non-zero code; a signal-killed child would
+	// report that instead, so only non-zero is asserted.
+	testing.expect(t, result.exit_code != 0)
 	testing.expect(t, strings.contains(result.output, "about to stop"))
 }
 
@@ -158,14 +163,12 @@ test_script_run_kills_a_script_that_never_returns :: proc(t: ^testing.T) {
 	start := time.tick_now()
 	result := script_run(
 		Script_Run_Config {
+			// A bare loop needs no import at all.
 			source = `
 package script
 
-import "core:os"
-
 main :: proc() {
 	for {
-		_ = os.get_pid()
 	}
 }
 `,
