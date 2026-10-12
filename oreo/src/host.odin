@@ -110,9 +110,10 @@ host_bridge_active: ^Host_Bridge
 // parked for a waiting worker.
 @(private)
 Host_Bridge :: struct {
-	mutex:   sync.Mutex,
-	cond:    sync.Cond,
-	waiting: map[string]^Host_Slot,
+	mutex:     sync.Mutex,
+	cond:      sync.Cond,
+	cancelled: bool,
+	waiting:   map[string]^Host_Slot,
 	host:    Host,
 	// state is the transport state whose output and mutex every stdout line,
 	// protocol reply or model request, is written through.
@@ -128,6 +129,7 @@ Host_Slot :: struct {
 	request_id: string,
 	reply:      string,
 	ready:      bool,
+	cancelled:  bool,
 }
 
 // Host_Bridge_Line is the minimum of every inbound line the host needs in order
@@ -216,31 +218,28 @@ host_run :: proc(store_path: string, input: io.Reader, output: io.Writer) -> int
 	// The pool is joined before the stopped reply, so no worker can emit an
 	// event after it, and before the retained outputs are released.
 	stop_err := pool_stop(&pool, true)
+	defer host_error_destroy(&stop_err)
 	runtime_release()
 
 	if loop_err.kind != .None {
-		host_error_destroy(&stop_err)
 		defer host_error_destroy(&loop_err)
 		host_report(loop_err.message)
 		return 1
 	}
 	if bridge.state.quit_requested {
 		stopped_err := transport_write_message(bridge.state, Transport_Stopped_Message{message_type = "stopped"})
-		if stop_err.kind != .None {
-			host_error_destroy(&stopped_err)
-			defer host_error_destroy(&stop_err)
-			host_report(stop_err.message)
-			return 1
-		}
 		if stopped_err.kind != .None {
 			defer host_error_destroy(&stopped_err)
 			host_report(stopped_err.message)
 			return 1
 		}
+		if stop_err.kind != .None {
+			host_report(stop_err.message)
+			return 1
+		}
 		return 0
 	}
 	if stop_err.kind != .None {
-		defer host_error_destroy(&stop_err)
 		host_report(stop_err.message)
 		return 1
 	}
@@ -300,7 +299,20 @@ host_handle_line :: proc(bridge: ^Host_Bridge, pool: ^Pool, line: string) -> (Tr
 		// the session a submit names before the transport accepts the work.
 		host_ensure_session(bridge, decoded.session_id)
 	}
-	return transport_handle_line(bridge.state, pool, line)
+	action, handle_err := transport_handle_line(bridge.state, pool, line)
+	if action == .Quit {
+		host_cancel_waiters(bridge)
+	}
+	return action, handle_err
+}
+
+// host_cancel_waiters wakes every worker waiting for a model reply after quit.
+@(private)
+host_cancel_waiters :: proc(bridge: ^Host_Bridge) {
+	sync.mutex_lock(&bridge.mutex)
+	bridge.cancelled = true
+	sync.cond_broadcast(&bridge.cond)
+	sync.mutex_unlock(&bridge.mutex)
 }
 
 // host_deliver_reply parks one line for the worker registered under request_id.
@@ -416,6 +428,9 @@ host_work :: proc(input: Work_Item_Input) -> Work_Item_Result {
 	result, run_err := agent_run(provider, runtime_default_tools(), prompt, 0, allocator)
 	if run_err.kind != .None {
 		defer agent_error_destroy(&run_err, allocator)
+		if slot.cancelled {
+			return runtime_failed_run(bridge.host, input, "work item cancelled by quit", allocator)
+		}
 		return runtime_failed_run(bridge.host, input, run_err.message, allocator)
 	}
 	text := result.text
@@ -471,7 +486,7 @@ host_read_line :: proc(user: rawptr, timeout_ms: int) -> (string, bool) {
 	host_trace(slot.request_id, "wait enter timeout=%dms", timeout_ms)
 
 	sync.mutex_lock(&bridge.mutex)
-	for !slot.ready {
+	for !slot.ready && !bridge.cancelled {
 		remaining := timeout - time.since(start)
 		if remaining <= 0 {
 			break
@@ -481,7 +496,12 @@ host_read_line :: proc(user: rawptr, timeout_ms: int) -> (string, bool) {
 		}
 	}
 	if !slot.ready {
-		host_trace(slot.request_id, "wait timeout")
+		slot.cancelled = bridge.cancelled
+		if slot.cancelled {
+			host_trace(slot.request_id, "wait cancelled")
+		} else {
+			host_trace(slot.request_id, "wait timeout")
+		}
 		host_slot_unregister_locked(bridge, slot)
 		sync.mutex_unlock(&bridge.mutex)
 		return "", false
