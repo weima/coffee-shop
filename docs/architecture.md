@@ -186,6 +186,8 @@ stateDiagram-v2
 
 Recipes are strict JSON objects described by the root `recipe.schema.json`. They have exactly one of `order`/`order_file`, a non-empty `shots` array, optional `share`, optional model/thinking defaults, and optional `preamble`/`preamble_file`. A Shot has exactly one of `prompt`/`prompt_file`, a unique safe `id`, optional model/thinking overrides, and optional `expect_changes`. File inputs resolve relative to the Recipe, reject absolute/traversal paths, and are read before Stations are created. Text is snapshotted in Brew state. Scale defaults to two; `workers` opts into 1–5.
 
+The foreground host's dispatch request carries the same per-Shot `model` and `thinking` fields. A dispatched Shot therefore chooses its own cost profile, and a Shot that omits `thinking` runs at Pi's own default, which the developer cannot see from the request. The thinking level is a cost control, not a cosmetic setting: it drives how many turns a Station takes, and turn count is what dominates a Station's token spend.
+
 ## Shared paths
 
 A Station is a fresh checkout, so gitignored dependency directories (`node_modules`, `vendor/bundle`, `.venv`) are absent from it, and installing them per Station would waste space and time. The Recipe's `share` list names Beans paths to symlink into every Station instead. Each path must be relative, free of `..`, outside `.git`, present in the Beans, and gitignored there; otherwise `brew` fails before it creates any state. The check also guarantees a shared path never collides with a tracked file.
@@ -235,6 +237,15 @@ Allowed transitions are `queued` → `running`, `failed`, or `cancelled`, and `r
 A Worker runs Pi with `--mode json --print --no-session`. It parses newline-delimited Pi events and sends only short normalized summaries (for example, a tool name or “drafting response”) over the Brew's Unix-domain stream socket. Each newline-delimited event is bounded and includes a timestamp. The Worker does not send prompts, tool arguments, tool output, or response deltas; send and receive failures do not fail a successful Pi run. The Worker still extracts the final assistant text for the report.
 
 The supervisor stamps received events and atomically saves the latest activity under `workers/<shot>.activity.json`. `workers/<shot>.started_at` records the Worker start time. A `status` snapshot shows running time and the age/description of the last activity on the same line as the Shot. Activity older than 12 minutes is marked quiet; this is not a timeout. A missing socket or activity record only removes progress detail. Worker process identity remains the authority for liveness and completion.
+
+### Station usage
+
+A Station reports what it cost. Once Pi has settled, the Station asks it for `get_session_stats` and records one `usage` report carrying the model, the thinking level, `input`, `output`, `cacheRead`, `cacheWrite`, `total`, and `cost`.
+
+- **Source.** `get_session_stats` is Pi's own accounting for the whole session, so Coffee Shop never estimates tokens from message text. This is the evidence for the v0.3 gate that recorded tokens match the provider.
+- **Cost may be unavailable.** Pi reports `0` for a model its catalog cannot price. Tokens are always recorded; `cost` is recorded only when Pi reports a non-zero value, and is otherwise reported as unavailable with that reason, never as free.
+- **Advisory only.** Usage is evidence for the developer. A missing, unreadable, or failed stats response removes the numbers and never fails a Station, exactly as activity reporting does.
+- **Why it is recorded.** Cost is dominated by turn count rather than prompt size, and `cacheRead` dominates the token total, because every turn re-reads the conversation so far. Per-Station usage is what makes a Station that is thrashing visible while it is still running, instead of only in the provider's billing page afterwards.
 
 ## Cancellation and recovery
 

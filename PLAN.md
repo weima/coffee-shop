@@ -421,8 +421,12 @@ After the interactive workflow is verified, Coffee Shop may act as a human manag
 
 ### 3. Account for tokens and cost
 
-- Confirm which usage fields Pi 1.1.0 reports in its RPC events before relying on them.
-- Record per Station: model, input, output and cache tokens, and estimated cost. Keep these in the Register and Receipt, and show running totals in `status`.
+**Confirmed (2026-10-11).** Pi's RPC exposes `{"type":"get_session_stats"}`, which returns `tokens` (`input`, `output`, `cacheRead`, `cacheWrite`, `total`), `cost`, `contextUsage`, and message and tool counts. `tokens` and `cost` cover the whole session: assistant messages, usage reported by tools, and compaction or branch-summary generation. This answers the open question about which fields to rely on; no per-event parsing is needed.
+
+**Observed (2026-10-11, the Oreo v0.1 dogfood runs).** Cost is driven by turn count, not prompt size. Across four Stations, 95% of 18.0M tokens were `cacheRead`: the same context re-read on every turn. The `pool` Station alone spent 96 requests and $0.127 on roughly 700 lines, because it kept iterating on one failing assertion. One Station cost more than the other three combined purely through turn count.
+
+- Record per Station: model, thinking level, input, output and cache tokens, and cost. Keep these in the Register and Receipt, and show running totals in `status`. Record tokens always; record `cost` when Pi reports a non-zero value and say it is unavailable when it does not, because Pi reports `0` for a model its catalog cannot price.
+- Carry the thinking level on the host dispatch path, not only the one-shot Recipe path. The host accepts `shot.model` but has no `shot.thinking`, so every dispatched Station runs at Pi's default (which is `high` on this machine) and its cost cannot be chosen. The one-shot path already validates `thinking` and passes `--thinking`; the host path is the gap.
 - Optional budget, in tokens or estimated cost. Coffee Shop launches no new Station once it is reached. Whether running Stations finish or are cancelled is an open question.
 - **Gate.** For a real Station, the recorded tokens match the provider's usage for the same run, within a stated tolerance.
 

@@ -261,6 +261,7 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 	ids := make([dynamic]string, context.temp_allocator)
 	prompts := make([dynamic]string, context.temp_allocator)
 	models := make([dynamic]string, context.temp_allocator)
+	thinkings := make([dynamic]string, context.temp_allocator)
 	kinds := make([dynamic]string, context.temp_allocator)
 	tastes := make([dynamic]string, context.temp_allocator)
 	messages := make([dynamic]string, context.temp_allocator)
@@ -287,6 +288,15 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 				return
 			}
 		}
+		thinking := ""
+		if thinking_value, thinking_found := shot["thinking"]; thinking_found {
+			thinking_ok := false
+			thinking, thinking_ok = thinking_value.(json.String)
+			if !thinking_ok || !valid_thinking(thinking) {
+				host_emit(Host_Event{type = "error", request_id = request_id, shot_id = id, reason = "shot thinking must be off, minimal, low, medium, high, xhigh, or max"})
+				return
+			}
+		}
 		kind := SHOT_KIND_EXECUTE
 		if kind_value, kind_found := shot["kind"]; kind_found {
 			kind_ok := false
@@ -305,13 +315,14 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 		append(&ids, id)
 		append(&prompts, prompt)
 		append(&models, model)
+		append(&thinkings, thinking)
 		append(&kinds, kind)
 		append(&tastes, taste)
 		append(&messages, message)
 	}
 
 	host_emit(Host_Event{type = "dispatch_accepted", request_id = request_id})
-	host_start_sessions(repo, request_id, ids[:], prompts[:], models[:], kinds[:], tastes[:], messages[:])
+	host_start_sessions(repo, request_id, ids[:], prompts[:], models[:], thinkings[:], kinds[:], tastes[:], messages[:])
 }
 
 // A Shot with a taste is a Pull: it needs a commit message, and only an execute Shot
@@ -355,7 +366,7 @@ valid_commit_message :: proc(message: string) -> bool {
 }
 
 // shortcut: Shot tabs are not closed when a Shot finishes, so a repository's workspace keeps every tab; close each tab when its Shot ends, once Shots report completion through the host.
-host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, kinds, tastes, messages: []string) {
+host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, thinkings, kinds, tastes, messages: []string) {
 	state_root, state_err := default_state_root(context.temp_allocator)
 	if state_err != "" {
 		for id in ids {
@@ -398,7 +409,7 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, kind
 			continue
 		}
 
-		command := host_station_command(host_station_executable, host_report_socket, host_extension_path, id, request_id, prompt_path, models[i], kinds[i], tastes[i], messages[i])
+		command := host_station_command(host_station_executable, host_report_socket, host_extension_path, id, request_id, prompt_path, models[i], thinkings[i], kinds[i], tastes[i], messages[i])
 		if run_err := herdr_run_worker(herdr, pane_id, command); run_err != "" {
 			host_session_failed(request_id, id, fmt.tprintf("could not start the Station: %s", run_err))
 			continue
@@ -485,10 +496,11 @@ host_reply :: proc(root: json.Object, request_id: string) {
 }
 
 // The Station runs in the Herdr pane and launches the agent. Paths and the
-// optional model are quoted; the IDs are already restricted to safe characters.
+// optional model and thinking level are quoted; the IDs are already restricted
+// to safe characters.
 // A research Shot gets read-only tools; the Station then checks that it changed nothing.
 // A Pull passes its taste and message to the Station, which commits only if the taste passes.
-host_station_command :: proc(executable, report, extension, shot_id, request_id, prompt_file, model, kind, taste, message: string) -> string {
+host_station_command :: proc(executable, report, extension, shot_id, request_id, prompt_file, model, thinking, kind, taste, message: string) -> string {
 	quoted_executable := shell_quote(executable)
 	defer delete(quoted_executable)
 	quoted_report := shell_quote(report)
@@ -503,6 +515,12 @@ host_station_command :: proc(executable, report, extension, shot_id, request_id,
 		defer delete(quoted_model)
 		model_argument = fmt.tprintf(" --model %s", quoted_model)
 	}
+	thinking_argument := ""
+	if thinking != "" {
+		quoted_thinking := shell_quote(thinking)
+		defer delete(quoted_thinking)
+		thinking_argument = fmt.tprintf(" --thinking %s", quoted_thinking)
+	}
 	tools_argument := ""
 	if kind == SHOT_KIND_RESEARCH {
 		tools_argument = " --tools read,grep,find,ls"
@@ -515,7 +533,7 @@ host_station_command :: proc(executable, report, extension, shot_id, request_id,
 		defer delete(quoted_message)
 		taste_argument = fmt.tprintf(" --taste %s --message %s", quoted_taste, quoted_message)
 	}
-	return fmt.tprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- pi --mode rpc%s%s -e %s", quoted_executable, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, tools_argument, model_argument, quoted_extension)
+	return fmt.tprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- pi --mode rpc%s%s%s -e %s", quoted_executable, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, tools_argument, model_argument, thinking_argument, quoted_extension)
 }
 
 // A Blend request is validated in full before any Git call. Its repository and

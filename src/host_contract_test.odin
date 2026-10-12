@@ -425,3 +425,43 @@ test_host_warns_and_starts_shot_when_workspace_id_cannot_be_saved :: proc(t: ^te
 	testing.expect(t, !strings.contains(run.out, "session_failed"), run.out)
 	testing.expect(t, strings.contains(run.calls, "tab rename t0 Shot shot-f"), run.calls)
 }
+
+// A Shot's thinking level reaches the pi command as a quoted argument next to --model.
+// The host passes it through verbatim; Pi interprets the level.
+@(test)
+test_foreground_host_passes_shot_thinking_level_to_station :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-thinking-*", `{"type":"dispatch","request_id":"order-h1","repo":"@REPO@","recipe":{"order":"thinking order","shots":[{"id":"shot-h","prompt":"make the change","model":"github-copilot/claude-haiku-5.5","thinking":"low"}]}}
+{"type":"shutdown","request_id":"shutdown-1"}
+`)
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-h1","shot_id":"shot-h"`), run.out)
+	testing.expect(t, strings.contains(run.calls, "--model 'github-copilot/claude-haiku-5.5' --thinking 'low' -e"), run.calls)
+}
+
+// A Shot without a thinking level must leave the flag out entirely, so Pi's own
+// default still applies.
+@(test)
+test_foreground_host_omits_thinking_for_shot_without_thinking :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-no-thinking-*", `{"type":"dispatch","request_id":"order-h2","repo":"@REPO@","recipe":{"order":"plain order","shots":[{"id":"shot-p","prompt":"make the change"}]}}
+{"type":"shutdown","request_id":"shutdown-1"}
+`)
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-h2","shot_id":"shot-p"`), run.out)
+	testing.expect(t, strings.contains(run.calls, "--station shot-p") && strings.contains(run.calls, "-- pi --mode rpc -e"), run.calls)
+	testing.expect(t, !strings.contains(run.calls, "--thinking"), run.calls)
+}
+
+// An invalid thinking level rejects the whole dispatch before any worktree or
+// Herdr call, the same way a bad model does.
+@(test)
+test_foreground_host_rejects_invalid_thinking_level :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-bad-thinking-*", `{"type":"dispatch","request_id":"order-h3","repo":"@REPO@","recipe":{"order":"bad thinking","shots":[{"id":"shot-x","prompt":"make the change","thinking":"sometimes"}]}}
+{"type":"shutdown","request_id":"shutdown-1"}
+`)
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.out, `{"type":"error","request_id":"order-h3","shot_id":"shot-x","reason":"shot thinking must be off, minimal, low, medium, high, xhigh, or max"}`), run.out)
+	testing.expect(t, !strings.contains(run.out, `{"type":"dispatch_accepted","request_id":"order-h3"}`), run.out)
+	testing.expect(t, !strings.contains(run.out, `"type":"session_started","request_id":"order-h3"`), run.out)
+	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-h3/stations/shot-x", run.state)), "invalid thinking must not create a worktree")
+	testing.expect(t, !strings.contains(run.calls, "shot-x"), "invalid thinking must not call Herdr")
+}
