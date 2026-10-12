@@ -2,6 +2,7 @@ package oreo
 
 import "core:fmt"
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 import "core:time"
@@ -25,6 +26,27 @@ script_run_test_result_destroy :: proc(result: ^Script_Run_Result) {
 	delete(result.output)
 	delete(result.full_output_path)
 	result^ = Script_Run_Result{}
+}
+
+// A generated script that imports "oreo:script" needs the compiler to resolve
+// it, so the test passes the same collection mapping this test binary was built
+// with. #file keeps that mapping run-relative: the compiler runs with the work
+// directory as its working directory, where a relative collection would miss.
+@(private)
+script_run_test_collection :: proc() -> string {
+	return fmt.aprintf("-collection:oreo=%s", filepath.dir(#file))
+}
+
+@(private)
+script_run_test_socket_path :: proc(dir: string) -> string {
+	return fmt.aprintf("%s/%s", dir, SCRIPT_RUN_SOCKET_NAME)
+}
+
+@(private)
+script_run_test_expect_no_socket :: proc(t: ^testing.T, dir: string) {
+	socket_path := script_run_test_socket_path(dir)
+	defer delete(socket_path)
+	testing.expectf(t, !os.exists(socket_path), "the script socket %q survived the run", socket_path)
 }
 
 @(test)
@@ -117,6 +139,7 @@ main :: proc() {
 	testing.expect(t, !result.timed_out)
 	testing.expect(t, len(result.reason) > 0)
 	testing.expect(t, strings.contains(result.reason, "missing_symbol"))
+	script_run_test_expect_no_socket(t, dir)
 }
 
 @(test)
@@ -152,6 +175,7 @@ main :: proc() {
 	// report that instead, so only non-zero is asserted.
 	testing.expect(t, result.exit_code != 0)
 	testing.expect(t, strings.contains(result.output, "about to stop"))
+	script_run_test_expect_no_socket(t, dir)
 }
 
 @(test)
@@ -184,6 +208,213 @@ main :: proc() {
 	// Generous: the point is that the call returns at all, not that it returns
 	// at exactly the deadline.
 	testing.expectf(t, wall_ms < 20_000, "script_run took %d ms, expected a bounded kill", wall_ms)
+	script_run_test_expect_no_socket(t, dir)
+}
+
+@(test)
+test_script_run_script_reads_a_file_through_the_server :: proc(t: ^testing.T) {
+	dir := script_run_test_work_dir(t)
+	defer delete(dir)
+	defer os.remove_all(dir)
+
+	note_path := fmt.aprintf("%s/note.txt", dir)
+	defer delete(note_path)
+	testing.expect(t, os.write_entire_file_from_string(note_path, "alpha\nbeta\n") == nil)
+
+	collection := script_run_test_collection()
+	defer delete(collection)
+
+	// A generated script is Odin source full of braces, so it is assembled by
+	// concatenation: fmt would read those braces as its own directives.
+	source := strings.concatenate(
+		{
+			`
+package main
+
+import "core:fmt"
+import "oreo:script"
+
+main :: proc() {
+	content, err := script.read("`,
+			note_path,
+			`")
+	defer delete(content)
+	defer script.error_destroy(&err)
+	if err.message != "" {
+		fmt.eprintln(err.message)
+	}
+	fmt.println(content)
+}
+`,
+		},
+	)
+	defer delete(source)
+
+	result := script_run(
+		Script_Run_Config {
+			source             = source,
+			work_dir           = dir,
+			extra_compile_args = []string{collection},
+		},
+	)
+	defer script_run_test_result_destroy(&result)
+
+	testing.expect(t, result.ok)
+	testing.expect_value(t, result.exit_code, 0)
+	testing.expect(t, !result.timed_out)
+	// tool_read numbers its lines, so reading the host's own answer back shows
+	// the script and the host actually talked, not that a constant was printed.
+	testing.expect(t, strings.contains(result.output, "1\talpha"))
+	testing.expect(t, strings.contains(result.output, "2\tbeta"))
+	script_run_test_expect_no_socket(t, dir)
+}
+
+@(test)
+test_script_run_script_calls_execute_through_the_server :: proc(t: ^testing.T) {
+	dir := script_run_test_work_dir(t)
+	defer delete(dir)
+	defer os.remove_all(dir)
+
+	collection := script_run_test_collection()
+	defer delete(collection)
+
+	source := strings.concatenate(
+		{
+			`
+package main
+
+import "core:fmt"
+import "oreo:script"
+
+main :: proc() {
+	output, code, err := script.execute("printf hello-from-execute", "`,
+			dir,
+			`")
+	defer delete(output)
+	defer script.error_destroy(&err)
+	if err.message != "" {
+		fmt.eprintln(err.message)
+	}
+	fmt.println(output)
+	fmt.printfln("code=%d", code)
+
+	ignored, second_code, second_err := script.execute("exit 7", "`,
+			dir,
+			`")
+	defer delete(ignored)
+	defer script.error_destroy(&second_err)
+	if second_err.message != "" {
+		fmt.eprintln(second_err.message)
+	}
+	fmt.printfln("second_code=%d", second_code)
+}
+`,
+		},
+	)
+	defer delete(source)
+
+	result := script_run(
+		Script_Run_Config {
+			source             = source,
+			work_dir           = dir,
+			extra_compile_args = []string{collection},
+		},
+	)
+	defer script_run_test_result_destroy(&result)
+
+	testing.expect(t, result.ok)
+	testing.expect(t, strings.contains(result.output, "hello-from-execute"))
+	testing.expect(t, strings.contains(result.output, "code=0"))
+	// A non-zero exit is a normal result the script inspects, not a failure.
+	testing.expect(t, strings.contains(result.output, "second_code=7"))
+	script_run_test_expect_no_socket(t, dir)
+}
+
+@(test)
+test_script_run_kills_a_script_that_connects_and_then_hangs :: proc(t: ^testing.T) {
+	dir := script_run_test_work_dir(t)
+	defer delete(dir)
+	defer os.remove_all(dir)
+
+	note_path := fmt.aprintf("%s/note.txt", dir)
+	defer delete(note_path)
+	testing.expect(t, os.write_entire_file_from_string(note_path, "hello\n") == nil)
+
+	collection := script_run_test_collection()
+	defer delete(collection)
+
+	source := strings.concatenate(
+		{
+			`
+package main
+
+import "oreo:script"
+
+main :: proc() {
+	// Connect and get one answer, then never return.
+	content, err := script.read("`,
+			note_path,
+			`")
+	defer delete(content)
+	defer script.error_destroy(&err)
+	for {
+	}
+}
+`,
+		},
+	)
+	defer delete(source)
+
+	start := time.tick_now()
+	result := script_run(
+		Script_Run_Config {
+			source             = source,
+			work_dir           = dir,
+			timeout_ms         = 1500,
+			extra_compile_args = []string{collection},
+		},
+	)
+	defer script_run_test_result_destroy(&result)
+	wall_ms := i64(time.tick_since(start)) / i64(time.Millisecond)
+
+	testing.expect(t, !result.ok)
+	testing.expect_value(t, result.timed_out, true)
+	testing.expectf(t, wall_ms < 20_000, "script_run took %d ms, expected a bounded kill", wall_ms)
+	script_run_test_expect_no_socket(t, dir)
+}
+
+@(test)
+test_script_run_does_not_wait_for_a_script_that_never_connects :: proc(t: ^testing.T) {
+	dir := script_run_test_work_dir(t)
+	defer delete(dir)
+	defer os.remove_all(dir)
+
+	start := time.tick_now()
+	result := script_run(
+		Script_Run_Config {
+			source = `
+package script
+
+import "core:fmt"
+
+main :: proc() {
+	fmt.println("no socket needed")
+}
+`,
+			work_dir   = dir,
+			timeout_ms = 60_000,
+		},
+	)
+	defer script_run_test_result_destroy(&result)
+	wall_ms := i64(time.tick_since(start)) / i64(time.Millisecond)
+
+	testing.expect(t, result.ok)
+	testing.expect_value(t, result.exit_code, 0)
+	testing.expect(t, !result.timed_out)
+	testing.expect(t, strings.contains(result.output, "no socket needed"))
+	// The listener must not hold the run open to its deadline.
+	testing.expectf(t, wall_ms < 20_000, "script_run took %d ms waiting for a connection", wall_ms)
+	script_run_test_expect_no_socket(t, dir)
 }
 
 @(test)
