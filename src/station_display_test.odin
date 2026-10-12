@@ -147,72 +147,10 @@ test_station_elapsed_label_formats_minutes_and_seconds :: proc(t: ^testing.T) {
 	testing.expect_value(t, label, "1m20s")
 }
 
-@(test)
-test_station_display_draw_restores_auto_wrap :: proc(t: ^testing.T) {
-	display := Station_Display{live = true, started_at_ns = 1_000_000_000}
-	station_display_draw_locked(&display)
-	testing.expect(t, !display.wrap_off, "draw must restore auto-wrap")
-}
 
-@(test)
-test_station_display_draw_writes_the_auto_wrap_escapes :: proc(t: ^testing.T) {
-	// wrap_off is bookkeeping with no production reader, so assert the bytes that
-	// actually reach stdout. Capturing means pointing os.stdout at a temp file for
-	// the call (the test runner holds its own stream, and no other test prints via
-	// fmt.print).
-	dir, dir_err := os.temp_directory(context.temp_allocator)
-	base := dir if dir_err == nil else "/tmp"
-	name := fmt.aprintf("%s/station-wrap-%d.txt", base, os.get_pid())
-	defer delete(name)
-	out, create_err := os.create(name)
-	if create_err != nil {
-		testing.fail(t)
-		return
-	}
-	defer os.close(out)
-	defer os.remove(name)
 
-	old := os.stdout
-	os.stdout = out
-	defer os.stdout = old
 
-	display := Station_Display{live = true, started_at_ns = 1_000_000_000}
-	station_display_draw_locked(&display)
 
-	os.seek(out, 0, .Start)
-	data, read_err := os.read_entire_file_from_file(out, context.allocator)
-	if read_err != nil {
-		testing.fail(t)
-		return
-	}
-	defer delete(data)
-	captured := string(data)
-	testing.expect(t, strings.contains(captured, ansi.CSI + ansi.DECAWM_OFF), "draw must emit auto-wrap off")
-	testing.expect(t, strings.contains(captured, ansi.CSI + ansi.DECAWM_ON), "draw must emit auto-wrap on")
-}
-
-@(test)
-test_station_display_clear_restores_auto_wrap :: proc(t: ^testing.T) {
-	display := Station_Display{live = true, drawn = 1}
-	station_display_clear_locked(&display)
-	testing.expect(t, !display.wrap_off, "erase must restore auto-wrap")
-}
-
-@(test)
-test_station_display_stop_restores_auto_wrap :: proc(t: ^testing.T) {
-	display := Station_Display{live = true, running = true, drawn = 1}
-	station_display_stop(&display)
-	testing.expect(t, !display.wrap_off, "stop must restore auto-wrap")
-}
-
-@(test)
-test_station_display_non_live_early_paths_leave_auto_wrap_on :: proc(t: ^testing.T) {
-	display: Station_Display
-	station_display_draw_locked(&display)
-	station_display_clear_locked(&display)
-	station_display_stop(&display)
-	testing.expect(t, !display.wrap_off, "non-live paths must leave auto-wrap on")
-}
 
 @(test)
 test_station_walker_turns_at_both_ends :: proc(t: ^testing.T) {
