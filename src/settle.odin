@@ -204,6 +204,7 @@ stop_worker_gracefully :: proc(identity: Process_Identity) {
 		if child := odin_run_child(identity.pid); child > 0 {
 			target = child
 		}
+		dev_cancel_escalate(identity.pid)
 	}
 	_ = posix.kill(posix.pid_t(target), .SIGTERM)
 }
