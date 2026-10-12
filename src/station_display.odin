@@ -13,12 +13,10 @@ STATION_FRAME_INTERVAL :: 150 * time.Millisecond
 STATION_STATUS_MAX :: 120
 STATION_TRACK :: 40 // columns the cat walks across
 STATION_SPRITE_WIDTH :: 13
-STATION_BLOCK_ROWS :: 5 // steam, ears, face with mug, legs, status
+STATION_BLOCK_ROWS :: 4 // ears, face with mug, legs, status
 
-// Each row is drawn in place, so the block never scrolls. Steam alternates between
-// two frames, so the coffee steams; the cat art is static and only turns around.
-STATION_STEAM_RIGHT := [2]string{"       ~ ~", "      ~ ~ "}
-STATION_STEAM_LEFT := [2]string{" ~ ~", "~ ~"}
+// Each row is drawn in place, so the block never scrolls; the cat art is static and
+// only turns around.
 
 // The supplied art, exactly as given, each line padded to STATION_SPRITE_WIDTH.
 STATION_CAT_RIGHT := [3]string{"     /\\_/\\   ", "  ___( o.o)  ", " /   >  ^  > "}
@@ -112,8 +110,8 @@ station_display_draw_locked :: proc(display: ^Station_Display) {
 	}
 	status := station_display_status_line(display, time.now()._nsec)
 	lines := station_block_lines(display.x, display.step, display.dir > 0, status)
-	// Steam is faint, the cat yellow, and the status label faint again.
-	styles := [STATION_BLOCK_ROWS]string{ansi.FAINT, ansi.FG_YELLOW, ansi.FG_YELLOW, ansi.FG_YELLOW, ansi.FAINT}
+	// The cat is yellow and the status label is faint.
+	styles := [STATION_BLOCK_ROWS]string{ansi.FG_YELLOW, ansi.FG_YELLOW, ansi.FG_YELLOW, ansi.FAINT}
 	for line, i in lines {
 		fmt.printf("\r\x1b[2K%s\n", station_style(styles[i], line))
 	}
@@ -142,17 +140,15 @@ station_block_lines :: proc(x, step: int, facing_right: bool, status: string) ->
 	}
 	lines: [STATION_BLOCK_ROWS]string
 	if facing_right {
-		lines[0] = fmt.tprintf("%s%s", pad, STATION_STEAM_RIGHT[(step / 2) % 2])
 		for line, i in STATION_CAT_RIGHT {
-			lines[1 + i] = fmt.tprintf("%s%s", pad, line)
+			lines[i] = fmt.tprintf("%s%s", pad, line)
 		}
 	} else {
-		lines[0] = fmt.tprintf("%s%s", pad, STATION_STEAM_LEFT[(step / 2) % 2])
 		for line, i in STATION_CAT_LEFT {
-			lines[1 + i] = fmt.tprintf("%s%s", pad, line)
+			lines[i] = fmt.tprintf("%s%s", pad, line)
 		}
 	}
-	lines[4] = text
+	lines[3] = text
 	return lines
 }
 

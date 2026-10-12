@@ -32,13 +32,13 @@ test_station_block_matches_the_supplied_cat_and_its_mirror :: proc(t: ^testing.T
 	left := station_block_lines(0, 0, false, "")
 	for line, i in want_right {
 		testing.expect_value(t, len(line), STATION_SPRITE_WIDTH)
-		testing.expect_value(t, right[i + 1], line)
+		testing.expect_value(t, right[i], line)
 		// The left-facing line must be the true mirror, so editing one side and
 		// forgetting the other fails here rather than shifting the cat.
-		testing.expect_value(t, left[i + 1], mirror_sprite_row(line))
-		testing.expect_value(t, len(right[i + 1]), STATION_SPRITE_WIDTH)
-		testing.expect_value(t, len(left[i + 1]), STATION_SPRITE_WIDTH)
-		testing.expect(t, right[i + 1] != left[i + 1], "directions should differ")
+		testing.expect_value(t, left[i], mirror_sprite_row(line))
+		testing.expect_value(t, len(right[i]), STATION_SPRITE_WIDTH)
+		testing.expect_value(t, len(left[i]), STATION_SPRITE_WIDTH)
+		testing.expect(t, right[i] != left[i], "directions should differ")
 	}
 }
 
@@ -46,25 +46,23 @@ test_station_block_matches_the_supplied_cat_and_its_mirror :: proc(t: ^testing.T
 test_station_block_indents_the_cat_and_keeps_the_status :: proc(t: ^testing.T) {
 	lines := station_block_lines(5, 0, true, "Running tool: read")
 	want_ears := "     /\\_/\\   " // the supplied ears row, padded to STATION_SPRITE_WIDTH
-	testing.expect_value(t, lines[1], fmt.tprintf("     %s", want_ears))
-	testing.expect_value(t, lines[4], "Running tool: read")
+	testing.expect_value(t, lines[0], fmt.tprintf("     %s", want_ears))
+	testing.expect_value(t, lines[3], "Running tool: read")
 }
 
 @(test)
-test_station_block_cat_is_static_while_steam_alternates :: proc(t: ^testing.T) {
+test_station_block_cat_is_static :: proc(t: ^testing.T) {
 	first := station_block_lines(0, 0, true, "")
 	next := station_block_lines(0, 1, true, "")
-	testing.expect_value(t, first[3], next[3])
 	testing.expect_value(t, first[2], next[2])
-	later := station_block_lines(0, 2, true, "")
-	testing.expect(t, first[0] != later[0], "steam should change every two frames")
+	testing.expect_value(t, first[1], next[1])
 }
 
 @(test)
 test_station_block_truncates_long_status :: proc(t: ^testing.T) {
 	long := strings.repeat("x", STATION_STATUS_MAX + 20, context.temp_allocator)
 	lines := station_block_lines(0, 0, true, long)
-	testing.expect_value(t, len(lines[4]), STATION_STATUS_MAX)
+	testing.expect_value(t, len(lines[3]), STATION_STATUS_MAX)
 }
 
 @(test)
