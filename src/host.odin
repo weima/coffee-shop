@@ -750,7 +750,11 @@ host_station_command :: proc(executable, report, extension, shot_id, request_id,
 	}
 	tools_argument := ""
 	if kind == SHOT_KIND_RESEARCH {
+		// A research Shot must not write or run shell commands, and codemode runs
+		// scripts, so it stays off the read-only allowlist.
 		tools_argument = " --tools read,grep,find,ls"
+	} else if kind == SHOT_KIND_EXECUTE {
+		tools_argument = " --tools +codemode"
 	}
 	taste_argument := ""
 	if taste != "" {
