@@ -99,6 +99,25 @@ test_status_never_renders_an_unavailable_cost_as_zero :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_status_renders_a_known_zero_cost_when_another_cost_is_unknown :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	register := make_test_register(t)
+	defer destroy_struct(&register)
+	brew_dir := fmt.tprintf("%s/brew-test", root)
+	_ = create_state(brew_dir, &register)
+	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_RUNNING, "Worker started")
+	_ = transition_shot(brew_dir, &register, "shot-b", SHOT_RUNNING, "Worker started")
+	_ = apply_station_report(brew_dir, &register, "shot-a", "usage", "input=1 output=0 cacheRead=0 cacheWrite=0 total=1 cost=0.0")
+	_ = apply_station_report(brew_dir, &register, "shot-b", "usage", "input=1 output=1 cacheRead=0 cacheWrite=0 total=2 cost=unavailable")
+
+	output, err := render_status(root, "brew-test")
+	defer delete(output)
+	testing.expect_value(t, err, "")
+	testing.expect(t, strings.contains(output, "Usage: tokens=3 cost=0.0000 (1 unavailable)"), output)
+}
+
+@(test)
 test_status_shows_a_terminal_outcome_without_opening_the_tray :: proc(t: ^testing.T) {
 	root := make_fixture_root(t)
 	defer remove_fixture_root(root)

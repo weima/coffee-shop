@@ -352,6 +352,56 @@ test_station_usage_cost_stays_unavailable_when_pi_cannot_price :: proc(t: ^testi
 }
 
 @(test)
+test_malformed_station_usage_report_has_a_diagnostic_reason :: proc(t: ^testing.T) {
+	_, ok, reason := usage_from_report("usage", "input=10 output=5 cacheRead=2 cacheWrite=1 cost=broken")
+	testing.expect(t, !ok)
+	testing.expect(t, reason != "", "malformed usage must explain why it was rejected")
+}
+
+@(test)
+test_taste_passed_station_report_records_an_outcome :: proc(t: ^testing.T) {
+	directory := make_test_state_directory(t)
+	defer remove_test_state_directory(directory)
+
+	register := make_test_register(t)
+	defer destroy_struct(&register)
+	_ = create_state(directory, &register)
+	_ = transition_shot(directory, &register, "shot-a", SHOT_RUNNING, "Worker started")
+
+	err := apply_station_report(directory, &register, "shot-a", "taste_passed", "no changes")
+	testing.expect_value(t, err.kind, State_Error_Kind.None)
+	testing.expect_value(t, register.shots[0].outcome, "taste passed: no changes")
+}
+
+@(test)
+test_station_report_metadata_survives_a_later_metadata_save :: proc(t: ^testing.T) {
+	directory := make_test_state_directory(t)
+	defer remove_test_state_directory(directory)
+
+	register := make_test_register(t)
+	defer destroy_struct(&register)
+	_ = create_state(directory, &register)
+	_ = transition_shot(directory, &register, "shot-a", SHOT_RUNNING, "Worker started")
+
+	fresh := make_test_register(t)
+	defer destroy_struct(&fresh)
+	delete(fresh.shots[0].status)
+	fresh.shots[0].status = strings.clone(SHOT_RUNNING)
+	fresh.event_sequence = register.event_sequence
+	_ = apply_station_report(directory, &fresh, "shot-a", "usage", "input=10 output=5 cacheRead=2 cacheWrite=1 total=18 cost=0.0123")
+	_ = apply_station_report(directory, &fresh, "shot-a", "taste_passed", "no changes")
+
+	register_sync(&register, fresh)
+	testing.expect_value(t, save_register_metadata(directory, register).kind, State_Error_Kind.None)
+
+	reloaded, read_err := read_state(directory)
+	defer destroy_struct(&reloaded)
+	testing.expect_value(t, read_err.kind, State_Error_Kind.None)
+	testing.expect_value(t, reloaded.shots[0].usage.total, i64(18))
+	testing.expect_value(t, reloaded.shots[0].outcome, "taste passed: no changes")
+}
+
+@(test)
 test_a_station_report_never_completes_a_shot :: proc(t: ^testing.T) {
 	directory := make_test_state_directory(t)
 	defer remove_test_state_directory(directory)
