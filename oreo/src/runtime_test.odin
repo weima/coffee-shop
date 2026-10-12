@@ -585,10 +585,11 @@ test_runtime_tools_reject_bad_names_and_arguments :: proc(t: ^testing.T) {
 	}
 
 	tools := runtime_default_tools()
-	testing.expect_value(t, len(tools.specs), 3)
+	testing.expect_value(t, len(tools.specs), 4)
 	testing.expect_value(t, tools.specs[0].name, "read")
 	testing.expect_value(t, tools.specs[1].name, "write")
 	testing.expect_value(t, tools.specs[2].name, "execute")
+	testing.expect_value(t, tools.specs[3].name, CODEMODE_TOOL_NAME)
 
 	bad_calls := []struct {
 		name:      string,

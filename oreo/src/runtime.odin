@@ -231,11 +231,11 @@ runtime_retain :: proc(output: string) {
 	_, _ = append(&runtime_retained, output)
 }
 
-// The default tool set: the read, write, and execute specs plus one invoke that
-// dispatches on the tool name. A bad name or bad arguments become a failed
-// outcome with an explanation; they never crash the harness.
+// The default tool set: the read, write, execute, and codemode specs plus one
+// invoke that dispatches on the tool name. A bad name or bad arguments become a
+// failed outcome with an explanation; they never crash the harness.
 @(private)
-RUNTIME_TOOL_SPECS := [3]Tool_Spec{
+RUNTIME_TOOL_SPECS := [4]Tool_Spec{
 	{
 		name = "read",
 		description = "Read a text file, optionally limited to a window of lines.",
@@ -251,10 +251,11 @@ RUNTIME_TOOL_SPECS := [3]Tool_Spec{
 		description = "Run a shell command and return its merged standard output and error.",
 		parameters_json = `{"type":"object","properties":{"command":{"type":"string"},"working_directory":{"type":"string"}},"required":["command"]}`,
 	},
+	CODEMODE_TOOL_SPEC,
 }
 
 runtime_default_tools :: proc() -> Tool_Set {
-	return Tool_Set{specs = RUNTIME_TOOL_SPECS[:], invoke = runtime_invoke}
+	return Tool_Set{specs = RUNTIME_TOOL_SPECS[:], invoke = runtime_invoke_with_codemode}
 }
 
 @(private)
