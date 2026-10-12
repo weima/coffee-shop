@@ -12,15 +12,19 @@ import "core:time"
 STATION_FRAME_INTERVAL :: 150 * time.Millisecond
 STATION_STATUS_MAX :: 120
 STATION_TRACK :: 40 // columns the cat walks across
-STATION_SPRITE_WIDTH :: 11
+STATION_SPRITE_WIDTH :: 13
 STATION_BLOCK_ROWS :: 5 // steam, ears, face with mug, legs, status
 
-// Each row is drawn in place, so the block never scrolls. Steam and legs alternate
-// between two frames, so the cat appears to walk and the coffee to steam.
+// Each row is drawn in place, so the block never scrolls. Steam alternates between
+// two frames, so the coffee steams; the cat art is static and only turns around.
 STATION_STEAM_RIGHT := [2]string{"       ~ ~", "      ~ ~ "}
 STATION_STEAM_LEFT := [2]string{" ~ ~", "~ ~"}
-STATION_LEGS_RIGHT := [2]string{" /    \\", " \\    /"}
-STATION_LEGS_LEFT := [2]string{"    /   \\", "    \\   /"}
+
+// The supplied art, exactly as given, each line padded to STATION_SPRITE_WIDTH.
+STATION_CAT_RIGHT := [3]string{"     /\\_/\\   ", "  ___( o.o)  ", " /   >  ^  > "}
+// Each supplied line reversed with / and \, ( and ), and < and > swapped, then
+// padded the same way.
+STATION_CAT_LEFT := [3]string{" /\\_/\\       ", " (o.o )___   ", " <  ^  <   \\ "}
 
 // One block of lines at the bottom of the pane, animated while the agent works.
 // Permanent lines (replies, questions, the final text) print above it. When stdout
@@ -138,14 +142,14 @@ station_block_lines :: proc(x, step: int, facing_right: bool, status: string) ->
 	lines: [STATION_BLOCK_ROWS]string
 	if facing_right {
 		lines[0] = fmt.tprintf("%s%s", pad, STATION_STEAM_RIGHT[(step / 2) % 2])
-		lines[1] = fmt.tprintf("%s /\\_/\\", pad)
-		lines[2] = fmt.tprintf("%s( o.o )[_]", pad)
-		lines[3] = fmt.tprintf("%s%s", pad, STATION_LEGS_RIGHT[step % 2])
+		for line, i in STATION_CAT_RIGHT {
+			lines[1 + i] = fmt.tprintf("%s%s", pad, line)
+		}
 	} else {
 		lines[0] = fmt.tprintf("%s%s", pad, STATION_STEAM_LEFT[(step / 2) % 2])
-		lines[1] = fmt.tprintf("%s     /\\_/\\", pad)
-		lines[2] = fmt.tprintf("%s[_] ( o.o )", pad)
-		lines[3] = fmt.tprintf("%s%s", pad, STATION_LEGS_LEFT[step % 2])
+		for line, i in STATION_CAT_LEFT {
+			lines[1 + i] = fmt.tprintf("%s%s", pad, line)
+		}
 	}
 	lines[4] = text
 	return lines

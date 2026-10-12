@@ -5,23 +5,38 @@ import "core:strings"
 import "core:testing"
 
 @(test)
-test_station_block_walks_with_the_mug_on_the_facing_side :: proc(t: ^testing.T) {
-	right := station_block_lines(5, 0, true, "Running tool: read")
-	testing.expect(t, strings.has_prefix(right[2], "     ( o.o )[_]"), right[2])
-	testing.expect(t, strings.has_prefix(right[1], "      /\\_/\\"), right[1])
-	testing.expect_value(t, right[4], "Running tool: read")
-
-	left := station_block_lines(5, 0, false, "Waiting for your reply")
-	testing.expect(t, strings.has_prefix(left[2], "     [_] ( o.o )"), left[2])
-	testing.expect_value(t, left[4], "Waiting for your reply")
+test_station_block_matches_the_supplied_cat_and_its_mirror :: proc(t: ^testing.T) {
+	// The supplied art, byte for byte, padded to STATION_SPRITE_WIDTH.
+	want_right := [3]string{"     /\\_/\\   ", "  ___( o.o)  ", " /   >  ^  > "}
+	// Mirrored: each line reversed, with / and \, ( and ), and < and > swapped.
+	want_left := [3]string{" /\\_/\\       ", " (o.o )___   ", " <  ^  <   \\ "}
+	right := station_block_lines(0, 0, true, "")
+	left := station_block_lines(0, 0, false, "")
+	for line, i in want_right {
+		testing.expect_value(t, len(line), STATION_SPRITE_WIDTH)
+		testing.expect_value(t, len(want_left[i]), STATION_SPRITE_WIDTH)
+		testing.expect_value(t, right[i + 1], line)
+		testing.expect_value(t, left[i + 1], want_left[i])
+		testing.expect_value(t, len(right[i + 1]), STATION_SPRITE_WIDTH)
+		testing.expect_value(t, len(left[i + 1]), STATION_SPRITE_WIDTH)
+		testing.expect(t, right[i + 1] != left[i + 1], "directions should differ")
+	}
 }
 
 @(test)
-test_station_block_legs_and_steam_alternate :: proc(t: ^testing.T) {
+test_station_block_indents_the_cat_and_keeps_the_status :: proc(t: ^testing.T) {
+	lines := station_block_lines(5, 0, true, "Running tool: read")
+	want_ears := "     /\\_/\\   " // the supplied ears row, padded to STATION_SPRITE_WIDTH
+	testing.expect_value(t, lines[1], fmt.tprintf("     %s", want_ears))
+	testing.expect_value(t, lines[4], "Running tool: read")
+}
+
+@(test)
+test_station_block_cat_is_static_while_steam_alternates :: proc(t: ^testing.T) {
 	first := station_block_lines(0, 0, true, "")
 	next := station_block_lines(0, 1, true, "")
-	testing.expect(t, first[3] != next[3], "legs should change every frame")
-	testing.expect(t, first[2] == next[2], "the face and mug stay put")
+	testing.expect_value(t, first[3], next[3])
+	testing.expect_value(t, first[2], next[2])
 	later := station_block_lines(0, 2, true, "")
 	testing.expect(t, first[0] != later[0], "steam should change every two frames")
 }
