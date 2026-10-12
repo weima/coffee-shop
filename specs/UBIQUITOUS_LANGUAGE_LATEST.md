@@ -138,5 +138,5 @@ Candidate words for future product vocabulary. These are a naming palette, not a
 - **Taste-Driven Development** is a Worker skill name, not a new lifecycle component; test-authoring remains ordinary Shot work.
 - **Taste** is a Pull's own check before its commit. **Filter** is the independent review after a Shot. Do not treat one as the other.
 - **Cupping** must not write anywhere, not even a cache. A Cupping Shot that changes its Station is `incomplete`.
-- **Blend** is proposed and not implemented. Until it ships, Shot changes stay in their Stations and must be integrated by hand. Blend integrates one Brew only, and it is not a merge or a publish.
+- **Blend** is implemented. It combines the commits of one Brew's Pulls into one reviewed commit, and is never needed for a single Pull. Blend integrates one Brew only, and it is not a merge or a publish.
 - Coffee and snack terms are product vocabulary, not a reason to rename common engineering concepts in code or logs when that would reduce clarity.

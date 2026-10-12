@@ -7,10 +7,10 @@ The target is an interactive, foreground control loop around the user's main-age
 ![Target Coffee Shop interactive workflow](diagrams/interactive-workflow.png)<br>
 Source: [`diagrams/interactive-workflow.html`](diagrams/interactive-workflow.html).
 
-The active main-agent session receives raw user input. The foreground Coffee Shop host waits for structured dispatch and control requests from the Barista; it does not parse natural language and is not a detached daemon. The initial target worker session is interactive Pi: it can receive follow-up instructions and return `needs_input` or `completed` events to the main agent. Oreo may be evaluated for either agent role only after the Pi-based flow is usable and Oreo is stable; Rachel is outside the runtime. The exact local transport is not fixed. This target loop is **not implemented yet**.
+The active main-agent session receives raw user input. The foreground Coffee Shop host waits for structured dispatch and control requests from the Barista; it does not parse natural language and is not a detached daemon. The initial target worker session is interactive Pi: it can receive follow-up instructions and return `needs_input` or `completed` events to the main agent. Oreo may be evaluated for either agent role only after the Pi-based flow is usable and Oreo is stable; Rachel is outside the runtime. The exact local transport is not fixed. This loop is **implemented**: the foreground host, interactive Stations, the activity-socket relay and `needs_input` routing all exist. The one-shot `brew` CLI remains as the compatibility foundation, and `PLAN.md` records what shipped (v0.3) and what is still live (v0.4).
 
 ## Current one-shot architecture diagram
-The diagram below documents the implemented `brew` pipeline, not the target interactive loop.
+The diagram below documents the `brew` pipeline; the interactive host and its Stations are described under *Current implementation internals*.
 
 ```mermaid
 flowchart TD
@@ -145,7 +145,7 @@ stateDiagram-v2
 
 ### Current one-shot Shot states
 
-These Register states describe the implemented one-shot `brew` path. Interactive worker-session pause/input states belong to the target session lifecycle and are not represented here.
+These Register states describe the one-shot `brew` path. The interactive path has its own Station lifecycle, including a pause/input state, described under *Current implementation internals*.
 
 ```mermaid
 stateDiagram-v2
@@ -165,15 +165,15 @@ stateDiagram-v2
 | Component | Responsibility |
 | --- | --- |
 | **Barista** | The long-lived, user-facing main-agent session. Pi is first; Oreo may take this role later when stable. It receives Orders, owns task decomposition, and relays worker events and human replies. |
-| **Coffee Shop host** | Target: a foreground Odin control process started by the Barista. It launches sessions and relays events; it does not interpret natural language. The current CLI is one-shot. |
+| **Coffee Shop host** | Implemented: a foreground Odin control process started by the Barista. It reads one JSON request per line, launches Stations and relays their reports; it does not interpret natural language. The legacy CLI is one-shot. |
 | **Coffee Shop CLI** | Current commands validate inputs, create Stations, start Workers in Herdr, record state, and collect results. |
 | **Beans** | The target repository and task context supplied to workers. |
 | **Recipe** | An Order and its explicit list of Shots. The Barista owns task decomposition. |
 | **Shot** | One unit of work with one prompt and one Worker. |
 | **Station** | A Git worktree isolated to one Shot. |
-| **Worker** | Target: an interactive Pi session in Herdr. Current behavior is one non-interactive Pi JSON/print process per Shot. Oreo is a later optional alternative, not a prerequisite. |
+| **Worker** | Implemented: an interactive Pi session in a Herdr pane, driven by a Station. The one-shot path uses a non-interactive Pi JSON/print process per Shot. Oreo is a later optional alternative, not a prerequisite. |
 | **Activity channel** | Current per-Brew Unix-domain socket for best-effort progress summaries. It does not deliver `needs_input` or completion to the main Pi and does not establish liveness. |
-| **Session bridge** | Target local channel for structured dispatch, `needs_input`, completion, and human replies. Its transport and exact message contract remain to be selected. |
+| **Session bridge** | Implemented: the activity socket carries Station reports (`turn_done`, usage, outcome) to the host, and lines typed into a Station's pane are forwarded to its agent as replies. |
 | **Register** | Durable current status for each Brew and Shot. |
 | **Receipt** | Append-only events that explain status changes. |
 | **Server** | Current per-repository state server. It starts on demand, holds the Register in memory, and is the only writer of Brew state. It exits when the repository has no active Brew; it is distinct from the target foreground Coffee Shop host. See the Server section below. |

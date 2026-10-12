@@ -1,6 +1,6 @@
 # Oreo bridge
 
-**Status:** decided 2026-10-11. Not implemented yet. This is the spec for the TypeScript extension and the Odin side it talks to.
+**Status:** decided 2026-10-11, and implemented: the Odin transport sends model requests over the socket, and the pi extension bridges them to the model layer. The event and error shapes are the ones below; the spec is retained as the contract.
 
 The bridge is the one part of Oreo that cannot be tested offline: it is the seam between the Odin host and pi's model layer. This document fixes the contract so the two sides are written against a spec instead of being discovered twice.
 
