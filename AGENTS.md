@@ -20,6 +20,13 @@
 - Configure Worktrunk's user `worktree-path` as `~/.wt/{{ remote_repo | sanitize }}/{{ branch | sanitize }}` and use it. Never create worktrees as siblings under the repository's work directory.
 - Keep branch names slash-free (for example, `feat-oreo-sqlite-binding`); use hyphens for hierarchy so each worktree occupies one branch-named directory.
 
+## Sessions run with codemode
+
+- Every Pi session — the Barista and every Station — runs with Pi's `codemode` tool enabled. Cost here is driven by turn count, not prompt size: `cacheRead` was 95% of 18.0M tokens across the v0.4 dogfood runs, so collapsing N tool-call turns into one script is the point.
+- It is enabled by `"defaultTools": ["+codemode"]` in the user settings (`~/.pi/agent/settings.json`), so it holds for every project. Do not remove it to "simplify" a run; if a run should not use it, say why in the report.
+- **A research (Cupping) Shot is the deliberate exception.** It must not be able to write files or run shell commands, so the host gives it a plain `--tools read,grep,find,ls` allowlist, which *replaces* the defaults. Never add `+codemode` to a research Shot: `codemode` runs scripts, so it would quietly hand that Shot write access and break the guarantee its tests assert.
+- The host also passes `+codemode` explicitly for execute Shots, so Stations do not depend on a user settings file being present.
+
 ## Development commands
 
 - Use `just` recipes for build, check, and test workflows. Do not add bespoke shell test-runner scripts when `just` can express the workflow.
