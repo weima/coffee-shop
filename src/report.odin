@@ -169,9 +169,30 @@ render_status :: proc(state_root, brew_id: string) -> (output: string, err: stri
 	fmt.sbprintfln(&builder, "Brew %s (%s): %s", register.brew_id, repository, brew_status(register))
 	running := 0
 	queued := 0
-	for shot in register.shots { if shot.status == SHOT_RUNNING { running += 1 }; if shot.status == SHOT_QUEUED { queued += 1 } }
+	total_tokens: i64
+	total_cost: f64
+	unavailable_costs := 0
+	any_usage := false
+	for shot in register.shots {
+		if shot.status == SHOT_RUNNING { running += 1 }
+		if shot.status == SHOT_QUEUED { queued += 1 }
+		if !shot.usage.recorded { continue }
+		any_usage = true
+		total_tokens += shot.usage.total
+		if shot.usage.cost_known { total_cost += shot.usage.cost } else { unavailable_costs += 1 }
+	}
 	fmt.sbprintfln(&builder, "Workers: %d of %d running, %d queued", running, workers_limit(register), queued)
 	if register.preamble_source != "" { fmt.sbprintfln(&builder, "Preamble: %s (%d bytes)", register.preamble_source, len(register.preamble)) }
+	// Whether a supervisor is watching is per Brew, so every in-flight Station is
+	// labelled with the same answer rather than left to be assumed working.
+	supervision := ""
+	if !all_terminal(register) {
+		switch supervisor_liveness(brew_dir) {
+		case .Alive: supervision = "supervised"
+		case .Gone: supervision = "no supervisor"
+		case .Unknown: supervision = "supervisor unknown"
+		}
+	}
 	now_ns := time.now()._nsec
 	for shot in register.shots {
 		suffix := ""
@@ -179,15 +200,39 @@ render_status :: proc(state_root, brew_id: string) -> (output: string, err: stri
 			suffix = " (cancel requested)"
 		}
 		if shot.status == SHOT_RUNNING && render_shot_activity(
-			&builder, brew_dir, shot.id, suffix, now_ns,
+			&builder, brew_dir, shot, suffix, supervision, now_ns,
 		) {
 			continue
 		}
 		reason := ""
-		if is_terminal(shot.status) && shot.status != SHOT_COMPLETED {
-			reason = detail_suffix(shot.detail)
+		if is_terminal(shot.status) {
+			// The outcome is shown without opening the Tray, so acting on a
+			// completion does not require polling it again.
+			outcome := shot.outcome
+			if outcome == "" { outcome = shot.detail }
+			reason = detail_suffix(outcome)
 		}
-		fmt.sbprintfln(&builder, "  %s  %s%s%s", shot.id, shot.status, suffix, reason)
+		fmt.sbprintf(&builder, "  %s  %s%s%s", shot.id, shot.status, suffix, reason)
+		if shot.status == SHOT_RUNNING {
+			append_shot_location(&builder, shot)
+			append_usage(&builder, shot.usage)
+			if supervision != "" { fmt.sbprintf(&builder, "  %s", supervision) }
+		} else {
+			append_usage(&builder, shot.usage)
+		}
+		fmt.sbprintln(&builder)
+	}
+	if any_usage {
+		fmt.sbprintf(&builder, "Usage: tokens=%d", total_tokens)
+		switch {
+		case unavailable_costs == 0:
+			fmt.sbprintf(&builder, " cost=%.4f", total_cost)
+		case total_cost == 0:
+			fmt.sbprint(&builder, " cost=unavailable")
+		case:
+			fmt.sbprintf(&builder, " cost=%.4f (%d unavailable)", total_cost, unavailable_costs)
+		}
+		fmt.sbprintln(&builder)
 	}
 	if !all_terminal(register) && supervisor_gone(brew_dir) {
 		fmt.sbprintln(&builder, "Supervisor is not running; `collect` or `cancel` will settle unfinished Shots.")
@@ -197,17 +242,19 @@ render_status :: proc(state_root, brew_id: string) -> (output: string, err: stri
 
 render_shot_activity :: proc(
 	builder: ^strings.Builder,
-	brew_dir, shot_id, suffix: string,
+	brew_dir: string,
+	shot: Register_Shot,
+	suffix, supervision: string,
 	now_ns: i64,
 ) -> bool {
-	started_at, has_started := read_worker_started_at(brew_dir, shot_id)
-	activity, has_activity := read_activity_record(brew_dir, shot_id)
+	started_at, has_started := read_worker_started_at(brew_dir, shot.id)
+	activity, has_activity := read_activity_record(brew_dir, shot.id)
 	defer destroy_struct(&activity)
 	if !has_started && !has_activity {
 		return false
 	}
 
-	fmt.sbprintf(builder, "  %s  %s%s", shot_id, SHOT_RUNNING, suffix)
+	fmt.sbprintf(builder, "  %s  %s%s", shot.id, SHOT_RUNNING, suffix)
 	if has_started {
 		elapsed := activity_duration_label(activity_age_seconds(now_ns, started_at))
 		fmt.sbprintf(builder, "  %s elapsed", elapsed)
@@ -224,8 +271,37 @@ render_shot_activity :: proc(
 	} else {
 		fmt.sbprint(builder, "  waiting for Pi activity")
 	}
+	append_shot_location(builder, shot)
+	append_usage(builder, shot.usage)
+	if supervision != "" { fmt.sbprintf(builder, "  %s", supervision) }
 	fmt.sbprintln(builder)
 	return true
+}
+
+// The Station's Herdr pane or tab, so a developer can find it.
+append_shot_location :: proc(builder: ^strings.Builder, shot: Register_Shot) {
+	if shot.herdr_tab_id == "" && shot.herdr_pane_id == "" {
+		return
+	}
+	fmt.sbprint(builder, "  ")
+	if shot.herdr_tab_id != "" { fmt.sbprintf(builder, "tab=%s", shot.herdr_tab_id) }
+	if shot.herdr_pane_id != "" {
+		if shot.herdr_tab_id != "" { fmt.sbprint(builder, " ") }
+		fmt.sbprintf(builder, "pane=%s", shot.herdr_pane_id)
+	}
+}
+
+// The Station's own tokens and cost. Cost is unavailable, never zero, when Pi
+// could not price the model.
+append_usage :: proc(builder: ^strings.Builder, usage: Station_Usage) {
+	if !usage.recorded {
+		return
+	}
+	if usage.cost_known {
+		fmt.sbprintf(builder, "  tokens=%d cost=%.4f", usage.total, usage.cost)
+	} else {
+		fmt.sbprintf(builder, "  tokens=%d cost=unavailable", usage.total)
+	}
 }
 
 Collect_Result :: struct {

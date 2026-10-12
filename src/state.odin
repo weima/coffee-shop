@@ -2,8 +2,10 @@ package main
 
 import "core:crypto"
 import "core:encoding/json"
+import "core:fmt"
 import "core:os"
 import "core:path/filepath"
+import "core:strconv"
 import "core:strings"
 import "core:sys/linux"
 
@@ -56,6 +58,26 @@ Register_Shot :: struct {
 	herdr_pane_id: string,
 	// Why the Shot last changed state, as recorded in the Receipt.
 	detail: string,
+	// What the Station reported about its own run, and the outcome it reported
+	// when it finished (a Pull's commit hash or a failure reason). Both are
+	// evidence from the Receipt; recording them never changes a status.
+	usage:   Station_Usage,
+	outcome: string,
+}
+
+// What a Station reported about its own run, from Pi's get_session_stats.
+// `recorded` separates a reported all-zero session from no report at all, and
+// `cost_known` is false when Pi could not price the model, so the cost must be
+// shown as unavailable rather than as zero.
+Station_Usage :: struct {
+	input:       i64,
+	output:      i64,
+	cache_read:  i64,
+	cache_write: i64,
+	total:       i64,
+	cost:        f64,
+	cost_known:  bool,
+	recorded:    bool,
 }
 
 Register :: struct {
@@ -93,11 +115,24 @@ State_Event :: struct {
 	from_state: string,
 	to_state: string,
 	detail: string,
+	// A station_report carries the Station's usage and/or terminal outcome. The
+	// flat fields and omitempty leave every transition line byte-for-byte as it
+	// was, so a Receipt written before this existed still validates.
+	usage_recorded:    bool   `json:"usage_recorded,omitempty"`,
+	usage_input:       i64    `json:"usage_input,omitempty"`,
+	usage_output:      i64    `json:"usage_output,omitempty"`,
+	usage_cache_read:  i64    `json:"usage_cache_read,omitempty"`,
+	usage_cache_write: i64    `json:"usage_cache_write,omitempty"`,
+	usage_total:       i64    `json:"usage_total,omitempty"`,
+	usage_cost:        f64    `json:"usage_cost,omitempty"`,
+	usage_cost_known:  bool   `json:"usage_cost_known,omitempty"`,
+	outcome:           string `json:"outcome,omitempty"`,
 }
 
 Replay_Shot :: struct {
 	status: string,
 	cancel_requested: bool,
+	usage: Station_Usage,
 }
 
 register_from_recipe :: proc(
@@ -385,6 +420,156 @@ apply_request_shot_cancel :: proc(directory: string, register: ^Register, shot_i
 	return State_Error{}
 }
 
+// Records what a Station reported about itself: its usage, its terminal outcome,
+// or both. It never changes a Shot's status, so the rule that a Shot is only
+// completed by a recorded result still holds. A report that carries neither is
+// ignored without an event.
+apply_station_report :: proc(directory: string, register: ^Register, shot_id, kind, detail: string) -> State_Error {
+	index := find_shot(register^, shot_id)
+	if index < 0 {
+		return State_Error{kind = .Shot_Not_Found}
+	}
+	usage, has_usage := usage_from_report(kind, detail)
+	outcome := outcome_from_report(kind, detail)
+	if !has_usage && outcome == "" {
+		return State_Error{}
+	}
+	shot := &register.shots[index]
+	if err := verify_current_state(directory, register^); err.kind != .None {
+		delete(outcome)
+		return err
+	}
+
+	new_usage := shot.usage
+	if has_usage {
+		new_usage = usage
+	}
+	event := State_Event{
+		sequence = register.event_sequence + 1,
+		kind = "station_report",
+		shot_id = shot_id,
+		detail = detail,
+		outcome = outcome,
+	}
+	if has_usage {
+		event.usage_recorded = true
+		event.usage_input = new_usage.input
+		event.usage_output = new_usage.output
+		event.usage_cache_read = new_usage.cache_read
+		event.usage_cache_write = new_usage.cache_write
+		event.usage_total = new_usage.total
+		event.usage_cost = new_usage.cost
+		event.usage_cost_known = new_usage.cost_known
+	}
+	if err := append_receipt_event(directory, event); err.kind != .None {
+		delete(outcome)
+		return err
+	}
+
+	old_usage := shot.usage
+	old_outcome := shot.outcome
+	old_sequence := register.event_sequence
+	shot.usage = new_usage
+	if outcome != "" {
+		shot.outcome = outcome
+	}
+	register.event_sequence = event.sequence
+	register_path := state_file_path(directory, REGISTER_FILE_NAME)
+	defer delete(register_path)
+	if err := write_register_atomic(register_path, register^); err.kind != .None {
+		shot.usage = old_usage
+		shot.outcome = old_outcome
+		register.event_sequence = old_sequence
+		delete(outcome)
+		return err
+	}
+	if outcome != "" {
+		delete(old_outcome)
+	}
+	return State_Error{}
+}
+
+// Parses the description the Station's usage report already sends:
+// `input=N output=N cacheRead=N cacheWrite=N total=N cost=<number|unavailable>`.
+usage_from_report :: proc(kind, detail: string) -> (usage: Station_Usage, ok: bool) {
+	if kind != "usage" {
+		return {}, false
+	}
+	parts := strings.split(detail, " ", context.temp_allocator)
+	if len(parts) != 6 {
+		return {}, false
+	}
+	names := [5]string{"input=", "output=", "cacheRead=", "cacheWrite=", "total="}
+	values: [5]i64
+	for name, index in names {
+		if !strings.has_prefix(parts[index], name) {
+			return {}, false
+		}
+		value, parsed := strconv.parse_i64(parts[index][len(name):])
+		if !parsed {
+			return {}, false
+		}
+		values[index] = value
+	}
+	cost_part := parts[5]
+	if !strings.has_prefix(cost_part, "cost=") {
+		return {}, false
+	}
+	cost := f64(0)
+	cost_known := false
+	cost_text := cost_part[len("cost="):]
+	if cost_text != "unavailable" {
+		value, parsed := strconv.parse_f64(cost_text)
+		if !parsed {
+			return {}, false
+		}
+		cost = value
+		cost_known = true
+	}
+	return Station_Usage{
+		input = values[0],
+		output = values[1],
+		cache_read = values[2],
+		cache_write = values[3],
+		total = values[4],
+		cost = cost,
+		cost_known = cost_known,
+		recorded = true,
+	}, true
+}
+
+// The Station's terminal reports. A Pull that passed Taste reports `pulled` with
+// its short commit hash; the others report a failure reason. Anything else is not
+// an outcome. The returned string is owned by the caller.
+outcome_from_report :: proc(kind, detail: string) -> string {
+	switch kind {
+	case "pulled":
+		return fmt.aprintf("pull %s", detail)
+	case "taste_failed":
+		return fmt.aprintf("taste failed: %s", detail)
+	case "incomplete":
+		return fmt.aprintf("incomplete: %s", detail)
+	}
+	return ""
+}
+
+// Reads the usage a station_report event carries. A transition event has none.
+event_usage :: proc(event: State_Event) -> Station_Usage {
+	if !event.usage_recorded {
+		return {}
+	}
+	return Station_Usage{
+		input = event.usage_input,
+		output = event.usage_output,
+		cache_read = event.usage_cache_read,
+		cache_write = event.usage_cache_write,
+		total = event.usage_total,
+		cost = event.usage_cost,
+		cost_known = event.usage_cost_known,
+		recorded = true,
+	}
+}
+
 validate_receipt :: proc(register: Register, receipt: string, allocator := context.allocator) -> State_Error {
 	if len(receipt) > 0 && receipt[len(receipt)-1] != '\n' {
 		line := 1
@@ -439,7 +624,7 @@ validate_receipt :: proc(register: Register, receipt: string, allocator := conte
 		return State_Error{kind = .Conflicting_Records}
 	}
 	for shot, i in register.shots {
-		if shot.status != expected[i].status || shot.cancel_requested != expected[i].cancel_requested {
+		if shot.status != expected[i].status || shot.cancel_requested != expected[i].cancel_requested || shot.usage != expected[i].usage {
 			return State_Error{kind = .Conflicting_Records}
 		}
 	}
@@ -470,6 +655,10 @@ apply_event :: proc(register: Register, expected: []Replay_Shot, event: State_Ev
 			return false
 		}
 		state.cancel_requested = true
+	case "station_report":
+		if event.usage_recorded {
+			state.usage = event_usage(event)
+		}
 	case:
 		return false
 	}
@@ -673,6 +862,7 @@ destroy_state_event :: proc(event: ^State_Event, allocator := context.allocator)
 	delete(event.from_state, allocator)
 	delete(event.to_state, allocator)
 	delete(event.detail, allocator)
+	delete(event.outcome, allocator)
 	event^ = State_Event{}
 }
 
@@ -740,7 +930,7 @@ recover_receipt_ahead :: proc(directory: string) -> State_Error {
 	expected := make([dynamic]Replay_Shot, 0, len(register.shots))
 	defer delete(expected)
 	for shot in register.shots {
-		append(&expected, Replay_Shot{status = shot.status, cancel_requested = shot.cancel_requested})
+		append(&expected, Replay_Shot{status = shot.status, cancel_requested = shot.cancel_requested, usage = shot.usage})
 	}
 
 	sequence := register.event_sequence
@@ -767,8 +957,14 @@ recover_receipt_ahead :: proc(directory: string) -> State_Error {
 		}
 		sequence = event.sequence
 		index := find_shot(register, event.shot_id)
-		delete(register.shots[index].detail)
-		register.shots[index].detail = strings.clone(event.detail)
+		if event.kind != "station_report" {
+			delete(register.shots[index].detail)
+			register.shots[index].detail = strings.clone(event.detail)
+		}
+		if event.outcome != "" {
+			delete(register.shots[index].outcome)
+			register.shots[index].outcome = strings.clone(event.outcome)
+		}
 		destroy_struct(&event)
 	}
 	if sequence == register.event_sequence {
@@ -781,6 +977,7 @@ recover_receipt_ahead :: proc(directory: string) -> State_Error {
 			shot.status = strings.clone(expected[index].status)
 		}
 		shot.cancel_requested = expected[index].cancel_requested
+		shot.usage = expected[index].usage
 	}
 	register.event_sequence = sequence
 	if write_err := write_register_atomic(register_path, register); write_err.kind != .None {

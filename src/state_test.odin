@@ -308,3 +308,109 @@ test_receipt_ahead_of_register_is_rolled_forward :: proc(t: ^testing.T) {
 	testing.expect_value(t, recovered.shots[0].status, SHOT_COMPLETED)
 	testing.expect_value(t, recovered.shots[0].detail, "CS-DONE")
 }
+
+@(test)
+test_station_usage_is_recorded_and_survives_a_reload :: proc(t: ^testing.T) {
+	directory := make_test_state_directory(t)
+	defer remove_test_state_directory(directory)
+
+	register := make_test_register(t)
+	defer destroy_struct(&register)
+	_ = create_state(directory, &register)
+	_ = transition_shot(directory, &register, "shot-a", SHOT_RUNNING, "Worker started")
+
+	err := apply_station_report(directory, &register, "shot-a", "usage", "input=10 output=5 cacheRead=2 cacheWrite=1 total=18 cost=0.0123")
+	testing.expect_value(t, err.kind, State_Error_Kind.None)
+	testing.expect(t, register.shots[0].usage.recorded)
+	testing.expect_value(t, register.shots[0].usage.total, i64(18))
+	testing.expect(t, register.shots[0].usage.cost_known)
+
+	reloaded, read_err := read_state(directory)
+	defer destroy_struct(&reloaded)
+	testing.expect_value(t, read_err.kind, State_Error_Kind.None)
+	testing.expect(t, reloaded.shots[0].usage.recorded)
+	testing.expect_value(t, reloaded.shots[0].usage.input, i64(10))
+	testing.expect_value(t, reloaded.shots[0].usage.cache_read, i64(2))
+	testing.expect_value(t, reloaded.shots[0].usage.cost, f64(0.0123))
+}
+
+@(test)
+test_station_usage_cost_stays_unavailable_when_pi_cannot_price :: proc(t: ^testing.T) {
+	directory := make_test_state_directory(t)
+	defer remove_test_state_directory(directory)
+
+	register := make_test_register(t)
+	defer destroy_struct(&register)
+	_ = create_state(directory, &register)
+	_ = transition_shot(directory, &register, "shot-a", SHOT_RUNNING, "Worker started")
+
+	err := apply_station_report(directory, &register, "shot-a", "usage", "input=1 output=2 cacheRead=3 cacheWrite=4 total=10 cost=unavailable")
+	testing.expect_value(t, err.kind, State_Error_Kind.None)
+	testing.expect(t, register.shots[0].usage.recorded)
+	testing.expect(t, !register.shots[0].usage.cost_known)
+	testing.expect_value(t, register.shots[0].usage.cost, f64(0))
+}
+
+@(test)
+test_a_station_report_never_completes_a_shot :: proc(t: ^testing.T) {
+	directory := make_test_state_directory(t)
+	defer remove_test_state_directory(directory)
+
+	register := make_test_register(t)
+	defer destroy_struct(&register)
+	_ = create_state(directory, &register)
+	_ = transition_shot(directory, &register, "shot-a", SHOT_RUNNING, "Worker started")
+
+	err := apply_station_report(directory, &register, "shot-a", "pulled", "a1b2c3d")
+	testing.expect_value(t, err.kind, State_Error_Kind.None)
+	testing.expect_value(t, register.shots[0].status, SHOT_RUNNING)
+	testing.expect_value(t, register.shots[0].outcome, "pull a1b2c3d")
+
+	// The status only changes through a transition, and a completed Shot still
+	// keeps its reported outcome.
+	err = transition_shot(directory, &register, "shot-a", SHOT_COMPLETED, "Pi exited with code 0")
+	testing.expect_value(t, err.kind, State_Error_Kind.None)
+	testing.expect_value(t, register.shots[0].status, SHOT_COMPLETED)
+	testing.expect_value(t, register.shots[0].outcome, "pull a1b2c3d")
+}
+
+@(test)
+test_station_report_ahead_of_the_register_is_rolled_forward :: proc(t: ^testing.T) {
+	directory := make_test_state_directory(t)
+	defer remove_test_state_directory(directory)
+
+	register := make_test_register(t)
+	defer destroy_struct(&register)
+	_ = create_state(directory, &register)
+	_ = transition_shot(directory, &register, "shot-a", SHOT_RUNNING, "Worker started")
+
+	// A crash after the Receipt event but before the Register rewrite.
+	event := State_Event{
+		sequence = register.event_sequence + 1,
+		kind = "station_report",
+		shot_id = "shot-a",
+		detail = "input=10 output=5 cacheRead=2 cacheWrite=1 total=18 cost=0.0123",
+		usage_recorded = true,
+		usage_input = 10,
+		usage_output = 5,
+		usage_cache_read = 2,
+		usage_cache_write = 1,
+		usage_total = 18,
+		usage_cost = 0.0123,
+		usage_cost_known = true,
+		outcome = "pull a1b2c3d",
+	}
+	testing.expect_value(t, append_receipt_event(directory, event).kind, State_Error_Kind.None)
+
+	_, conflict := read_state(directory)
+	testing.expect_value(t, conflict.kind, State_Error_Kind.Conflicting_Records)
+	testing.expect_value(t, recover_receipt_ahead(directory).kind, State_Error_Kind.None)
+
+	recovered, err := read_state_recovering(directory)
+	defer destroy_struct(&recovered)
+	testing.expect_value(t, err.kind, State_Error_Kind.None)
+	testing.expect_value(t, recovered.event_sequence, 2)
+	testing.expect(t, recovered.shots[0].usage.recorded)
+	testing.expect_value(t, recovered.shots[0].usage.total, i64(18))
+	testing.expect_value(t, recovered.shots[0].outcome, "pull a1b2c3d")
+}
