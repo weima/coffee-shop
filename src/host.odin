@@ -504,6 +504,13 @@ valid_commit_message :: proc(message: string) -> bool {
 
 // shortcut: Shot tabs are not closed when a Shot finishes, so a repository's workspace keeps every tab; close each tab when its Shot ends, once Shots report completion through the host.
 host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, thinkings, kinds, tastes, messages: []string) {
+	if _, launch_err := child_launch_argv(host_station_executable); launch_err != "" {
+		for id in ids {
+			host_session_failed(request_id, id, launch_err)
+		}
+		return
+	}
+
 	state_root, state_err := default_state_root(context.temp_allocator)
 	if state_err != "" {
 		for id in ids {
@@ -546,7 +553,12 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, thin
 			continue
 		}
 
-		command := host_station_command(host_station_executable, host_report_socket, host_extension_path, id, request_id, prompt_path, models[i], thinkings[i], kinds[i], tastes[i], messages[i])
+		launch, launch_err := child_launch_argv(host_station_executable)
+		if launch_err != "" {
+			host_session_failed(request_id, id, launch_err)
+			continue
+		}
+		command := host_station_command(child_shell_prefix(launch), host_report_socket, host_extension_path, id, request_id, prompt_path, models[i], thinkings[i], kinds[i], tastes[i], messages[i])
 		if run_err := herdr_run_worker(herdr, pane_id, command); run_err != "" {
 			host_session_failed(request_id, id, fmt.tprintf("could not start the Station: %s", run_err))
 			continue
@@ -727,9 +739,7 @@ host_reply :: proc(root: json.Object, request_id: string) {
 // to safe characters.
 // A research Shot gets scratch-write tools; the Station then checks that it left the source as it found it.
 // A Pull passes its taste and message to the Station, which commits only if the taste passes.
-host_station_command :: proc(executable, report, extension, shot_id, request_id, prompt_file, model, thinking, kind, taste, message: string) -> string {
-	quoted_executable := shell_quote(executable)
-	defer delete(quoted_executable)
+host_station_command :: proc(launcher, report, extension, shot_id, request_id, prompt_file, model, thinking, kind, taste, message: string) -> string {
 	quoted_report := shell_quote(report)
 	defer delete(quoted_report)
 	quoted_extension := shell_quote(extension)
@@ -763,7 +773,7 @@ host_station_command :: proc(executable, report, extension, shot_id, request_id,
 		defer delete(quoted_message)
 		taste_argument = fmt.tprintf(" --taste %s --message %s", quoted_taste, quoted_message)
 	}
-	return fmt.tprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- pi --mode rpc%s%s%s -e %s", quoted_executable, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, tools_argument, model_argument, thinking_argument, quoted_extension)
+	return fmt.tprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- pi --mode rpc%s%s%s -e %s", launcher, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, tools_argument, model_argument, thinking_argument, quoted_extension)
 }
 
 // A Blend request is validated in full before any Git call. Its repository and

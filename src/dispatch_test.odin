@@ -24,7 +24,9 @@ test_completion_marker_is_removed_and_missing_marker_is_incomplete :: proc(t: ^t
 
 @(test)
 test_worker_command_quotes_paths_and_contains_only_ids :: proc(t: ^testing.T) {
-	command, err := worker_command("/tmp/it's here/coffee-shop", "/tmp/my state", "brew-1-0", "shot-a", "abc123")
+	launcher := shell_quote("/tmp/it's here/coffee-shop")
+	defer delete(launcher)
+	command, err := worker_command(launcher, "/tmp/my state", "brew-1-0", "shot-a", "abc123")
 	defer delete(command)
 	testing.expect_value(t, err, "")
 	testing.expect_value(t, command, `'/tmp/it'\''s here/coffee-shop' __worker --state-root '/tmp/my state' --brew-id brew-1-0 --shot-id shot-a --token 'abc123'`)
