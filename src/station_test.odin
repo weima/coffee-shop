@@ -4,8 +4,10 @@ import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "core:sync"
 import "core:sys/posix"
 import "core:testing"
+import "core:thread"
 import "core:time"
 
 // Each test builds its own binary: parallel `odin run` calls share one output path
@@ -979,7 +981,7 @@ test_station_sigterm_closes_the_agent_input_and_the_agent_exits_on_its_own :: pr
 	testing.expect_value(t, posix.kill(posix.pid_t(process.pid), .SIGTERM), posix.result.OK)
 	state, wait_err := os.process_wait(process, 10*time.Second)
 	testing.expect(t, wait_err == nil, "the Station must exit after closing the agent input")
-	testing.expect_value(t, state.exit_code, 0)
+	testing.expect_value(t, state.exit_code, STATION_CANCELLED_EXIT_CODE)
 
 	log_data, log_err := os.read_entire_file(received, context.allocator)
 	defer delete(log_data)
@@ -997,6 +999,56 @@ test_station_sigterm_closes_the_agent_input_and_the_agent_exits_on_its_own :: pr
 		}
 		destroy_struct(&result.message)
 	}
+}
+
+@(test)
+test_station_orderly_shutdown_releases_cancelled_relay :: proc(t: ^testing.T) {
+	input_read, input_write, input_err := os.pipe()
+	agent_read, agent_write, agent_err := os.pipe()
+	testing.expect_value(t, input_err, os.Error(nil))
+	testing.expect_value(t, agent_err, os.Error(nil))
+	if input_err != nil || agent_err != nil {
+		if input_err == nil {
+			_ = os.close(input_read)
+			_ = os.close(input_write)
+		}
+		if agent_err == nil {
+			_ = os.close(agent_read)
+			_ = os.close(agent_write)
+		}
+		return
+	}
+
+	display := new(Station_Display)
+	station_display_start(display, "cancel test")
+	reader_done := new(bool)
+	relay := new(Station_Relay)
+	relay.input = input_read
+	relay.agent = agent_write
+	relay.display = display
+	relay.reader_done = reader_done
+	options: [dynamic]string
+	append(&options, strings.clone("yes"))
+	append(&options, strings.clone("no"))
+	relay.dialog = Station_Dialog{
+		active = true,
+		id = strings.clone("dialog-id"),
+		method = strings.clone("select"),
+		options = options[:],
+	}
+	sync.atomic_store(&relay.cancelled, true)
+	reader := thread.create_and_start_with_data(relay, station_relay_replies, self_cleanup = false)
+	status := station_orderly_shutdown(&relay, reader)
+
+	testing.expect_value(t, status, STATION_CANCELLED_EXIT_CODE)
+	testing.expect(t, sync.atomic_load(reader_done), "orderly shutdown must join the relay thread")
+	testing.expect(t, relay == nil, "orderly shutdown must release the relay")
+	free(reader_done)
+	read_buffer: [1]byte
+	read_count := posix.read(posix.FD(os.fd(agent_read)), &read_buffer[0], 1)
+	testing.expect_value(t, read_count, 0)
+	_ = os.close(agent_read)
+	_ = os.close(input_write)
 }
 
 // An interactive Shot stays open after its first turn, so a reply sent a second later
