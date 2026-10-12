@@ -14,16 +14,89 @@ STATION_FRAME_INTERVAL :: 150 * time.Millisecond
 STATION_STATUS_MAX :: 120
 STATION_TRACK :: 40 // columns the cat walks across
 STATION_SPRITE_WIDTH :: 13
-STATION_BLOCK_ROWS :: 4 // ears, face with mug, legs, status
+STATION_CAT_ROWS :: 3 // ears, face with mug, legs
+STATION_BLOCK_ROWS :: 4 // the cat rows plus the status
 
 // Each row is drawn in place, so the block never scrolls; the cat art is static and
 // only turns around.
 
 // The supplied art, exactly as given, each line padded to STATION_SPRITE_WIDTH.
-STATION_CAT_RIGHT := [3]string{"     /\\_/\\   ", "  ___( o.o)  ", " /   >  ^  > "}
+STATION_CAT_RIGHT := [STATION_CAT_ROWS]string{"     /\\_/\\   ", "  ___( o.o)  ", " /   >  ^  > "}
 // Each padded right line reversed with / and \, ( and ), and < and > swapped, so
 // the two cats mirror in place at the same columns.
-STATION_CAT_LEFT := [3]string{"   /\\_/\\     ", "  (o.o )___  ", " <  ^  <   \\ "}
+STATION_CAT_LEFT := [STATION_CAT_ROWS]string{"   /\\_/\\     ", "  (o.o )___  ", " <  ^  <   \\ "}
+
+// The cat is one sprite: both facings, the rows the block is built from, and the
+// position it sits at. The block's height is len(rows) and nothing else; the draw, the
+// clear and every cursor movement read it through station_sprite_row_count, so the rows
+// written, the rows erased and the cursor advance cannot disagree.
+Station_Sprite :: struct {
+	left:    [STATION_CAT_ROWS]string,
+	right:   [STATION_CAT_ROWS]string,
+	rows:    [STATION_BLOCK_ROWS]string,
+	x:       int,
+	on_pane: bool, // the rows are written below the permanent output right now
+}
+
+station_sprite_new :: proc() -> Station_Sprite {
+	return {left = STATION_CAT_LEFT, right = STATION_CAT_RIGHT}
+}
+
+// The one place the block's height comes from.
+station_sprite_row_count :: proc(sprite: ^Station_Sprite) -> int {
+	return len(sprite.rows)
+}
+
+// The one place the cursor's vertical step over the block comes from, so a draw and the
+// clear that follows it can never move by different amounts.
+station_sprite_cursor_up :: proc(sprite: ^Station_Sprite) -> string {
+	return fmt.tprintf("\x1b[%dA", station_sprite_row_count(sprite))
+}
+
+// Moving the sprite changes its position; the pad is derived from that one value when a
+// row is written, so the rows cannot drift apart from each other.
+station_sprite_move :: proc(sprite: ^Station_Sprite, x: int) {
+	sprite.x = x
+}
+
+// Composes the block's rows from one facing and the current status.
+station_sprite_face :: proc(sprite: ^Station_Sprite, facing_right: bool, status: string) {
+	facing := sprite.right if facing_right else sprite.left
+	for row, i in facing {
+		sprite.rows[i] = row
+	}
+	sprite.rows[STATION_CAT_ROWS] = station_row_text(status)
+}
+
+// One row of the block, indented to the sprite's position. The cat rows share the
+// sprite's pad; the status row is a line of its own and stays flush left.
+station_sprite_text :: proc(sprite: ^Station_Sprite, row: int) -> string {
+	if row >= STATION_CAT_ROWS {
+		return sprite.rows[row]
+	}
+	return fmt.tprintf("%s%s", strings.repeat(" ", sprite.x, context.temp_allocator), sprite.rows[row])
+}
+
+// Writes every row of the block and records that it is on the pane. The row count is
+// read once, from the sprite.
+station_sprite_draw :: proc(sprite: ^Station_Sprite) {
+	for row in 0 ..< station_sprite_row_count(sprite) {
+		style := ansi.FG_YELLOW if row < STATION_CAT_ROWS else ansi.FAINT
+		fmt.printf("\r\x1b[2K%s\n", station_style(style, station_sprite_text(sprite, row)))
+	}
+	sprite.on_pane = true
+}
+
+// Erases exactly the rows station_sprite_draw wrote, using the same count.
+station_sprite_clear :: proc(sprite: ^Station_Sprite) {
+	if !sprite.on_pane {
+		return
+	}
+	for _ in 0 ..< station_sprite_row_count(sprite) {
+		fmt.print("\r\x1b[2K\n")
+	}
+	sprite.on_pane = false
+}
 
 // One block of lines at the bottom of the pane, animated while the agent works.
 // Permanent lines (replies, questions, the final text) print above it. When stdout
@@ -41,10 +114,8 @@ Station_Display :: struct {
 	active_tool_count: int,
 	animation_thread: ^thread.Thread,
 	started_at_ns:   i64,
-	x:               int,
+	sprite:          Station_Sprite,
 	dir:             int,
-	step:            int,
-	drawn:           int,
 }
 
 // Starts the display. When it is live, the screen is cleared and a header names the
@@ -56,6 +127,7 @@ station_display_start :: proc(display: ^Station_Display, title: string) {
 	display.dir = 1
 	display.started_at_ns = time.now()._nsec
 	display.status = strings.clone("thinking")
+	display.sprite = station_sprite_new()
 	if display.live {
 		fmt.print(ansi.CSI + "2" + ansi.ED + ansi.CSI + ansi.CUP)
 		fmt.println(station_style(ansi.BOLD + ";" + ansi.FG_CYAN, title))
@@ -89,54 +161,43 @@ station_display_animate :: proc(data: rawptr) {
 }
 
 station_display_advance_locked :: proc(display: ^Station_Display) {
-	display.x += display.dir
-	if display.x <= 0 {
-		display.x = 0
+	x := display.sprite.x + display.dir
+	if x <= 0 {
+		x = 0
 		display.dir = 1
 	}
-	if display.x >= STATION_TRACK - STATION_SPRITE_WIDTH {
-		display.x = STATION_TRACK - STATION_SPRITE_WIDTH
+	if x >= STATION_TRACK - STATION_SPRITE_WIDTH {
+		x = STATION_TRACK - STATION_SPRITE_WIDTH
 		display.dir = -1
 	}
-	display.step += 1
+	station_sprite_move(&display.sprite, x)
 }
 
-// Restoring wrap relies on the caller's defer; Odin runs neither defer nor atexit
-// on a panic (the process dies on SIGTRAP) or a signal, so a crash inside a
-// draw/erase body can leave the terminal's auto-wrap off. The Station's signal
-// handler is a single atomic store, so there is no handler hook to restore it.
-
-
-// Moves the cursor back to the top of the block, then rewrites every row.
+// Moves the cursor back over the rows the last frame wrote, then rewrites the whole
+// sprite. The rows to move back over are read from the sprite, so a frame can never
+// leave a row of the previous frame behind.
 station_display_draw_locked :: proc(display: ^Station_Display) {
 	if !display.live {
 		return
 	}
-	if display.drawn > 0 {
-		fmt.printf("\x1b[%dA", display.drawn)
+	if display.sprite.on_pane {
+		fmt.print(station_sprite_cursor_up(&display.sprite))
 	}
 	status := station_display_status_line(display, time.now()._nsec)
-	lines := station_block_lines(display.x, display.step, display.dir > 0, status)
-	// The cat is yellow and the status label is faint.
-	styles := [STATION_BLOCK_ROWS]string{ansi.FG_YELLOW, ansi.FG_YELLOW, ansi.FG_YELLOW, ansi.FAINT}
-	for line, i in lines {
-		fmt.printf("\r\x1b[2K%s\n", station_style(styles[i], line))
-	}
+	station_sprite_face(&display.sprite, display.dir > 0, status)
+	station_sprite_draw(&display.sprite)
 	delete(status)
-	display.drawn = STATION_BLOCK_ROWS
 }
 
 // Erases the block and leaves the cursor at its top row, ready for a permanent line.
 station_display_clear_locked :: proc(display: ^Station_Display) {
-	if !display.live || display.drawn == 0 {
+	if !display.live || !display.sprite.on_pane {
 		return
 	}
-	fmt.printf("\x1b[%dA", display.drawn)
-	for _ in 0 ..< display.drawn {
-		fmt.print("\r\x1b[2K\n")
-	}
-	fmt.printf("\x1b[%dA", display.drawn)
-	display.drawn = 0
+	up := station_sprite_cursor_up(&display.sprite)
+	fmt.print(up)
+	station_sprite_clear(&display.sprite)
+	fmt.print(up)
 }
 
 // A drawn row must be exactly one terminal line. Tool descriptions are shell
@@ -161,22 +222,6 @@ station_row_text :: proc(text: string) -> string {
 		strings.write_rune(&clean, r)
 	}
 	return strings.to_string(clean)
-}
-
-station_block_lines :: proc(x, step: int, facing_right: bool, status: string) -> [STATION_BLOCK_ROWS]string {
-	pad := strings.repeat(" ", x, context.temp_allocator)
-	lines: [STATION_BLOCK_ROWS]string
-	if facing_right {
-		for line, i in STATION_CAT_RIGHT {
-			lines[i] = fmt.tprintf("%s%s", pad, line)
-		}
-	} else {
-		for line, i in STATION_CAT_LEFT {
-			lines[i] = fmt.tprintf("%s%s", pad, line)
-		}
-	}
-	lines[3] = station_row_text(status)
-	return lines
 }
 
 station_display_status_line :: proc(display: ^Station_Display, now_ns: i64) -> string {
