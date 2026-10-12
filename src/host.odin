@@ -725,7 +725,7 @@ host_reply :: proc(root: json.Object, request_id: string) {
 // The Station runs in the Herdr pane and launches the agent. Paths and the
 // optional model and thinking level are quoted; the IDs are already restricted
 // to safe characters.
-// A research Shot gets read-only tools; the Station then checks that it changed nothing.
+// A research Shot gets scratch-write tools; the Station then checks that it left the source as it found it.
 // A Pull passes its taste and message to the Station, which commits only if the taste passes.
 host_station_command :: proc(executable, report, extension, shot_id, request_id, prompt_file, model, thinking, kind, taste, message: string) -> string {
 	quoted_executable := shell_quote(executable)
@@ -750,9 +750,7 @@ host_station_command :: proc(executable, report, extension, shot_id, request_id,
 	}
 	tools_argument := ""
 	if kind == SHOT_KIND_RESEARCH {
-		// A research Shot must not write or run shell commands, and codemode runs
-		// scripts, so it stays off the read-only allowlist.
-		tools_argument = " --tools read,grep,find,ls"
+		tools_argument = " --tools " + SCRATCH_WRITE_TOOLS
 	} else {
 		// Every execute Shot runs codemode; there is no switch to turn it off.
 		tools_argument = " --tools +codemode"
@@ -788,6 +786,8 @@ host_session_failed :: proc(request_id, shot_id, reason: string) {
 
 SHOT_KIND_EXECUTE :: "execute"
 SHOT_KIND_RESEARCH :: "research"
+// Research and review may write scratch files and run codemode; the Station or review checks the source.
+SCRATCH_WRITE_TOOLS :: "read,grep,find,ls,write,codemode"
 
 valid_shot_kind :: proc(kind: string) -> bool {
 	return kind == SHOT_KIND_EXECUTE || kind == SHOT_KIND_RESEARCH

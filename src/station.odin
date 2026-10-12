@@ -307,10 +307,13 @@ station_commit :: proc(sender: ^Activity_Sender, brew_id, station_id, message: s
 	return 0
 }
 
-// A research Station must leave its worktree as it found it. Git reports any change,
-// and a failed check counts as incomplete too. The report carries counts, not paths.
+// Scratch files a research or review Shot writes under .scratch/ are not source.
+SCRATCH_PATHSPEC :: ":(exclude).scratch"
+
+// A research Station must leave the source as it found it. Git reports any change
+// outside .scratch/, and a failed check counts as incomplete too. The report carries counts, not paths.
 station_research_clean :: proc(sender: ^Activity_Sender, brew_id, station_id: string) -> bool {
-	state, stdout, _, err := os.process_exec(os.Process_Desc{command = {"git", "status", "--porcelain", "-uall"}}, context.temp_allocator)
+	state, stdout, _, err := os.process_exec(os.Process_Desc{command = {"git", "status", "--porcelain", "-uall", "--", ".", SCRATCH_PATHSPEC}}, context.temp_allocator)
 	if err != nil || !state.success {
 		station_report(sender, brew_id, station_id, "incomplete", "Cupping Station could not check its changes")
 		return false
