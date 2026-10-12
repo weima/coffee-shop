@@ -11,7 +11,8 @@ import "core:time"
 import "core:unicode/utf8"
 
 STATION_FRAME_INTERVAL :: 150 * time.Millisecond
-STATION_STATUS_MAX :: 120
+// Leave one column empty so the status row cannot autowrap in the supported 80-column pane.
+STATION_STATUS_MAX :: 79
 STATION_TRACK :: 40 // columns the cat walks across
 STATION_SPRITE_WIDTH :: 13
 STATION_CAT_ROWS :: 3 // ears, face with mug, legs

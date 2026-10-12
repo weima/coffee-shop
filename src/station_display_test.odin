@@ -214,6 +214,92 @@ test_station_sprite_clamps_multi_byte_status_on_a_rune_boundary :: proc(t: ^test
 }
 
 @(test)
+test_station_display_has_no_residual_cat_rows_in_an_80_by_24_terminal :: proc(t: ^testing.T) {
+	// A long tool status is the case that can wrap a supposedly single row. Keep the
+	// exact draw bytes in the test temp directory, then let pyte inspect every frame.
+	sync.mutex_lock(&capture_lock)
+	defer sync.mutex_unlock(&capture_lock)
+
+	dir, dir_err := os.temp_directory(context.temp_allocator)
+	base := dir if dir_err == nil else "/tmp"
+	path := fmt.aprintf("%s/station-sprite-frames-%d.bin", base, os.get_pid())
+	defer delete(path)
+	defer os.remove(path)
+	out, create_err := os.create(path)
+	testing.expect_value(t, create_err, os.Error(nil))
+	if create_err != nil {
+		return
+	}
+
+	display := Station_Display{live = true, dir = 1, started_at_ns = 1}
+	display.sprite = station_sprite_new()
+	display.status = strings.clone(strings.repeat("x", STATION_STATUS_MAX, context.temp_allocator))
+	defer delete(display.status)
+	old_stdout := os.stdout
+	os.stdout = out
+	station_styles_on = false
+	for frame := 0; frame < 200; frame += 1 {
+		if frame > 0 {
+			station_display_advance_locked(&display)
+		}
+		station_display_draw_locked(&display)
+	}
+	// Exercise the same whole-sprite clear used when permanent output replaces the
+	// animation. Its bytes remain in the exact stream, after the 200 frame proof.
+	station_display_clear_locked(&display)
+	os.stdout = old_stdout
+	_ = os.close(out)
+
+	pyte_check := `
+import sys
+from pathlib import Path
+import pyte
+
+frame_count = int(sys.argv[2])
+data = Path(sys.argv[1]).read_bytes()
+parts = data.split(b"\x1b[4A")
+frames = [parts[0]] + [b"\x1b[4A" + part for part in parts[1:]]
+if len(frames) < frame_count:
+    raise SystemExit(f"only found {len(frames)} frames, wanted {frame_count}")
+
+right = ["     /\\_/\\   ", "  ___( o.o)  ", " /   >  ^  > "]
+left = ["   /\\_/\\     ", "  (o.o )___  ", " <  ^  <   \\ "]
+markers = ("/\\_/\\", "( o.o)", "(o.o )___", "/   >  ^  >", "<  ^  <")
+screen = pyte.Screen(80, 24)
+stream = pyte.Stream(screen)
+x = 0
+step = 1
+for frame in range(frame_count):
+    stream.feed(frames[frame].decode("utf-8"))
+    cat_rows = [row for row, text in enumerate(screen.display) if any(marker in text for marker in markers)]
+    if len(cat_rows) != 3 or cat_rows != list(range(cat_rows[0], cat_rows[0] + 3)):
+        raise SystemExit(f"frame {frame}: cat rows are {cat_rows}, screen={screen.display!r}")
+    art = right if step > 0 else left
+    top = cat_rows[0]
+    for row, expected in enumerate(art):
+        actual = screen.display[top + row]
+        if actual[:x] != " " * x or actual[x:x + len(expected)] != expected:
+            raise SystemExit(f"frame {frame}: unexpected cat row {row}: {actual!r}")
+    if frame + 1 < frame_count:
+        x += step
+        if x <= 0:
+            x, step = 0, 1
+        if x >= 40 - 13:
+            x, step = 40 - 13, -1
+
+stream.feed(frames[frame_count].decode("utf-8"))
+if any(any(marker in text for marker in markers) for text in screen.display):
+    raise SystemExit("clear left cat rows on screen")
+`
+	state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
+		command = {"python3", "-c", pyte_check, path, "200"},
+	}, context.allocator)
+	defer delete(stdout)
+	defer delete(stderr)
+	testing.expect(t, exec_err == nil && state.success, string(stderr))
+}
+
+@(test)
 test_station_progress_steps_describe_tool_calls :: proc(t: ^testing.T) {
 	command := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 	bash_line := fmt.tprintf(`{{"type":"tool_execution_start","toolName":"bash","args":{{"command":"%s"}}}}`, command)
