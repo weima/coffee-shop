@@ -18,7 +18,9 @@ test: check
         -DSQLITE_OMIT_LOAD_EXTENSION \
         -c src/sqlite/vendor/sqlite3.c \
         -o "$build_dir/sqlite3.o"
-    TZ=UTC odin test src/sqlite -extra-linker-flags:"$build_dir/sqlite3.o"
-    TZ=UTC odin test src/store -collection:oreo=src -extra-linker-flags:"$build_dir/sqlite3.o"
-    TZ=UTC odin test src/script -collection:oreo=src -extra-linker-flags:"$build_dir/sqlite3.o"
-    TZ=UTC odin test src -collection:oreo=src -extra-linker-flags:"$build_dir/sqlite3.o"
+    # ODIN_TEST_FAIL_ON_BAD_MEMORY makes the runner count leaks and bad frees as test
+    # failures, so a memory error can no longer ride along with "All tests were successful."
+    TZ=UTC odin test src/sqlite -extra-linker-flags:"$build_dir/sqlite3.o" -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
+    TZ=UTC odin test src/store -collection:oreo=src -extra-linker-flags:"$build_dir/sqlite3.o" -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
+    TZ=UTC odin test src/script -collection:oreo=src -extra-linker-flags:"$build_dir/sqlite3.o" -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
+    TZ=UTC odin test src -collection:oreo=src -extra-linker-flags:"$build_dir/sqlite3.o" -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
