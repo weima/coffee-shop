@@ -39,11 +39,21 @@ host_sessions: [dynamic]Host_Session
 
 HOST_REPLY_MAX :: 4096
 
+// Byte length of a received stdin line. A union so that events that do not carry
+// it leave it nil, and json's omitempty then drops the field entirely.
+Host_Byte_Count :: union {
+	int,
+}
+
 // One line on stdout per event. Encoded with json.marshal so that free-form
 // reasons from Git or Herdr cannot break the framing.
 Host_Event :: struct {
 	type:        string `json:"type"`,
 	request_id:  string `json:"request_id"`,
+	// Only set on received events, so an unanswered request can be told apart
+	// from one that was never read. A nil union field is omitted, unlike a zero
+	// int, which json's omitempty never drops.
+	bytes:       Host_Byte_Count `json:"bytes,omitempty"`,
 	shot_id:     string `json:"shot_id,omitempty"`,
 	pane_id:     string `json:"pane_id,omitempty"`,
 	kind:        string `json:"kind,omitempty"`,
@@ -112,11 +122,17 @@ run_host :: proc() -> int {
 	bufio.scanner_init(&scanner, os.to_reader(os.stdin))
 	defer bufio.scanner_destroy(&scanner)
 	for bufio.scanner_scan(&scanner) {
-		stop := host_handle_line(bufio.scanner_text(&scanner))
+		line := bufio.scanner_text(&scanner)
+		host_emit_received(line)
+		stop := host_handle_line(line)
 		free_all(context.temp_allocator)
 		if stop {
 			break
 		}
+	}
+	// A scan failure ends the loop like a clean shutdown; name it instead.
+	if scan_err := bufio.scanner_error(&scanner); scan_err != nil {
+		host_emit(Host_Event{type = "error", reason = fmt.tprintf("stdin scan failed: %v", scan_err)})
 	}
 	return 0
 }
@@ -188,6 +204,20 @@ host_acquire_lock :: proc(directory: string) -> (file: ^os.File, ok: bool) {
 		return nil, false
 	}
 	return opened, true
+}
+
+// One received event per line, emitted before the line is handled. The request
+// id is empty unless the line parses as an object with a valid one; a malformed
+// line still reports its byte length rather than failing the loop.
+host_emit_received :: proc(line: string) {
+	request_id := ""
+	value, parse_err := json.parse_string(line, .JSON, false, context.temp_allocator)
+	if parse_err == .None {
+		if root, is_object := value.(json.Object); is_object {
+			request_id = host_request_id(root)
+		}
+	}
+	host_emit(Host_Event{type = "received", request_id = request_id, bytes = len(line)})
 }
 
 // Returns true when the host must stop.
