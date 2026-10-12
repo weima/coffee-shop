@@ -6,3 +6,14 @@
 # Odin build outputs (Odin is a hard requirement of Coffee Shop)
 *.bin
 probe-bin
+
+# macOS debug-symbol bundles, written next to any Odin build or test output.
+*.dSYM/
+
+# Dot-directories are tool scratch, never source: no tracked directory in this
+# repository is dot-prefixed. Anchored to where build commands run so a stray
+# package directory cannot be hidden. `.github` is re-allowed as the conventional
+# home of hidden source.
+/.*/
+/oreo/.*/
+!/.github/
