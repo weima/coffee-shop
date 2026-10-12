@@ -1,6 +1,6 @@
 # Oreo code mode
 
-**Status:** v0.5, the priority item. The static gate, the runner, the host server and the script API are implemented in `oreo/src/`, each with tests. The token-reduction gate below has not been measured, and no model-facing tool wires the runner into a session yet.
+**Status:** v0.5, the priority item. The static gate, the runner, the host server and the script API are implemented in `oreo/src/`, each with tests. The model-facing `codemode` tool now exists and is wired into the default tool set. The token-reduction gate below has not been measured.
 
 Oreo's cost problem, and the design that answers it. This document records the measurements, the rejected alternative, and the containment rules, so the work does not restart from a guess.
 
