@@ -21,6 +21,70 @@ build_test_binary :: proc(t: ^testing.T, root: string) -> string {
 	return binary
 }
 
+// One line a test writes to a Station's stdin, after the delay and before the
+// helper closes stdin. The write end stays in this process, so a test that dies
+// abruptly — panic or SIGKILL — still has it closed by the kernel, the Station
+// reads end of stdin, and the session ends without any defer running.
+Station_Write :: struct {
+	after: time.Duration,
+	line:  string,
+}
+
+Station_Stdin_Run :: struct {
+	exit_code:   int,
+	stderr:      string, // owned by the caller
+	wait_failed: bool,
+}
+
+// Runs a Station command with stdin on a pipe this process owns, and its output in
+// files, so a Station that prints cannot block and nothing else can hold the write
+// end. Closing stdin ends the session; the caller owns run.stderr.
+run_station_with_stdin :: proc(t: ^testing.T, root: string, command: []string, writes: []Station_Write) -> (run: Station_Stdin_Run) {
+	out_path, _ := filepath.join({root, "station.out"}, context.temp_allocator)
+	err_path, _ := filepath.join({root, "station.err"}, context.temp_allocator)
+	out_file, out_err := os.create(out_path)
+	testing.expect_value(t, out_err, os.Error(nil))
+	err_file, err_err := os.create(err_path)
+	testing.expect_value(t, err_err, os.Error(nil))
+	stdin_read, stdin_write, pipe_err := os.pipe()
+	testing.expect_value(t, pipe_err, os.Error(nil))
+	process, start_err := os.process_start(os.Process_Desc{
+		command = command,
+		stdin = stdin_read,
+		stdout = out_file,
+		stderr = err_file,
+	})
+	_ = os.close(stdin_read)
+	_ = os.close(out_file)
+	_ = os.close(err_file)
+	testing.expect_value(t, start_err, os.Error(nil))
+	if start_err != nil {
+		_ = os.close(stdin_write)
+		return
+	}
+	for write in writes {
+		time.sleep(write.after)
+		if write.line != "" {
+			_, _ = os.write_string(stdin_write, fmt.tprintf("%s\n", write.line))
+		}
+	}
+	// End of stdin is the session's end; this process is the only holder of the write end.
+	_ = os.close(stdin_write)
+	state, wait_err := os.process_wait(process, 15*time.Second)
+	if wait_err != nil {
+		run.wait_failed = true
+		if wait_err == .Timeout {
+			_ = os.process_kill(process)
+			_, _ = os.process_wait(process)
+		}
+	}
+	run.exit_code = state.exit_code
+	if data, read_err := os.read_entire_file(err_path, context.allocator); read_err == nil {
+		run.stderr = string(data)
+	}
+	return
+}
+
 // Fake agent: logs each stdin line, then answers every prompt with one agent_end
 // whose text counts the turns. The stats control line is not a prompt, so it is
 // logged but not answered. It exits when its stdin closes.
@@ -62,13 +126,10 @@ test_station_reports_each_turn_and_relays_replies :: proc(t: ^testing.T) {
 	defer activity_listener_close(&listener)
 
 	// The reply reaches the Station on stdin; closing stdin then ends the session.
-	state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `printf '%s\n' "second question" | "$4" station --report "$1" --station shot-a --brew order-1 --prompt "first question" -- sh "$2" "$3"`, "station-test", socket, agent, received, binary},
-	}, context.allocator)
-	defer delete(stdout)
-	defer delete(stderr)
-	testing.expect_value(t, exec_err, os.Error(nil))
-	testing.expect(t, state.success, string(stderr))
+	run := run_station_with_stdin(t, root, {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt", "first question", "--", "sh", agent, received}, {{0, "second question"}})
+	defer delete(run.stderr)
+	testing.expect(t, !run.wait_failed, "the Station should exit on end of stdin")
+	testing.expect(t, run.exit_code == 0, run.stderr)
 
 	turns: [dynamic]string
 	defer {
@@ -146,13 +207,10 @@ test_station_reads_prompt_file_and_sends_exact_text :: proc(t: ^testing.T) {
 	testing.expect_value(t, parsed.prompt, "")
 	testing.expect_value(t, parsed.prompt_file, prompt_path)
 
-	state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `printf '%s\n' "second question" | "$5" station --report "$1" --station shot-a --brew order-1 --prompt-file "$2" -- sh "$3" "$4"`, "station-file-test", socket, prompt_path, agent, received, binary},
-	}, context.allocator)
-	defer delete(stdout)
-	defer delete(stderr)
-	testing.expect_value(t, exec_err, os.Error(nil))
-	testing.expect(t, state.success, string(stderr))
+	run := run_station_with_stdin(t, root, {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt-file", prompt_path, "--", "sh", agent, received}, {{0, "second question"}})
+	defer delete(run.stderr)
+	testing.expect(t, !run.wait_failed, "the Station should exit on end of stdin")
+	testing.expect(t, run.exit_code == 0, run.stderr)
 	log_data, log_err := os.read_entire_file(received, context.allocator)
 	defer delete(log_data)
 	testing.expect_value(t, log_err, os.Error(nil))
@@ -203,13 +261,10 @@ test_station_forwards_dialog_and_applies_reply :: proc(t: ^testing.T) {
 	defer activity_listener_close(&listener)
 
 	// The answer is typed one second after start, once the dialog is pending.
-	state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `( sleep 1; printf '%s\n' "Allow"; sleep 1 ) | "$4" station --report "$1" --station shot-a --brew order-1 --prompt "first question" -- sh "$2" "$3"`, "dialog-test", socket, agent, received, binary},
-	}, context.allocator)
-	defer delete(stdout)
-	defer delete(stderr)
-	testing.expect_value(t, exec_err, os.Error(nil))
-	testing.expect(t, state.success, string(stderr))
+	run := run_station_with_stdin(t, root, {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt", "first question", "--", "sh", agent, received}, {{time.Second, "Allow"}, {time.Second, ""}})
+	defer delete(run.stderr)
+	testing.expect(t, !run.wait_failed, "the Station should exit on end of stdin")
+	testing.expect(t, run.exit_code == 0, run.stderr)
 
 	needs_input: string
 	turn: string
@@ -379,13 +434,10 @@ test_station_writes_long_report_to_file :: proc(t: ^testing.T) {
 	testing.expect(t, listener_ok)
 	defer activity_listener_close(&listener)
 
-	state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `(sleep 1) | "$2" station --report "$1" --station shot-a --brew order-1 --prompt "hi" -- sh "$3"`, "long-test", socket, binary, agent},
-	}, context.allocator)
-	defer delete(stdout)
-	defer delete(stderr)
-	testing.expect_value(t, exec_err, os.Error(nil))
-	testing.expect(t, state.success, string(stderr))
+	run := run_station_with_stdin(t, root, {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt", "hi", "--", "sh", agent}, {{time.Second, ""}})
+	defer delete(run.stderr)
+	testing.expect(t, !run.wait_failed, "the Station should exit on end of stdin")
+	testing.expect(t, run.exit_code == 0, run.stderr)
 
 	description: string
 	for {
@@ -972,13 +1024,10 @@ test_interactive_shot_keeps_input_open_after_its_first_turn :: proc(t: ^testing.
 	testing.expect(t, listener_ok)
 	defer activity_listener_close(&listener)
 
-	state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `(sleep 1; printf '%s\n' "second question") | "$4" station --report "$1" --station shot-a --brew order-1 --prompt "first question" -- sh "$2" "$3"`, "interactive-test", socket, agent, received, binary},
-	}, context.allocator)
-	defer delete(stdout)
-	defer delete(stderr)
-	testing.expect_value(t, exec_err, os.Error(nil))
-	testing.expect(t, state.success, string(stderr))
+	run := run_station_with_stdin(t, root, {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt", "first question", "--", "sh", agent, received}, {{time.Second, "second question"}})
+	defer delete(run.stderr)
+	testing.expect(t, !run.wait_failed, "the Station should exit on end of stdin")
+	testing.expect(t, run.exit_code == 0, run.stderr)
 
 	turns: [dynamic]string
 	defer {
