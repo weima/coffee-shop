@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
+import "core:time"
 
 @(test)
 test_child_launch_outside_dev_is_this_executable :: proc(t: ^testing.T) {
@@ -62,4 +63,18 @@ test_child_sweep_removes_only_outputs_of_dead_launchers :: proc(t: ^testing.T) {
 	testing.expect(t, !os.exists(dead), "output of a dead launcher must be removed")
 	testing.expect(t, os.exists(live), "output of a live launcher must stay")
 	testing.expect(t, os.exists(other), "unrelated files must stay")
+}
+
+@(test)
+test_dev_cancel_escalate_kills_the_group_after_the_timeout :: proc(t: ^testing.T) {
+	// A process group that leads itself, as an odin run wrapper does.
+	leader, start_err := os.process_start(os.Process_Desc{command = {"perl", "-e", "setpgrp(0,0); exec 'sleep', '300'"}})
+	testing.expect_value(t, start_err, nil)
+	if start_err != nil {
+		return
+	}
+	dev_cancel_escalate(leader.pid, 1)
+	// The leader is our child, so it is reaped only by waiting: a wait that ends means it was killed.
+	_, wait_err := os.process_wait(leader, 10*time.Second)
+	testing.expect(t, wait_err == nil, "the escalation must kill the wrapper's process group after the timeout")
 }

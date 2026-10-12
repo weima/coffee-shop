@@ -121,13 +121,13 @@ odin_run_child :: proc(pid: int) -> int {
 // shortcut: a Station mid-turn loses that turn at the timeout, not at a clean stop; a clean stop would need the Station to answer the cancel itself.
 DEV_CANCEL_TIMEOUT_SECONDS :: 60
 
-// Schedules a SIGKILL of the wrapper's process group, unless the wrapper has exited by then.
-dev_cancel_escalate :: proc(wrapper: int) {
+// Schedules a SIGKILL of the wrapper's process group after seconds, unless the wrapper has exited by then.
+dev_cancel_escalate :: proc(wrapper, seconds: int) {
 	command := []string{
 		"/bin/sh", "-c",
 		"(sleep \"$1\"; kill -0 \"$2\" 2>/dev/null && kill -KILL -- \"-$2\") </dev/null >/dev/null 2>&1 &",
 		"coffee-shop",
-		fmt.tprintf("%d", DEV_CANCEL_TIMEOUT_SECONDS),
+		fmt.tprintf("%d", seconds),
 		fmt.tprintf("%d", wrapper),
 	}
 	process, spawn_err := os.process_start(os.Process_Desc{command = command})
