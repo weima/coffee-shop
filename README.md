@@ -31,6 +31,25 @@ To **develop** Coffee Shop you also need:
 - The Odin compiler, official monthly release `dev-2026-10`. Odin has no semver-stable release; it publishes one `dev-YYYY-MM` release a month, and Coffee Shop pins one. The compiler reports it as `dev-2026-10-nightly:84bc3fc`, because Odin's version string always says "nightly". Download the archive for your platform from the [`dev-2026-10` release](https://github.com/odin-lang/Odin/releases/tag/dev-2026-10) and verify it against that archive's published SHA-256.
 - [`just`](https://github.com/casey/just), the command runner for the project's checks. Install it with `cargo install just --locked` or your package manager. `just test`, `just check` and `just build` are the supported entry points.
 
+## Sessions run with codemode
+
+Every Pi session Coffee Shop drives — the Barista and every Station — runs with Pi's `codemode` tool enabled. A Station can then run one script instead of one tool call per turn. That matters here because cost is driven by turn count, not prompt size: across the v0.4 dogfood runs `cacheRead` was 95% of 18.0M tokens, because every turn re-sends the conversation.
+
+Enable it once in your Pi user settings (`~/.pi/agent/settings.json`):
+
+```json
+{
+  "defaultTools": ["+codemode"]
+}
+```
+
+`+codemode` **adds** the tool to Pi's defaults (`read`, `bash`, `edit`, `write`); it does not replace them. Run `/reload` in an open session, or start a new one.
+
+Two things to know:
+
+- **A research (Cupping) Shot is the deliberate exception.** It must not write files or run shell commands, so Coffee Shop gives it a plain `--tools read,grep,find,ls` allowlist. A plain name list *replaces* the defaults, so such a Shot stays read-only even with codemode enabled. Do not add `+codemode` to a research Shot: `codemode` runs scripts, so it would quietly give that Shot write access.
+- **Coffee Shop also passes `+codemode` explicitly** when it launches an execute Shot, so Stations do not depend on your settings file being present.
+
 ## Intended interaction flow
 
 1. For the first usable path, start Pi from `~/work/coffee-shop` and keep its main session open. Pi is the user-facing Barista; Oreo may take this role later once stable.
