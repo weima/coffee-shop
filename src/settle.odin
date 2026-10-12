@@ -2,6 +2,7 @@ package main
 
 import "core:os"
 import "core:strings"
+import "core:sys/posix"
 import "core:time"
 
 // The supervisor is the only process that normally writes Brew state. Settling
@@ -14,6 +15,10 @@ workers_limit :: proc(register: Register) -> int {
 }
 
 CANCEL_GRACE :: 10 * time.Second
+
+// How long a cancelled Station is given to close its agent and exit before its
+// Herdr tab is closed as a fallback.
+CANCEL_TAB_FALLBACK :: 5 * time.Second
 
 Settle_Mode :: enum {
 	// Record outcomes that are proven by evidence; leave live Workers alone.
@@ -92,7 +97,7 @@ supervisor_gone :: proc(directory: string) -> bool {
 // a stand-in to simulate an unreadable process record.
 Liveness_Proc :: proc(identity: Process_Identity) -> Liveness
 
-settle_brew :: proc(directory: string, register: ^Register, herdr: string, mode: Settle_Mode, grace := CANCEL_GRACE, liveness: Liveness_Proc = identity_liveness) -> State_Error {
+settle_brew :: proc(directory: string, register: ^Register, herdr: string, mode: Settle_Mode, grace := CANCEL_GRACE, liveness: Liveness_Proc = identity_liveness, tab_fallback := CANCEL_TAB_FALLBACK) -> State_Error {
 	// Cancel asks every live Worker to stop before any exit is awaited, so the
 	// exits overlap: the Brew waits once, not once per running Shot.
 	waiting: [dynamic]Exit_Wait
@@ -106,13 +111,15 @@ settle_brew :: proc(directory: string, register: ^Register, herdr: string, mode:
 			append(&waiting, wait)
 		}
 	}
-	return await_cancelled_workers(directory, register, &waiting, grace, liveness)
+	return await_cancelled_workers(directory, register, &waiting, herdr, grace, liveness, tab_fallback)
 }
 
-// A Worker that has been asked to stop and whose exit is not yet confirmed.
+// A Worker that has been asked to stop and whose exit is not yet confirmed. The
+// fallback tab close happens at most once per Worker.
 Exit_Wait :: struct {
-	index:    int,
-	identity: Process_Identity,
+	index:      int,
+	identity:   Process_Identity,
+	tab_closed: bool,
 }
 
 // Moves one Shot toward a terminal state using only evidence: the Worker's
@@ -181,20 +188,34 @@ settle_shot :: proc(directory: string, register: ^Register, index: int, herdr: s
 			return
 		}
 	}
-	close_shot_tab(herdr, shot^)
+	// Ask the Station to stop gracefully first; its tab is only a fallback.
+	stop_worker_gracefully(identity)
 	return Exit_Wait{index = index, identity = identity}, true, State_Error{}
 }
 
+// Sends SIGTERM to the recorded Station. Only a positive PID is signalled; a
+// missing or unreadable identity is left for the tab-close fallback.
+stop_worker_gracefully :: proc(identity: Process_Identity) {
+	if identity.pid <= 0 {
+		return
+	}
+	_ = posix.kill(posix.pid_t(identity.pid), .SIGTERM)
+}
+
 // Waits on one deadline, shared by every Worker in waiting, for each to exit or
-// finish. Waiting ends early once none remain. A Worker still unconfirmed at the
-// deadline is interrupted.
-await_cancelled_workers :: proc(directory: string, register: ^Register, waiting: ^[dynamic]Exit_Wait, grace: time.Duration, liveness: Liveness_Proc) -> State_Error {
-	deadline := time.tick_now()
+// finish. A Station that has not exited within the fallback bound has its tab
+// closed, and a Worker still unconfirmed at the deadline is interrupted.
+await_cancelled_workers :: proc(directory: string, register: ^Register, waiting: ^[dynamic]Exit_Wait, herdr: string, grace: time.Duration, liveness: Liveness_Proc, tab_fallback: time.Duration) -> State_Error {
+	start := time.tick_now()
 	for {
 		for index := 0; index < len(waiting^); {
-			wait := waiting^[index]
+			wait := &waiting^[index]
 			shot := &register.shots[wait.index]
 			if !cancelled_worker_confirmed(directory, shot.id, wait.identity, liveness) {
+				if !wait.tab_closed && time.tick_diff(start, time.tick_now()) >= tab_fallback {
+					close_shot_tab(herdr, shot^)
+					wait.tab_closed = true
+				}
 				index += 1
 				continue
 			}
@@ -203,7 +224,7 @@ await_cancelled_workers :: proc(directory: string, register: ^Register, waiting:
 			}
 			ordered_remove(waiting, index)
 		}
-		if len(waiting^) == 0 || time.tick_diff(deadline, time.tick_now()) >= grace {
+		if len(waiting^) == 0 || time.tick_diff(start, time.tick_now()) >= grace {
 			break
 		}
 		time.sleep(50 * time.Millisecond)

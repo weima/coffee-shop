@@ -134,12 +134,60 @@ test_cancel_marks_a_worker_interrupted_when_its_exit_cannot_be_confirmed :: proc
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
 	defer destroy_struct(&register)
-	write_test_started(brew_dir, "shot-a", current_identity_or_dead()) // never exits
+	// The Worker ignores SIGTERM and has no exit that can be confirmed.
+	ignorer := start_term_ignoring_process(t, fmt.tprintf("%s/ignore.sh", root))
+	defer stop_process_hard(ignorer)
+	write_test_started(brew_dir, "shot-a", process_identity_of(ignorer))
 	herdr := fmt.tprintf("%s/herdr", root)
 	_ = os.write_entire_file(herdr, "#!/bin/sh\nexit 0\n", os.Permissions{.Read_User, .Write_User, .Execute_User})
 
 	testing.expect_value(t, settle_brew(brew_dir, &register, herdr, .Cancel, 200 * time.Millisecond).kind, State_Error_Kind.None)
 	testing.expect_value(t, register.shots[0].status, SHOT_INTERRUPTED)
+}
+
+// A Station that handles SIGTERM exits on its own, so the tab close is never needed.
+@(test)
+test_cancel_lets_a_station_exit_gracefully_without_closing_its_tab :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	brew_dir, register := make_brew_fixture(t, root)
+	defer destroy_struct(&register)
+
+	station, start_err := os.process_start(os.Process_Desc{command = []string{"sh", "-c", `trap "exit 0" TERM; while :; do sleep 1; done`}})
+	testing.expect_value(t, start_err, os.Error(nil))
+	defer stop_process_hard(station)
+	write_test_started(brew_dir, "shot-a", process_identity_of(station))
+
+	marker := fmt.tprintf("%s/tab-closed", root)
+	herdr := fmt.tprintf("%s/herdr", root)
+	_ = os.write_entire_file(herdr, fmt.tprintf("#!/bin/sh\nprintf 'closed\\n' >> %s\n", marker), os.Permissions{.Read_User, .Write_User, .Execute_User})
+
+	testing.expect_value(t, settle_brew(brew_dir, &register, herdr, .Cancel).kind, State_Error_Kind.None)
+	testing.expect_value(t, register.shots[0].status, SHOT_CANCELLED)
+	testing.expect(t, !os.exists(marker), "a graceful exit must not need the tab close")
+}
+
+// A Station that ignores SIGTERM cannot close gracefully, so the tab close ends it.
+@(test)
+test_cancel_falls_back_to_the_tab_when_the_station_ignores_sigterm :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	brew_dir, register := make_brew_fixture(t, root)
+	defer destroy_struct(&register)
+
+	station := start_term_ignoring_process(t, fmt.tprintf("%s/ignore.sh", root))
+	defer stop_process_hard(station)
+	write_test_started(brew_dir, "shot-a", process_identity_of(station))
+
+	marker := fmt.tprintf("%s/tab-closed", root)
+	herdr := fmt.tprintf("%s/herdr", root)
+	_ = os.write_entire_file(herdr, fmt.tprintf("#!/bin/sh\nkill -KILL %d\nprintf 'closed\\n' >> %s\n", station.pid, marker), os.Permissions{.Read_User, .Write_User, .Execute_User})
+
+	started := time.tick_now()
+	testing.expect_value(t, settle_brew(brew_dir, &register, herdr, .Cancel, 3 * time.Second, identity_liveness, 150 * time.Millisecond).kind, State_Error_Kind.None)
+	testing.expect_value(t, register.shots[0].status, SHOT_CANCELLED)
+	testing.expect(t, os.exists(marker), "the tab close must be the fallback")
+	testing.expect(t, time.tick_since(started) < 2 * time.Second, "the fallback must be bounded")
 }
 
 @(test)
@@ -279,7 +327,9 @@ test_cancel_never_confirms_an_exit_it_cannot_see :: proc(t: ^testing.T) {
 	defer remove_fixture_root(root)
 	brew_dir, register := make_brew_fixture(t, root)
 	defer destroy_struct(&register)
-	write_test_started(brew_dir, "shot-a", current_identity_or_dead())
+	ignorer := start_term_ignoring_process(t, fmt.tprintf("%s/ignore.sh", root))
+	defer stop_process_hard(ignorer)
+	write_test_started(brew_dir, "shot-a", process_identity_of(ignorer))
 	herdr := fmt.tprintf("%s/herdr", root)
 	_ = os.write_entire_file(herdr, "#!/bin/sh\nexit 0\n", os.Permissions{.Read_User, .Write_User, .Execute_User})
 
@@ -291,6 +341,36 @@ test_cancel_never_confirms_an_exit_it_cannot_see :: proc(t: ^testing.T) {
 current_identity_or_dead :: proc() -> Process_Identity {
 	identity, ok := current_identity()
 	return identity if ok else DEAD_IDENTITY
+}
+
+process_identity_of :: proc(process: os.Process) -> Process_Identity {
+	start_time, _ := process_start_time(process.pid)
+	return Process_Identity{pid = process.pid, start_time = start_time}
+}
+
+// A live process that ignores SIGTERM, so a graceful stop cannot end it. The
+// shell runs a script file; `sh -c` does not honour an empty TERM trap. It waits
+// until the trap is installed before returning, so a signal cannot race the setup.
+// The caller must finish it with os.process_kill.
+start_term_ignoring_process :: proc(t: ^testing.T, script_path: string) -> os.Process {
+	ready := fmt.tprintf("%s.ready", script_path)
+	script := fmt.tprintf("#!/bin/sh\ntrap '' TERM\nprintf 'ready\\n' > %s\nwhile :; do sleep 1; done\n", ready)
+	testing.expect_value(t, os.write_entire_file(script_path, script, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
+	process, start_err := os.process_start(os.Process_Desc{command = []string{"sh", script_path}})
+	testing.expect_value(t, start_err, os.Error(nil))
+	for _ in 0 ..< 100 {
+		if os.exists(ready) {
+			return process
+		}
+		time.sleep(10 * time.Millisecond)
+	}
+	testing.expect(t, false, "the SIGTERM-ignoring helper did not become ready")
+	return process
+}
+
+stop_process_hard :: proc(process: os.Process) {
+	_ = os.process_kill(process)
+	_, _ = os.process_wait(process)
 }
 
 @(test)

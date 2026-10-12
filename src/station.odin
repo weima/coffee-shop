@@ -1,5 +1,6 @@
 package main
 
+import "base:runtime"
 import "core:bufio"
 import "core:encoding/json"
 import "core:fmt"
@@ -7,6 +8,7 @@ import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import "core:sync"
+import "core:sys/posix"
 import "core:terminal/ansi"
 import "core:thread"
 import "core:time"
@@ -61,7 +63,8 @@ Station_Dialog :: struct {
 }
 
 // The mutex guards the dialog and the agent's input: a reply is written before the
-// input is closed, or it is dropped.
+// input is closed, or it is dropped. `agent_closed` is atomic because the SIGTERM
+// handler closes the input without taking the mutex.
 Station_Relay :: struct {
 	input:        ^os.File,
 	agent:        ^os.File,
@@ -71,6 +74,10 @@ Station_Relay :: struct {
 	one_turn:     bool,
 	agent_closed: bool,
 }
+
+// The SIGTERM handler needs the relay without a lookup; it is set before the
+// first prompt is sent.
+station_signal_relay: ^Station_Relay
 
 run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_kind, taste, message: string, agent: []string) -> int {
 	first_prompt := prompt
@@ -115,17 +122,20 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 		write_error("could not start the agent")
 		return 1
 	}
-	if !station_write_prompt(agent_in_write, first_prompt, "") {
-		write_error("could not send the first prompt to the agent")
-		return 1
-	}
-	station_display_line(display, station_style(ansi.FAINT, fmt.tprintf("sent the first prompt to the agent")))
-
+	// Install the handler before the first prompt, so a cancel that arrives once the
+	// agent is running is always handled.
 	relay := new(Station_Relay)
 	relay.input = os.stdin
 	relay.agent = agent_in_write
 	relay.display = display
 	relay.one_turn = shot_kind == SHOT_KIND_RESEARCH || taste != ""
+	station_signal_relay = relay
+	station_install_sigterm()
+	if !station_write_prompt(agent_in_write, first_prompt, "") {
+		write_error("could not send the first prompt to the agent")
+		return 1
+	}
+	station_display_line(display, station_style(ansi.FAINT, fmt.tprintf("sent the first prompt to the agent")))
 	_ = thread.create_and_start_with_data(relay, station_relay_replies, self_cleanup = true)
 
 	parser: Pi_Event_State
@@ -368,16 +378,49 @@ station_handle_agent_line :: proc(
 
 // Closes the agent's input once. The agent exits when its input closes, and the
 // relay thread may still be writing, so both happen under the relay's mutex. Pi is
-// asked for its stats first, so it can answer before the Station exits.
+// asked for its stats first, so it can answer before the Station exits. The atomic
+// exchange is the single decider, so a SIGTERM that arrives during the write does
+// not cause a second close.
 station_relay_close_agent :: proc(relay: ^Station_Relay) {
 	sync.mutex_lock(&relay.mutex)
 	defer sync.mutex_unlock(&relay.mutex)
-	if relay.agent_closed {
+	if sync.atomic_load(&relay.agent_closed) {
 		return
 	}
 	station_write_stats_request(relay.agent)
-	relay.agent_closed = true
+	if sync.atomic_exchange(&relay.agent_closed, true) {
+		return
+	}
 	_ = os.close(relay.agent)
+}
+
+// The SIGTERM handler closes the agent's input so the agent can exit on its own
+// instead of dying when the Station's pipes go away. It deliberately takes no
+// mutex: a signal can interrupt the one thread holding the relay mutex, so locking
+// here would deadlock. The atomic exchange is the single decider for the close, and
+// the handler never waits, so it cannot leave the Station stuck. The raw close is
+// async-signal-safe; the File's memory is left for process exit rather than freed
+// from the handler.
+station_close_agent_once :: proc "contextless" (relay: ^Station_Relay) {
+	if sync.atomic_exchange(&relay.agent_closed, true) {
+		return
+	}
+	context = runtime.default_context()
+	_ = posix.close(posix.FD(os.fd(relay.agent)))
+}
+
+station_signal_term :: proc "c" (sig: posix.Signal) {
+	if relay := station_signal_relay; relay != nil {
+		station_close_agent_once(relay)
+	}
+}
+
+station_install_sigterm :: proc() {
+	action: posix.sigaction_t
+	action.sa_handler = station_signal_term
+	posix.sigemptyset(&action.sa_mask)
+	action.sa_flags = {}
+	_ = posix.sigaction(.SIGTERM, &action, nil)
 }
 
 // A usage report is advisory: a failed or unreadable response sends nothing and
@@ -479,7 +522,7 @@ station_relay_replies :: proc(data: rawptr) {
 
 		// A reply after the close is dropped without a report.
 		sync.mutex_lock(&relay.mutex)
-		if relay.agent_closed {
+		if sync.atomic_load(&relay.agent_closed) {
 			sync.mutex_unlock(&relay.mutex)
 			break
 		}

@@ -249,7 +249,7 @@ A Station reports what it cost. Once Pi has settled, the Station asks it for `ge
 
 ## Cancellation and recovery
 
-`cancel <brew-id>` records a cancellation request and is safe to repeat. While the supervisor is alive it does the work: queued Shots become `cancelled`, and each running Worker has its Herdr tab closed, which ends Pi. A Shot becomes `cancelled` once its Worker process is confirmed gone, or `interrupted` if that cannot be confirmed within ten seconds.
+`cancel <brew-id>` records a cancellation request and is safe to repeat. While the supervisor is alive it does the work: queued Shots become `cancelled`, and each running Station is asked to stop with `SIGTERM`. A Station handles that signal by closing the agent's input, so the agent exits on its own instead of dying when the Station's pipes go away, and then exits normally. The supervisor waits up to five seconds for the Station to exit; if it has not, it closes the Herdr tab as a fallback, which ends whatever is left in the pane. A Shot becomes `cancelled` once its Worker process is confirmed gone, or `interrupted` if that cannot be confirmed within the existing ten-second grace period.
 
 The supervisor records its process identity (PID plus kernel start time, so a reused PID is not mistaken for it) in `supervisor.json`; each Worker does the same in `workers/<shot>.started`. If the supervisor has died, `status` says so, and `collect` or `cancel` take over its job using only evidence: a Worker's result file is recorded as completed or failed, and a Worker that vanished without a result becomes `interrupted`. A live Worker is left alone unless the Brew is being cancelled. A Shot is never marked `completed` without a recorded successful result.
 
