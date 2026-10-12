@@ -182,3 +182,32 @@ test_several_stalled_clients_do_not_hold_up_a_healthy_client :: proc(t: ^testing
 	testing.expect_value(t, recv_err, "")
 	testing.expect(t, response.ok, response.error)
 }
+
+@(test)
+test_server_api_records_a_station_report :: proc(t: ^testing.T) {
+	root, register, api, ok := api_fixture(t)
+	defer remove_test_state_directory(root)
+	defer destroy_struct(&register)
+	testing.expect(t, ok, "the server socket must open")
+	defer server_api_close(&api)
+
+	conn, send_err := server_report_send(api.socket_path, Station_Report_Request{
+		op = "report", brew_id = register.brew_id, token = register.brew_token,
+		shot_id = register.shots[0].id, kind = "usage",
+		detail = "input=10 output=5 cacheRead=2 cacheWrite=1 total=18 cost=0.0123",
+	})
+	defer posix.close(conn)
+	testing.expect_value(t, send_err, "")
+	testing.expect(t, server_api_serve_one(&api, 2000), "the waiting request must be served")
+
+	response, recv_err := server_api_receive(conn)
+	defer destroy_struct(&response)
+	testing.expect_value(t, recv_err, "")
+	testing.expect(t, response.ok, response.error)
+
+	stored, stored_err := read_state(fmt.tprintf("%s/%s", root, register.brew_id))
+	defer destroy_struct(&stored)
+	testing.expect_value(t, stored_err.kind, State_Error_Kind.None)
+	testing.expect(t, stored.shots[0].usage.recorded)
+	testing.expect_value(t, stored.shots[0].usage.total, i64(18))
+}

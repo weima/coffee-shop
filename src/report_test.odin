@@ -53,7 +53,90 @@ test_status_lists_each_shot_and_pending_cancellation :: proc(t: ^testing.T) {
 	output, err := render_status(root, "brew-test")
 	defer delete(output)
 	testing.expect_value(t, err, "")
-	testing.expect_value(t, output, "Brew brew-test (beans): running\nWorkers: 1 of 2 running, 1 queued\n  shot-a  running (cancel requested)\n  shot-b  queued\nSupervisor is not running; `collect` or `cancel` will settle unfinished Shots.\n")
+	testing.expect_value(t, output, "Brew brew-test (beans): running\nWorkers: 1 of 2 running, 1 queued\n  shot-a  running (cancel requested)  no supervisor\n  shot-b  queued\nSupervisor is not running; `collect` or `cancel` will settle unfinished Shots.\n")
+}
+
+@(test)
+test_status_reports_a_running_stations_usage_and_the_brew_totals :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	register := make_test_register(t)
+	defer destroy_struct(&register)
+	brew_dir := fmt.tprintf("%s/brew-test", root)
+	_ = create_state(brew_dir, &register)
+	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_RUNNING, "Worker started")
+	register.shots[0].herdr_tab_id = strings.clone("tab-9")
+	register.shots[0].herdr_pane_id = strings.clone("pane-9")
+	_ = save_register_metadata(brew_dir, register)
+	_ = apply_station_report(brew_dir, &register, "shot-a", "usage", "input=10 output=5 cacheRead=2 cacheWrite=1 total=18 cost=0.0123")
+
+	output, err := render_status(root, "brew-test")
+	defer delete(output)
+	testing.expect_value(t, err, "")
+	testing.expect(t, strings.contains(output, "shot-a  running"), output)
+	testing.expect(t, strings.contains(output, "tab=tab-9 pane=pane-9"), output)
+	testing.expect(t, strings.contains(output, "tokens=18 cost=0.0123"), output)
+	testing.expect(t, strings.contains(output, "Usage: tokens=18 cost=0.0123"), output)
+}
+
+@(test)
+test_status_never_renders_an_unavailable_cost_as_zero :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	register := make_test_register(t)
+	defer destroy_struct(&register)
+	brew_dir := fmt.tprintf("%s/brew-test", root)
+	_ = create_state(brew_dir, &register)
+	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_RUNNING, "Worker started")
+	_ = apply_station_report(brew_dir, &register, "shot-a", "usage", "input=1 output=2 cacheRead=3 cacheWrite=4 total=10 cost=unavailable")
+
+	output, err := render_status(root, "brew-test")
+	defer delete(output)
+	testing.expect_value(t, err, "")
+	testing.expect(t, strings.contains(output, "tokens=10 cost=unavailable"), output)
+	testing.expect(t, !strings.contains(output, "cost=0.0000"), output)
+	testing.expect(t, strings.contains(output, "Usage: tokens=10 cost=unavailable"), output)
+}
+
+@(test)
+test_status_shows_a_terminal_outcome_without_opening_the_tray :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	register := make_test_register(t)
+	defer destroy_struct(&register)
+	brew_dir := fmt.tprintf("%s/brew-test", root)
+	_ = create_state(brew_dir, &register)
+
+	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_RUNNING, "Worker started")
+	_ = apply_station_report(brew_dir, &register, "shot-a", "pulled", "a1b2c3d")
+	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_COMPLETED, "Pi exited with code 0")
+	_ = transition_shot(brew_dir, &register, "shot-b", SHOT_RUNNING, "Worker started")
+	_ = apply_station_report(brew_dir, &register, "shot-b", "taste_failed", "Taste exited with code 1")
+	_ = transition_shot(brew_dir, &register, "shot-b", SHOT_FAILED, "Worker exited unsuccessfully")
+
+	output, err := render_status(root, "brew-test")
+	defer delete(output)
+	testing.expect_value(t, err, "")
+	testing.expect(t, strings.contains(output, "shot-a  completed (pull a1b2c3d)"), output)
+	testing.expect(t, strings.contains(output, "shot-b  failed (taste failed: Taste exited with code 1)"), output)
+}
+
+@(test)
+test_status_shows_terminal_transition_detail :: proc(t: ^testing.T) {
+	root := make_fixture_root(t)
+	defer remove_fixture_root(root)
+	register := make_test_register(t)
+	defer destroy_struct(&register)
+	brew_dir := fmt.tprintf("%s/brew-test", root)
+	_ = create_state(brew_dir, &register)
+	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_RUNNING, "Worker started")
+	_ = transition_shot(brew_dir, &register, "shot-a", SHOT_COMPLETED, "Pi exited with code 0")
+
+	output, err := render_status(root, "brew-test")
+	defer delete(output)
+	testing.expect_value(t, err, "")
+	testing.expect(t, strings.contains(output, "shot-a  completed (Pi exited with code 0)"), output)
+	testing.expect(t, !strings.contains(output, "shot-a  completed (Worker started)"), output)
 }
 
 @(test)

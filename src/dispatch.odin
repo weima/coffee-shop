@@ -421,7 +421,7 @@ dispatch_workers :: proc(directory: string, register: ^Register, executable, sta
 			return err
 		}
 		if listening {
-			drain_worker_activity(directory, register^, &listener)
+			drain_worker_activity(directory, register, &listener)
 		}
 
 		active := 0
@@ -467,14 +467,14 @@ dispatch_workers :: proc(directory: string, register: ^Register, executable, sta
 
 ACTIVITY_DRAIN_LIMIT :: 64
 
-drain_worker_activity :: proc(directory: string, register: Register, listener: ^Activity_Listener) {
+drain_worker_activity :: proc(directory: string, register: ^Register, listener: ^Activity_Listener) {
 	for _ in 0 ..< ACTIVITY_DRAIN_LIMIT {
 		result := activity_listener_receive(listener)
 		switch result.kind {
 		case .Message:
-			shot_index := find_shot(register, result.message.shot_id)
-			if result.message.brew_id != register.brew_id || shot_index < 0 ||
-				register.shots[shot_index].status != SHOT_RUNNING {
+			shot_index := find_shot(register^, result.message.shot_id)
+			if result.message.brew_id != register^.brew_id || shot_index < 0 ||
+				register^.shots[shot_index].status != SHOT_RUNNING {
 				destroy_struct(&result.message)
 				continue
 			}
@@ -483,6 +483,7 @@ drain_worker_activity :: proc(directory: string, register: Register, listener: ^
 				result.message.timestamp_ns = now_ns
 			}
 			_ = write_activity_record(directory, result.message)
+			_ = apply_station_report(directory, register, result.message.shot_id, result.message.kind, result.message.description)
 			destroy_struct(&result.message)
 		case .Malformed:
 			continue
