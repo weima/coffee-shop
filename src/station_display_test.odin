@@ -1,7 +1,9 @@
 package main
 
 import "core:fmt"
+import "core:os"
 import "core:strings"
+import "core:terminal/ansi"
 import "core:testing"
 
 // Mirrors a sprite row the way the left-facing cat is built: reverse the padded
@@ -66,6 +68,36 @@ test_station_block_truncates_long_status :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_station_block_strips_line_breaks_from_status :: proc(t: ^testing.T) {
+	lines := station_block_lines(0, 0, true, "one\ntwo\rthree")
+	testing.expect_value(t, lines[3], "onetwothree")
+	// No row carries CR or LF, so the four rows written with a `\n` between them
+	// stay exactly STATION_BLOCK_ROWS visual rows.
+	breaks := 0
+	for row, i in lines {
+		for r in row {
+			if r == '\n' || r == '\r' {
+				breaks += 1
+			}
+		}
+		testing.expectf(t, !strings.contains_any(row, "\r\n"), "row %d must not contain a line break: %q", i, row)
+	}
+	testing.expect_value(t, breaks, 0)
+}
+
+@(test)
+test_station_block_clamps_multi_byte_status_on_a_rune_boundary :: proc(t: ^testing.T) {
+	// 4 bytes per rune, so the byte clamp must stop before a rune that would
+	// straddle STATION_STATUS_MAX.
+	long := strings.repeat("\u00e9\u00e9", STATION_STATUS_MAX, context.temp_allocator)
+	lines := station_block_lines(0, 0, true, long)
+	testing.expect(t, len(lines[3]) <= STATION_STATUS_MAX, "clamp must not exceed the byte cap")
+	for r in lines[3] {
+		testing.expect(t, r != '\uFFFD', "clamp must not cut a rune in half")
+	}
+}
+
+@(test)
 test_station_progress_steps_describe_tool_calls :: proc(t: ^testing.T) {
 	command := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 	bash_line := fmt.tprintf(`{{"type":"tool_execution_start","toolName":"bash","args":{{"command":"%s"}}}}`, command)
@@ -120,6 +152,43 @@ test_station_display_draw_restores_auto_wrap :: proc(t: ^testing.T) {
 	display := Station_Display{live = true, started_at_ns = 1_000_000_000}
 	station_display_draw_locked(&display)
 	testing.expect(t, !display.wrap_off, "draw must restore auto-wrap")
+}
+
+@(test)
+test_station_display_draw_writes_the_auto_wrap_escapes :: proc(t: ^testing.T) {
+	// wrap_off is bookkeeping with no production reader, so assert the bytes that
+	// actually reach stdout. Capturing means pointing os.stdout at a temp file for
+	// the call (the test runner holds its own stream, and no other test prints via
+	// fmt.print).
+	dir, dir_err := os.temp_directory(context.temp_allocator)
+	base := dir if dir_err == nil else "/tmp"
+	name := fmt.aprintf("%s/station-wrap-%d.txt", base, os.get_pid())
+	defer delete(name)
+	out, create_err := os.create(name)
+	if create_err != nil {
+		testing.fail(t)
+		return
+	}
+	defer os.close(out)
+	defer os.remove(name)
+
+	old := os.stdout
+	os.stdout = out
+	defer os.stdout = old
+
+	display := Station_Display{live = true, started_at_ns = 1_000_000_000}
+	station_display_draw_locked(&display)
+
+	os.seek(out, 0, .Start)
+	data, read_err := os.read_entire_file_from_file(out, context.allocator)
+	if read_err != nil {
+		testing.fail(t)
+		return
+	}
+	defer delete(data)
+	captured := string(data)
+	testing.expect(t, strings.contains(captured, ansi.CSI + ansi.DECAWM_OFF), "draw must emit auto-wrap off")
+	testing.expect(t, strings.contains(captured, ansi.CSI + ansi.DECAWM_ON), "draw must emit auto-wrap on")
 }
 
 @(test)

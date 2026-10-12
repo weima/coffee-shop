@@ -8,6 +8,7 @@ import "core:terminal"
 import "core:terminal/ansi"
 import "core:thread"
 import "core:time"
+import "core:unicode/utf8"
 
 STATION_FRAME_INTERVAL :: 150 * time.Millisecond
 STATION_STATUS_MAX :: 120
@@ -101,6 +102,10 @@ station_display_advance_locked :: proc(display: ^Station_Display) {
 	display.step += 1
 }
 
+// Restoring wrap relies on the caller's defer; Odin runs neither defer nor atexit
+// on a panic (the process dies on SIGTRAP) or a signal, so a crash inside a
+// draw/erase body can leave the terminal's auto-wrap off. The Station's signal
+// handler is a single atomic store, so there is no handler hook to restore it.
 station_display_wrap_off :: proc(display: ^Station_Display) {
 	if display.live {
 		fmt.print(ansi.CSI + ansi.DECAWM_OFF)
@@ -151,12 +156,32 @@ station_display_clear_locked :: proc(display: ^Station_Display) {
 	display.drawn = 0
 }
 
+// A drawn row must be exactly one terminal line. Tool descriptions are shell
+// commands, so a status can carry CR or LF; left in, one raw row would become
+// several visual lines, the block would grow past STATION_BLOCK_ROWS, and the
+// cursor arithmetic would stop erasing the top row. Clamping stops on a rune
+// boundary so a multi-byte rune is never cut in half.
+station_row_text :: proc(text: string) -> string {
+	if len(text) <= STATION_STATUS_MAX && !strings.contains_any(text, "\r\n") {
+		return text
+	}
+	clean := strings.builder_make(context.temp_allocator)
+	for offset := 0; offset < len(text); {
+		r, size := utf8.decode_rune_in_string(text[offset:])
+		offset += size
+		if r == '\r' || r == '\n' {
+			continue
+		}
+		if len(clean.buf) + utf8.rune_size(r) > STATION_STATUS_MAX {
+			break
+		}
+		strings.write_rune(&clean, r)
+	}
+	return strings.to_string(clean)
+}
+
 station_block_lines :: proc(x, step: int, facing_right: bool, status: string) -> [STATION_BLOCK_ROWS]string {
 	pad := strings.repeat(" ", x, context.temp_allocator)
-	text := status
-	if len(text) > STATION_STATUS_MAX {
-		text = text[:STATION_STATUS_MAX]
-	}
 	lines: [STATION_BLOCK_ROWS]string
 	if facing_right {
 		for line, i in STATION_CAT_RIGHT {
@@ -167,7 +192,7 @@ station_block_lines :: proc(x, step: int, facing_right: bool, status: string) ->
 			lines[i] = fmt.tprintf("%s%s", pad, line)
 		}
 	}
-	lines[3] = text
+	lines[3] = station_row_text(status)
 	return lines
 }
 
