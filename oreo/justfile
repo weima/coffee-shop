@@ -4,6 +4,7 @@ set shell := ["sh", "-cu"]
 check:
     odin check src/sqlite -no-entry-point
     odin check src/store -collection:oreo=src -no-entry-point
+    odin check src/script -collection:oreo=src -no-entry-point
     odin check src -collection:oreo=src -no-entry-point
 
 # Compile the bundled amalgamation and link it into the package tests.
@@ -19,4 +20,5 @@ test: check
         -o "$build_dir/sqlite3.o"
     TZ=UTC odin test src/sqlite -extra-linker-flags:"$build_dir/sqlite3.o"
     TZ=UTC odin test src/store -collection:oreo=src -extra-linker-flags:"$build_dir/sqlite3.o"
+    TZ=UTC odin test src/script -collection:oreo=src -extra-linker-flags:"$build_dir/sqlite3.o"
     TZ=UTC odin test src -collection:oreo=src -extra-linker-flags:"$build_dir/sqlite3.o"
