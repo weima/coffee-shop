@@ -501,15 +501,21 @@ test_host_receives_malformed_line_before_error :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(run.out, `{"type":"received","request_id":"shutdown-1"`) && strings.contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
 }
 
-// A line longer than the scanner's 65536-byte token limit stops the scan. The host
-// names that failure instead of exiting as if it had shut down cleanly.
+// A line over the 65536-byte limit is a protocol guard, not a fatal scan failure:
+// the host names the limit and the byte count, drops the line, and keeps serving.
+// A valid request sent afterwards is still handled.
 @(test)
-test_host_reports_scanner_failure_on_too_long_line :: proc(t: ^testing.T) {
+test_host_reports_overlong_line_and_keeps_serving :: proc(t: ^testing.T) {
 	long_line := strings.repeat("x", 70000, context.temp_allocator)
-	requests := fmt.aprintf("%s\n", long_line)
+	after := `{"type":"sessions","request_id":"after-long"}`
+	requests := fmt.aprintf("%s\n%s\n{\"type\":\"shutdown\",\"request_id\":\"shutdown-1\"}\n", long_line, after)
 	defer delete(requests)
-	run := run_host_requests(t, "coffee-shop-host-received-long-*", requests)
+	run := run_host_requests(t, "coffee-shop-host-overlong-*", requests)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"error"`) && strings.contains(run.out, "stdin scan failed"), run.out)
-	testing.expect(t, !strings.contains(run.out, `"type":"received"`), run.out)
+	testing.expect(t, strings.contains(run.out, `{"type":"error"`) && strings.contains(run.out, "65536") && strings.contains(run.out, "70000"), run.out)
+	// The overlong line is discarded, so it never becomes a received event.
+	testing.expect(t, !strings.contains(run.out, fmt.tprintf(`"bytes":%d`, len(long_line))), run.out)
+	testing.expect(t, strings.contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"after-long","bytes":%d}}`, len(after))), run.out)
+	testing.expect(t, strings.contains(run.out, `{"type":"sessions","sessions":[]}`), run.out)
+	testing.expect(t, strings.index(run.out, `"after-long"`) > strings.index(run.out, "65536"), run.out)
 }
