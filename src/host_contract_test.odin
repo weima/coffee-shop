@@ -197,6 +197,8 @@ case "$1 $2" in
     echo '{"id":"x","error":{"code":"workspace_not_found","message":"no workspace with that id"}}' >&2
     exit 1
   fi ;;
+"pane process-info")
+  echo '{"id":"x","result":{"type":"pane_process_info","process_info":{"pane_id":"'"$4"'","shell_pid":999998,"foreground_process_group_id":2147480000,"foreground_processes":[{"pid":2147480000}]}}}' ;;
 *) echo '{}' ;;
 esac
 `
@@ -518,4 +520,72 @@ test_host_reports_overlong_line_and_keeps_serving :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"after-long","bytes":%d}}`, len(after))), run.out)
 	testing.expect(t, strings.contains(run.out, `{"type":"sessions","sessions":[]}`), run.out)
 	testing.expect(t, strings.index(run.out, `"after-long"`) > strings.index(run.out, "65536"), run.out)
+}
+
+// A cancel names one running Shot and gets an answer that says so. The identity
+// recorded for the session is signalled, so no reason is attached.
+@(test)
+test_host_cancel_signals_the_named_shot :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-cancel-*", `{"type":"dispatch","request_id":"order-c1","repo":"@REPO@","recipe":{"shots":[{"id":"shot-a","prompt":"make the change"}]}}
+{"type":"cancel","request_id":"cancel-1","shot_id":"shot-a"}
+{"type":"shutdown","request_id":"shutdown-1"}
+`)
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-c1","shot_id":"shot-a","pane_id":"p0"}`), run.out)
+	testing.expect(t, strings.contains(run.out, `{"type":"cancelled","request_id":"cancel-1","shot_id":"shot-a"}`), run.out)
+	testing.expect(t, !strings.contains(run.out, `"request_id":"cancel-1","shot_id":"shot-a","reason"`), run.out)
+}
+
+// A cancel for a Shot that is not running says nothing matched and does not end
+// the loop; the requests after it are still served.
+@(test)
+test_host_cancel_reports_unknown_shot_and_keeps_serving :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-cancel-missing-*", `{"type":"dispatch","request_id":"order-c2","repo":"@REPO@","recipe":{"shots":[{"id":"shot-a","prompt":"make the change"}]}}
+{"type":"cancel","request_id":"cancel-2","shot_id":"shot-missing"}
+{"type":"sessions","request_id":"after-cancel"}
+{"type":"shutdown","request_id":"shutdown-1"}
+`)
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.out, `{"type":"cancelled","request_id":"cancel-2","shot_id":"shot-missing","reason":"no Station is running for that shot"}`), run.out)
+	testing.expect(t, strings.contains(run.out, `{"type":"sessions"`), run.out)
+	testing.expect(t, strings.contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
+}
+
+// A cancel with no shot_id answers once per running Station.
+@(test)
+test_host_cancel_without_shot_cancels_every_station :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-cancel-all-*", `{"type":"dispatch","request_id":"order-c3","repo":"@REPO@","recipe":{"shots":[{"id":"shot-a","prompt":"make the change"},{"id":"shot-b","prompt":"make the change"}]}}
+{"type":"cancel","request_id":"cancel-3"}
+{"type":"shutdown","request_id":"shutdown-1"}
+`)
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.out, `{"type":"cancelled","request_id":"cancel-3","shot_id":"shot-a"}`), run.out)
+	testing.expect(t, strings.contains(run.out, `{"type":"cancelled","request_id":"cancel-3","shot_id":"shot-b"}`), run.out)
+}
+
+// The loop still serves a following valid request after a cancel.
+@(test)
+test_host_cancel_keeps_serving_a_following_request :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-cancel-after-*", `{"type":"dispatch","request_id":"order-c4","repo":"@REPO@","recipe":{"shots":[{"id":"shot-a","prompt":"make the change"}]}}
+{"type":"cancel","request_id":"cancel-4","shot_id":"shot-a"}
+{"type":"sessions","request_id":"after-cancel"}
+{"type":"shutdown","request_id":"shutdown-1"}
+`)
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.out, `{"type":"cancelled","request_id":"cancel-4","shot_id":"shot-a"}`), run.out)
+	testing.expect(t, strings.contains(run.out, `{"type":"sessions"`), run.out)
+	testing.expect(t, strings.contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
+	testing.expect(t, strings.index(run.out, `{"type":"sessions"`) > strings.index(run.out, `{"type":"cancelled","request_id":"cancel-4"`), run.out)
+}
+
+// A cancel without a request_id is refused the same way every other request is.
+@(test)
+test_host_cancel_without_request_id_is_rejected :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-cancel-noid-*", `{"type":"cancel"}
+{"type":"shutdown","request_id":"shutdown-1"}
+`)
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.out, `{"type":"error","reason":"request_id must be a valid shot-style identifier (letters, digits, - or _, up to 64)"}`), run.out)
+	testing.expect(t, !strings.contains(run.out, `"type":"cancelled"`), run.out)
+	testing.expect(t, strings.contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
 }

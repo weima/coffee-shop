@@ -31,10 +31,13 @@ host_history_root: string
 HOST_LOCK_FILE_NAME :: "host.lock"
 
 // Pane of each started Station, so a reply can be typed into the right pane.
+// The identity is the Station process Herdr reports for the pane, recorded when
+// the session starts so a cancel can signal it instead of killing the pane.
 Host_Session :: struct {
 	request_id: string,
 	shot_id:    string,
 	pane_id:    string,
+	identity:   Process_Identity,
 }
 host_sessions: [dynamic]Host_Session
 
@@ -350,6 +353,8 @@ host_handle_line :: proc(line: string) -> bool {
 	}
 
 	switch type_name {
+	case "cancel":
+		host_cancel(root, request_id)
 	case "dispatch":
 		host_dispatch(root, request_id)
 	case "reply":
@@ -546,7 +551,8 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, thin
 			host_session_failed(request_id, id, fmt.tprintf("could not start the Station: %s", run_err))
 			continue
 		}
-		append(&host_sessions, Host_Session{request_id = strings.clone(request_id), shot_id = strings.clone(id), pane_id = strings.clone(pane_id)})
+		identity := host_pane_identity(herdr, pane_id)
+		append(&host_sessions, Host_Session{request_id = strings.clone(request_id), shot_id = strings.clone(id), pane_id = strings.clone(pane_id), identity = identity})
 		host_emit(Host_Event{type = "session_started", request_id = request_id, shot_id = id, pane_id = pane_id})
 	}
 }
@@ -598,6 +604,95 @@ host_saved_workspace_id :: proc(path: string) -> string {
 		return ""
 	}
 	return strings.trim_space(string(data))
+}
+
+// Cancels running Stations. A named shot_id signals just that Station; an omitted
+// shot_id signals every Station. Only a recorded positive PID is signalled with
+// SIGTERM, so the Station's own handler closes the agent's input; nothing is
+// killed and no Herdr pane is closed.
+host_cancel :: proc(root: json.Object, request_id: string) {
+	shot_id, has_shot := host_string(root, "shot_id")
+	if has_shot && !valid_shot_id(shot_id) {
+		host_emit(Host_Event{type = "error", request_id = request_id, reason = "cancel needs a valid shot_id"})
+		return
+	}
+	if !has_shot {
+		if len(host_sessions) == 0 {
+			host_emit(Host_Event{type = "cancelled", request_id = request_id, reason = "no Stations are running"})
+			return
+		}
+		for session in host_sessions {
+			host_cancel_session(request_id, session)
+		}
+		return
+	}
+	matched := false
+	for session in host_sessions {
+		if session.shot_id != shot_id {
+			continue
+		}
+		matched = true
+		host_cancel_session(request_id, session)
+	}
+	if !matched {
+		host_emit(Host_Event{type = "cancelled", request_id = request_id, shot_id = shot_id, reason = "no Station is running for that shot"})
+	}
+}
+
+// A positive recorded PID is asked to stop. A missing or unreadable identity is
+// not an error; it is reported as a reason instead of a signal.
+host_cancel_session :: proc(request_id: string, session: Host_Session) {
+	if session.identity.pid > 0 {
+		stop_worker_gracefully(session.identity)
+		host_emit(Host_Event{type = "cancelled", request_id = request_id, shot_id = session.shot_id})
+		return
+	}
+	host_emit(Host_Event{type = "cancelled", request_id = request_id, shot_id = session.shot_id, reason = "the Station process could not be identified"})
+}
+
+// The foreground process group Herdr reports for the pane is the Station the
+// pane's shell started. A pane whose command has not started yet reports the
+// shell itself, which is not the Station, and a missing or unreadable answer
+// leaves the identity unknown rather than guessing.
+host_pane_identity :: proc(herdr, pane_id: string) -> Process_Identity {
+	stdout, _, run_err := run_herdr(herdr, []string{"pane", "process-info", "--pane", pane_id}, context.temp_allocator)
+	if run_err != "" {
+		return {}
+	}
+	response: Herdr_Process_Info_Response
+	if json.unmarshal_string(string(stdout), &response, .JSON, context.temp_allocator) != nil {
+		return {}
+	}
+	info := response.result.process_info
+	if pid := info.foreground_process_group_id; pid > 0 && pid != info.shell_pid {
+		return Process_Identity{pid = pid}
+	}
+	for process in info.foreground_processes {
+		if process.pid > 0 && process.pid != info.shell_pid {
+			return Process_Identity{pid = process.pid}
+		}
+	}
+	return {}
+}
+
+Herdr_Process_Info_Response :: struct {
+	result: Herdr_Process_Info_Result,
+}
+
+Herdr_Process_Info_Result :: struct {
+	type:         string,
+	process_info: Herdr_Process_Info,
+}
+
+Herdr_Pane_Process :: struct {
+	pid: int `json:"pid"`,
+}
+
+Herdr_Process_Info :: struct {
+	pane_id:                     string `json:"pane_id"`,
+	shell_pid:                   int `json:"shell_pid"`,
+	foreground_process_group_id: int `json:"foreground_process_group_id"`,
+	foreground_processes:        [dynamic]Herdr_Pane_Process `json:"foreground_processes"`,
 }
 
 // Types a reply into a Station's pane. The Station reads it from stdin and either
