@@ -47,6 +47,22 @@ value :: 1
 }
 
 @(test)
+test_script_gate_rejects_core_os :: proc(t: ^testing.T) {
+	ok, reason := script_gate(`
+package script
+
+import "core:os"
+
+main :: proc() {
+	os.exit(7)
+}
+`)
+	defer delete(reason)
+	testing.expect(t, !ok)
+	testing.expect(t, strings.contains(reason, "core:os"))
+}
+
+@(test)
 test_script_gate_rejects_a_foreign_block :: proc(t: ^testing.T) {
 	ok, reason := script_gate(`
 package script

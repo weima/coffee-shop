@@ -9,10 +9,15 @@ import "core:odin/tokenizer"
 import "core:strings"
 
 // SCRIPT_IMPORT_ALLOWLIST is the complete set of packages a code-mode script
-// may import. "oreo:script" is the typed tool-calling surface.
+// may import. It deliberately excludes every package that reaches the file
+// system, spawns processes, or opens the network, so a script does its I/O
+// through "oreo:script" and the host can account for it. "core:os" is the
+// example: it exposes process_exec, process_start, write_entire_file, and
+// remove_all, which would let a script bypass the typed tool-calling API and
+// make this gate a compile-time safety check instead of a capability boundary.
+// "core:fmt" stays because text() in "oreo:script" writes to stdout.
 SCRIPT_IMPORT_ALLOWLIST :: []string{
 	"core:fmt",
-	"core:os",
 	"core:strings",
 	"core:strconv",
 	"core:slice",
