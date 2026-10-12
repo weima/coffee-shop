@@ -89,7 +89,7 @@ test_foreground_host_accepts_dispatches_and_starts_sessions :: proc(t: ^testing.
 	defer delete(calls_data)
 	testing.expect_value(t, calls_err, os.Error(nil))
 	calls := string(calls_data)
-	testing.expect(t, strings.contains(calls, "--station shot-a --brew order-1 --prompt-file '") && strings.contains(calls, "-- pi --mode rpc --model 'github-copilot/claude-haiku-5.5' -e"), calls)
+	testing.expect(t, strings.contains(calls, "--station shot-a --brew order-1 --prompt-file '") && strings.contains(calls, "-- pi --mode rpc --tools +codemode --model 'github-copilot/claude-haiku-5.5' -e"), calls)
 	prompt_command_at := strings.index(calls, "--station shot-a")
 	prompt_command_start := strings.last_index_byte(calls[:prompt_command_at], '\n') + 1
 	prompt_command_end := strings.index_byte(calls[prompt_command_at:], '\n')
@@ -111,7 +111,7 @@ test_foreground_host_accepts_dispatches_and_starts_sessions :: proc(t: ^testing.
 		shot_b_end = shot_b_marker + shot_b_end - shot_b_start
 	}
 	shot_b_command := calls[shot_b_start : shot_b_start+shot_b_end]
-	testing.expect(t, strings.contains(shot_b_command, fmt.tprintf("--station shot-b --brew order-2 --prompt-file '%s' -- pi --mode rpc -e", shot_b_path)), shot_b_command)
+	testing.expect(t, strings.contains(shot_b_command, fmt.tprintf("--station shot-b --brew order-2 --prompt-file '%s' -- pi --mode rpc --tools +codemode -e", shot_b_path)), shot_b_command)
 	testing.expect(t, !strings.contains(shot_b_command, "--model"), shot_b_command)
 	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-4/stations/shot-c", state)), "invalid model must not create a worktree")
 	testing.expect(t, !strings.contains(calls, "shot-c"), "invalid model must not call Herdr")
@@ -178,8 +178,19 @@ test_foreground_host_passes_shot_kind_and_rejects_unknown_kind :: proc(t: ^testi
 	calls := string(calls_data)
 	testing.expect(t, !strings.contains(calls, "shot-w"), "unknown kind must not call Herdr")
 	testing.expect(t, strings.contains(calls, "station --kind research --report") && strings.contains(calls, "-- pi --mode rpc --tools read,grep,find,ls -e"), calls)
-	testing.expect(t, strings.contains(calls, "station --kind execute --report") && strings.contains(calls, "-- pi --mode rpc -e"), calls)
-	testing.expect_value(t, strings.count(calls, "--tools"), 1)
+	// The read-only boundary: an execute Shot may run scripts through codemode; a
+	// research Shot must not be handed that capability.
+	research_command_start := strings.index(calls, "station --kind research --report")
+	research_command_end := strings.index_byte(calls[research_command_start:], '\n')
+	if research_command_end < 0 {
+		research_command_end = len(calls)
+	} else {
+		research_command_end += research_command_start
+	}
+	research_command := calls[research_command_start:research_command_end]
+	testing.expect(t, !strings.contains(research_command, "+codemode"), research_command)
+	testing.expect(t, strings.contains(calls, "station --kind execute --report") && strings.contains(calls, "-- pi --mode rpc --tools +codemode -e"), calls)
+	testing.expect_value(t, strings.count(calls, "--tools"), 2)
 }
 
 HOST_TEST_TEMP_DIR :: "/private/tmp" when ODIN_OS == .Darwin else "/tmp"
@@ -285,7 +296,7 @@ test_foreground_host_passes_taste_and_message_to_station :: proc(t: ^testing.T) 
 `)
 	defer host_contract_destroy(run)
 	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-t1","shot_id":"shot-t","pane_id":"p0"}`), run.out)
-	testing.expect(t, strings.contains(run.calls, "--prompt-file '") && strings.contains(run.calls, "--taste 'just test' --message 'Add the taste check' -- pi --mode rpc -e"), run.calls)
+	testing.expect(t, strings.contains(run.calls, "--prompt-file '") && strings.contains(run.calls, "--taste 'just test' --message 'Add the taste check' -- pi --mode rpc --tools +codemode -e"), run.calls)
 }
 
 @(test)
@@ -295,7 +306,7 @@ test_foreground_host_omits_taste_for_shot_without_taste :: proc(t: ^testing.T) {
 `)
 	defer host_contract_destroy(run)
 	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-t2","shot_id":"shot-n"`), run.out)
-	testing.expect(t, strings.contains(run.calls, "--station shot-n") && strings.contains(run.calls, "-- pi --mode rpc -e"), run.calls)
+	testing.expect(t, strings.contains(run.calls, "--station shot-n") && strings.contains(run.calls, "-- pi --mode rpc --tools +codemode -e"), run.calls)
 	testing.expect(t, !strings.contains(run.calls, "--taste") && !strings.contains(run.calls, "--message"), run.calls)
 }
 
@@ -437,7 +448,9 @@ test_foreground_host_passes_shot_thinking_level_to_station :: proc(t: ^testing.T
 `)
 	defer host_contract_destroy(run)
 	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-h1","shot_id":"shot-h"`), run.out)
-	testing.expect(t, strings.contains(run.calls, "--model 'github-copilot/claude-haiku-5.5' --thinking 'low' -e"), run.calls)
+	// Tools come before the model and thinking flags, so Pi reads the allowlist and
+	// the level independently.
+	testing.expect(t, strings.contains(run.calls, "-- pi --mode rpc --tools +codemode --model 'github-copilot/claude-haiku-5.5' --thinking 'low' -e"), run.calls)
 }
 
 // A Shot without a thinking level must leave the flag out entirely, so Pi's own
@@ -449,7 +462,7 @@ test_foreground_host_omits_thinking_for_shot_without_thinking :: proc(t: ^testin
 `)
 	defer host_contract_destroy(run)
 	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-h2","shot_id":"shot-p"`), run.out)
-	testing.expect(t, strings.contains(run.calls, "--station shot-p") && strings.contains(run.calls, "-- pi --mode rpc -e"), run.calls)
+	testing.expect(t, strings.contains(run.calls, "--station shot-p") && strings.contains(run.calls, "-- pi --mode rpc --tools +codemode -e"), run.calls)
 	testing.expect(t, !strings.contains(run.calls, "--thinking"), run.calls)
 }
 
