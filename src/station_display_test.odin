@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:terminal/ansi"
 import "core:testing"
 
@@ -26,75 +27,276 @@ mirror_sprite_row :: proc(row: string) -> string {
 	return string(flipped[:])
 }
 
+// Serializes the tests that swap os.stdout, so one capture cannot steal the stream while
+// another test's draw is running.
+capture_lock: sync.Mutex
+
+// Captures what a whole-sprite operation writes by pointing os.stdout at a temp file. The
+// cursor arithmetic is only real in the bytes, so a test reads those rather than trusting
+// bookkeeping with no production reader. The caller owns the returned bytes.
+capture_display_op :: proc(t: ^testing.T, display: ^Station_Display, label: string, clear: bool) -> []u8 {
+	sync.mutex_lock(&capture_lock)
+	defer sync.mutex_unlock(&capture_lock)
+
+	dir, dir_err := os.temp_directory(context.temp_allocator)
+	base := dir if dir_err == nil else "/tmp"
+	name := fmt.aprintf("%s/station-sprite-%d-%s.txt", base, os.get_pid(), label)
+	defer delete(name)
+	out, create_err := os.create(name)
+	if create_err != nil {
+		testing.fail(t)
+		return nil
+	}
+	defer os.close(out)
+	defer os.remove(name)
+
+	old := os.stdout
+	os.stdout = out
+	if clear {
+		station_display_clear_locked(display)
+	} else {
+		station_display_draw_locked(display)
+	}
+	os.stdout = old
+
+	os.seek(out, 0, .Start)
+	data, read_err := os.read_entire_file_from_file(out, context.allocator)
+	if read_err != nil {
+		testing.fail(t)
+		return nil
+	}
+	return data
+}
+
+// The rows each "\x1b[<n>A" cursor-up escape in text moves over. Erase and SGR
+// sequences share the "\x1b[" prefix, so the final byte decides.
+cursor_up_counts :: proc(text: string) -> [dynamic]int {
+	counts := make([dynamic]int, context.temp_allocator)
+	for i := 0; i + 2 < len(text); i += 1 {
+		if text[i] != 0x1b || text[i + 1] != '[' {
+			continue
+		}
+		n := 0
+		j := i + 2
+		for j < len(text) && text[j] >= '0' && text[j] <= '9' {
+			n = n * 10 + int(text[j] - '0')
+			j += 1
+		}
+		if j > i + 2 && j < len(text) && text[j] == 'A' {
+			append(&counts, n)
+		}
+	}
+	return counts
+}
+
 @(test)
-test_station_block_matches_the_supplied_cat_and_its_mirror :: proc(t: ^testing.T) {
+test_station_sprite_matches_the_supplied_cat_and_its_mirror :: proc(t: ^testing.T) {
 	// The supplied art, byte for byte, padded to STATION_SPRITE_WIDTH.
-	want_right := [3]string{"     /\\_/\\   ", "  ___( o.o)  ", " /   >  ^  > "}
-	right := station_block_lines(0, 0, true, "")
-	left := station_block_lines(0, 0, false, "")
+	want_right := [STATION_CAT_ROWS]string{"     /\\_/\\   ", "  ___( o.o)  ", " /   >  ^  > "}
+	sprite := station_sprite_new()
+	station_sprite_face(&sprite, true, "")
 	for line, i in want_right {
 		testing.expect_value(t, len(line), STATION_SPRITE_WIDTH)
-		testing.expect_value(t, right[i], line)
+		testing.expect_value(t, station_sprite_text(&sprite, i), line)
+	}
+	station_sprite_face(&sprite, false, "")
+	for line, i in want_right {
 		// The left-facing line must be the true mirror, so editing one side and
 		// forgetting the other fails here rather than shifting the cat.
-		testing.expect_value(t, left[i], mirror_sprite_row(line))
-		testing.expect_value(t, len(right[i]), STATION_SPRITE_WIDTH)
-		testing.expect_value(t, len(left[i]), STATION_SPRITE_WIDTH)
-		testing.expect(t, right[i] != left[i], "directions should differ")
+		testing.expect_value(t, station_sprite_text(&sprite, i), mirror_sprite_row(line))
+		testing.expect_value(t, len(mirror_sprite_row(line)), STATION_SPRITE_WIDTH)
+		testing.expect(t, station_sprite_text(&sprite, i) != line, "directions should differ")
 	}
 }
 
 @(test)
-test_station_block_indents_the_cat_and_keeps_the_status :: proc(t: ^testing.T) {
-	lines := station_block_lines(5, 0, true, "Running tool: read")
+test_station_sprite_pads_from_its_position :: proc(t: ^testing.T) {
+	sprite := station_sprite_new()
+	station_sprite_face(&sprite, true, "Running tool: read")
+	station_sprite_move(&sprite, 5)
 	want_ears := "     /\\_/\\   " // the supplied ears row, padded to STATION_SPRITE_WIDTH
-	testing.expect_value(t, lines[0], fmt.tprintf("     %s", want_ears))
-	testing.expect_value(t, lines[3], "Running tool: read")
+	testing.expect_value(t, station_sprite_text(&sprite, 0), fmt.tprintf("     %s", want_ears))
+	testing.expect_value(t, station_sprite_text(&sprite, STATION_CAT_ROWS), "Running tool: read")
+
+	// The pad is the sprite's position, not each row's own state: moving changes the one
+	// value, every cat row picks up the new pad, and the composed rows are untouched.
+	before := sprite.rows
+	station_sprite_move(&sprite, 9)
+	testing.expect_value(t, sprite.rows, before)
+	for row in 0 ..< STATION_CAT_ROWS {
+		testing.expect_value(t, station_sprite_text(&sprite, row), fmt.tprintf("         %s", STATION_CAT_RIGHT[row]))
+	}
 }
 
 @(test)
-test_station_block_cat_is_static :: proc(t: ^testing.T) {
-	first := station_block_lines(0, 0, true, "")
-	next := station_block_lines(0, 1, true, "")
-	testing.expect_value(t, first[2], next[2])
-	testing.expect_value(t, first[1], next[1])
+test_station_sprite_draw_and_clear_move_the_same_rows :: proc(t: ^testing.T) {
+	display := Station_Display{live = true}
+	display.sprite = station_sprite_new()
+	// One frame on the pane, so the next draw has rows to step back over.
+	station_display_draw_locked(&display)
+
+	draw_data := capture_display_op(t, &display, "drawn", false)
+	defer delete(draw_data)
+	draw_text := string(draw_data)
+	draw_moves := cursor_up_counts(draw_text)
+	testing.expect_value(t, len(draw_moves), 1)
+	testing.expect_value(t, draw_moves[0], station_sprite_row_count(&display.sprite))
+
+	clear_data := capture_display_op(t, &display, "cleared", true)
+	defer delete(clear_data)
+	clear_moves := cursor_up_counts(string(clear_data))
+	// The clear steps back over the block before erasing it, then steps back again to
+	// leave the cursor where the next permanent line goes. Both steps are the draw's.
+	testing.expect_value(t, len(clear_moves), 2)
+	testing.expect_value(t, clear_moves[0], draw_moves[0])
+	testing.expect_value(t, clear_moves[1], draw_moves[0])
+	testing.expect(t, !display.sprite.on_pane, "the clear must record that the rows are gone")
 }
 
 @(test)
-test_station_block_truncates_long_status :: proc(t: ^testing.T) {
+test_station_sprite_facings_share_one_row_count :: proc(t: ^testing.T) {
+	right := Station_Display{live = true, dir = 1}
+	right.sprite = station_sprite_new()
+	station_display_draw_locked(&right)
+	right_data := capture_display_op(t, &right, "facing-right", false)
+	defer delete(right_data)
+	right_text := string(right_data)
+
+	left := Station_Display{live = true, dir = -1}
+	left.sprite = station_sprite_new()
+	station_display_draw_locked(&left)
+	left_data := capture_display_op(t, &left, "facing-left", false)
+	defer delete(left_data)
+	left_text := string(left_data)
+
+	testing.expect_value(t, station_sprite_row_count(&left.sprite), station_sprite_row_count(&right.sprite))
+	testing.expect_value(t, station_sprite_row_count(&right.sprite), STATION_BLOCK_ROWS)
+	right_moves := cursor_up_counts(right_text)
+	left_moves := cursor_up_counts(left_text)
+	testing.expect_value(t, left_moves[0], right_moves[0])
+	// The same count and the same advance, but the two mirrored cats are different art.
+	testing.expect(t, strings.contains(right_text, "( o.o)"), "the right frame must carry the right cat")
+	testing.expect(t, strings.contains(left_text, "(o.o )"), "the left frame must carry the left cat")
+}
+
+@(test)
+test_station_sprite_truncates_long_status :: proc(t: ^testing.T) {
 	long := strings.repeat("x", STATION_STATUS_MAX + 20, context.temp_allocator)
-	lines := station_block_lines(0, 0, true, long)
-	testing.expect_value(t, len(lines[3]), STATION_STATUS_MAX)
+	sprite := station_sprite_new()
+	station_sprite_face(&sprite, true, long)
+	testing.expect_value(t, len(sprite.rows[STATION_CAT_ROWS]), STATION_STATUS_MAX)
 }
 
 @(test)
-test_station_block_strips_line_breaks_from_status :: proc(t: ^testing.T) {
-	lines := station_block_lines(0, 0, true, "one\ntwo\rthree")
-	testing.expect_value(t, lines[3], "onetwothree")
-	// No row carries CR or LF, so the four rows written with a `\n` between them
-	// stay exactly STATION_BLOCK_ROWS visual rows.
-	breaks := 0
-	for row, i in lines {
-		for r in row {
-			if r == '\n' || r == '\r' {
-				breaks += 1
-			}
-		}
+test_station_sprite_strips_line_breaks_from_status :: proc(t: ^testing.T) {
+	sprite := station_sprite_new()
+	station_sprite_face(&sprite, true, "one\ntwo\rthree")
+	testing.expect_value(t, sprite.rows[STATION_CAT_ROWS], "onetwothree")
+	// No row carries CR or LF, so the four rows written with a `\n` between them stay
+	// exactly STATION_BLOCK_ROWS visual rows.
+	for row, i in sprite.rows {
 		testing.expectf(t, !strings.contains_any(row, "\r\n"), "row %d must not contain a line break: %q", i, row)
 	}
-	testing.expect_value(t, breaks, 0)
 }
 
 @(test)
-test_station_block_clamps_multi_byte_status_on_a_rune_boundary :: proc(t: ^testing.T) {
+test_station_sprite_clamps_multi_byte_status_on_a_rune_boundary :: proc(t: ^testing.T) {
 	// 4 bytes per rune, so the byte clamp must stop before a rune that would
 	// straddle STATION_STATUS_MAX.
 	long := strings.repeat("\u00e9\u00e9", STATION_STATUS_MAX, context.temp_allocator)
-	lines := station_block_lines(0, 0, true, long)
-	testing.expect(t, len(lines[3]) <= STATION_STATUS_MAX, "clamp must not exceed the byte cap")
-	for r in lines[3] {
+	sprite := station_sprite_new()
+	station_sprite_face(&sprite, true, long)
+	status := sprite.rows[STATION_CAT_ROWS]
+	testing.expect(t, len(status) <= STATION_STATUS_MAX, "clamp must not exceed the byte cap")
+	for r in status {
 		testing.expect(t, r != '\uFFFD', "clamp must not cut a rune in half")
 	}
+}
+
+@(test)
+test_station_display_has_no_residual_cat_rows_in_an_80_by_24_terminal :: proc(t: ^testing.T) {
+	// A long tool status is the case that can wrap a supposedly single row. Keep the
+	// exact draw bytes in the test temp directory, then let pyte inspect every frame.
+	sync.mutex_lock(&capture_lock)
+	defer sync.mutex_unlock(&capture_lock)
+
+	dir, dir_err := os.temp_directory(context.temp_allocator)
+	base := dir if dir_err == nil else "/tmp"
+	path := fmt.aprintf("%s/station-sprite-frames-%d.bin", base, os.get_pid())
+	defer delete(path)
+	defer os.remove(path)
+	out, create_err := os.create(path)
+	testing.expect_value(t, create_err, os.Error(nil))
+	if create_err != nil {
+		return
+	}
+
+	display := Station_Display{live = true, dir = 1, started_at_ns = 1}
+	display.sprite = station_sprite_new()
+	display.status = strings.clone(strings.repeat("x", STATION_STATUS_MAX, context.temp_allocator))
+	defer delete(display.status)
+	old_stdout := os.stdout
+	os.stdout = out
+	station_styles_on = false
+	for frame := 0; frame < 200; frame += 1 {
+		if frame > 0 {
+			station_display_advance_locked(&display)
+		}
+		station_display_draw_locked(&display)
+	}
+	// Exercise the same whole-sprite clear used when permanent output replaces the
+	// animation. Its bytes remain in the exact stream, after the 200 frame proof.
+	station_display_clear_locked(&display)
+	os.stdout = old_stdout
+	_ = os.close(out)
+
+	pyte_check := `
+import sys
+from pathlib import Path
+import pyte
+
+frame_count = int(sys.argv[2])
+data = Path(sys.argv[1]).read_bytes()
+parts = data.split(b"\x1b[4A")
+frames = [parts[0]] + [b"\x1b[4A" + part for part in parts[1:]]
+if len(frames) < frame_count:
+    raise SystemExit(f"only found {len(frames)} frames, wanted {frame_count}")
+
+right = ["     /\\_/\\   ", "  ___( o.o)  ", " /   >  ^  > "]
+left = ["   /\\_/\\     ", "  (o.o )___  ", " <  ^  <   \\ "]
+markers = ("/\\_/\\", "( o.o)", "(o.o )___", "/   >  ^  >", "<  ^  <")
+screen = pyte.Screen(80, 24)
+stream = pyte.Stream(screen)
+x = 0
+step = 1
+for frame in range(frame_count):
+    stream.feed(frames[frame].decode("utf-8"))
+    cat_rows = [row for row, text in enumerate(screen.display) if any(marker in text for marker in markers)]
+    if len(cat_rows) != 3 or cat_rows != list(range(cat_rows[0], cat_rows[0] + 3)):
+        raise SystemExit(f"frame {frame}: cat rows are {cat_rows}, screen={screen.display!r}")
+    art = right if step > 0 else left
+    top = cat_rows[0]
+    for row, expected in enumerate(art):
+        actual = screen.display[top + row]
+        if actual[:x] != " " * x or actual[x:x + len(expected)] != expected:
+            raise SystemExit(f"frame {frame}: unexpected cat row {row}: {actual!r}")
+    if frame + 1 < frame_count:
+        x += step
+        if x <= 0:
+            x, step = 0, 1
+        if x >= 40 - 13:
+            x, step = 40 - 13, -1
+
+stream.feed(frames[frame_count].decode("utf-8"))
+if any(any(marker in text for marker in markers) for text in screen.display):
+    raise SystemExit("clear left cat rows on screen")
+`
+	state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
+		command = {"python3", "-c", pyte_check, path, "200"},
+	}, context.allocator)
+	defer delete(stdout)
+	defer delete(stderr)
+	testing.expect(t, exec_err == nil && state.success, string(stderr))
 }
 
 @(test)
@@ -147,11 +349,6 @@ test_station_elapsed_label_formats_minutes_and_seconds :: proc(t: ^testing.T) {
 	testing.expect_value(t, label, "1m20s")
 }
 
-
-
-
-
-
 @(test)
 test_station_walker_turns_at_both_ends :: proc(t: ^testing.T) {
 	display: Station_Display
@@ -160,10 +357,10 @@ test_station_walker_turns_at_both_ends :: proc(t: ^testing.T) {
 		station_display_advance_locked(&display)
 	}
 	testing.expect_value(t, display.dir, -1)
-	testing.expect_value(t, display.x, STATION_TRACK - STATION_SPRITE_WIDTH)
+	testing.expect_value(t, display.sprite.x, STATION_TRACK - STATION_SPRITE_WIDTH)
 	for i := 0; display.dir == -1 && i < 4 * STATION_TRACK; i += 1 {
 		station_display_advance_locked(&display)
 	}
 	testing.expect_value(t, display.dir, 1)
-	testing.expect_value(t, display.x, 0)
+	testing.expect_value(t, display.sprite.x, 0)
 }
