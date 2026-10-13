@@ -199,7 +199,14 @@ stop_worker_gracefully :: proc(identity: Process_Identity) {
 	if identity.pid <= 0 {
 		return
 	}
-	_ = posix.kill(posix.pid_t(identity.pid), .SIGTERM)
+	target := identity.pid
+	if os.get_env("CS_MODE", context.temp_allocator) == "dev" {
+		if child := odin_run_child(identity.pid); child > 0 {
+			target = child
+		}
+		dev_cancel_escalate(identity.pid, DEV_CANCEL_TIMEOUT_SECONDS)
+	}
+	_ = posix.kill(posix.pid_t(target), .SIGTERM)
 }
 
 // Waits on one deadline, shared by every Worker in waiting, for each to exit or

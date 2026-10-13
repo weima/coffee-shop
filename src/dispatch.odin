@@ -72,6 +72,9 @@ run_brew :: proc(repo, recipe_path: string) -> (brew_id: string, err: string) {
 
 run_brew_with :: proc(repo_path, recipe_path, state_root, executable, herdr: string) -> (brew_id: string, err: string) {
 	log.debugf("brew start repository=%s state=%s", repo_path, state_root)
+	if _, launch_err := child_launch_argv(executable); launch_err != "" {
+		return "", launch_err
+	}
 	// Symlinks and later commands run from other directories, so use an absolute path.
 	repo, abs_err := filepath.abs(repo_path)
 	if abs_err != nil {
@@ -445,7 +448,14 @@ dispatch_workers :: proc(directory: string, register: ^Register, executable, sta
 				continue
 			}
 
-			command, _ := worker_command(executable, state_root, register.brew_id, shot.id, register.brew_token)
+			launch, argv_err := child_launch_argv(executable)
+			if argv_err != "" {
+				if err := transition_shot(directory, register, shot.id, SHOT_FAILED, fmt.tprintf("Worker launch failed: %s", argv_err)); err.kind != .None {
+					return err
+				}
+				continue
+			}
+			command, _ := worker_command(child_shell_prefix(launch), state_root, register.brew_id, shot.id, register.brew_token)
 			launch_err := herdr_run_worker(herdr, shot.herdr_pane_id, command)
 			delete(command)
 			if launch_err != "" {
@@ -510,14 +520,12 @@ herdr_run_worker :: proc(herdr, pane_id, command: string) -> string {
 
 // The command text holds only Coffee Shop's own paths and validated IDs, never
 // task text. Paths are single-quoted for the Herdr pane's shell.
-worker_command :: proc(executable, state_root, brew_id, shot_id, token: string) -> (command: string, err: string) {
-	quoted_executable := shell_quote(executable)
-	defer delete(quoted_executable)
+worker_command :: proc(launcher, state_root, brew_id, shot_id, token: string) -> (command: string, err: string) {
 	quoted_state_root := shell_quote(state_root)
 	defer delete(quoted_state_root)
 	quoted_token := shell_quote(token)
 	defer delete(quoted_token)
-	command = fmt.aprintf("%s __worker --state-root %s --brew-id %s --shot-id %s --token %s", quoted_executable, quoted_state_root, brew_id, shot_id, quoted_token)
+	command = fmt.aprintf("%s __worker --state-root %s --brew-id %s --shot-id %s --token %s", launcher, quoted_state_root, brew_id, shot_id, quoted_token)
 	return command, ""
 }
 

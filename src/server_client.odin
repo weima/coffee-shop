@@ -177,7 +177,11 @@ server_request :: proc(state_root, repository: string, request: Server_Request) 
 		} else {
 			if !server_running(directory) {
 				if executable, exe_err := os.get_executable_path(context.allocator); exe_err == nil {
-					_ = server_spawn(executable, state_root, repository)
+					if launch, launch_err := child_launch_argv(executable); launch_err == "" {
+						_ = server_spawn(launch, state_root, repository)
+					} else {
+						cause = launch_err
+					}
 					delete(executable)
 				}
 			}
@@ -210,13 +214,17 @@ server_paths :: proc(state_root, repository: string) -> (socket, directory, err:
 	return socket_path, directory, ""
 }
 
-server_spawn :: proc(executable, state_root, repository: string) -> bool {
+server_spawn :: proc(launch: []string, state_root, repository: string) -> bool {
 	log.debugf("spawn server repository=%s", repository)
 	// The shell starts the server in the background and exits at once, so waiting
 	// on it frees the handle without waiting for the server itself.
-	process, spawn_err := os.process_start(os.Process_Desc{
-		command = {"/bin/sh", "-c", "\"$0\" __server --state-root \"$1\" --repository \"$2\" </dev/null >/dev/null 2>&1 &", executable, state_root, repository},
-	})
+	command := make([dynamic]string, 0, len(launch) + 6, context.temp_allocator)
+	append(&command, "/bin/sh", "-c", "\"$@\" </dev/null >/dev/null 2>&1 &", "coffee-shop")
+	for arg in launch {
+		append(&command, arg)
+	}
+	append(&command, "__server", "--state-root", state_root, "--repository", repository)
+	process, spawn_err := os.process_start(os.Process_Desc{command = command[:]})
 	if spawn_err != nil {
 		return false
 	}

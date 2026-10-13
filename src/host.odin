@@ -30,14 +30,12 @@ host_history_root: string
 
 HOST_LOCK_FILE_NAME :: "host.lock"
 
-// Pane of each started Station, so a reply can be typed into the right pane.
-// The identity is the Station process Herdr reports for the pane, recorded when
-// the session starts so a cancel can signal it instead of killing the pane.
+// Pane of each started Station, so a reply can be typed into the right pane and a
+// cancel can find the Station's process at cancel time.
 Host_Session :: struct {
 	request_id: string,
 	shot_id:    string,
 	pane_id:    string,
-	identity:   Process_Identity,
 }
 host_sessions: [dynamic]Host_Session
 
@@ -504,6 +502,13 @@ valid_commit_message :: proc(message: string) -> bool {
 
 // shortcut: Shot tabs are not closed when a Shot finishes, so a repository's workspace keeps every tab; close each tab when its Shot ends, once Shots report completion through the host.
 host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, thinkings, kinds, tastes, messages: []string) {
+	if _, launch_err := child_launch_argv(host_station_executable); launch_err != "" {
+		for id in ids {
+			host_session_failed(request_id, id, launch_err)
+		}
+		return
+	}
+
 	state_root, state_err := default_state_root(context.temp_allocator)
 	if state_err != "" {
 		for id in ids {
@@ -546,13 +551,17 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, thin
 			continue
 		}
 
-		command := host_station_command(host_station_executable, host_report_socket, host_extension_path, id, request_id, prompt_path, models[i], thinkings[i], kinds[i], tastes[i], messages[i])
+		launch, launch_err := child_launch_argv(host_station_executable)
+		if launch_err != "" {
+			host_session_failed(request_id, id, launch_err)
+			continue
+		}
+		command := host_station_command(child_shell_prefix(launch), host_report_socket, host_extension_path, id, request_id, prompt_path, models[i], thinkings[i], kinds[i], tastes[i], messages[i])
 		if run_err := herdr_run_worker(herdr, pane_id, command); run_err != "" {
 			host_session_failed(request_id, id, fmt.tprintf("could not start the Station: %s", run_err))
 			continue
 		}
-		identity := host_pane_identity(herdr, pane_id)
-		append(&host_sessions, Host_Session{request_id = strings.clone(request_id), shot_id = strings.clone(id), pane_id = strings.clone(pane_id), identity = identity})
+		append(&host_sessions, Host_Session{request_id = strings.clone(request_id), shot_id = strings.clone(id), pane_id = strings.clone(pane_id)})
 		host_emit(Host_Event{type = "session_started", request_id = request_id, shot_id = id, pane_id = pane_id})
 	}
 }
@@ -639,11 +648,13 @@ host_cancel :: proc(root: json.Object, request_id: string) {
 	}
 }
 
-// A positive recorded PID is asked to stop. A missing or unreadable identity is
-// not an error; it is reported as a reason instead of a signal.
+// A positive PID the pane reports now is asked to stop. A missing or unreadable identity
+// is not an error; it is reported as a reason instead of a signal.
 host_cancel_session :: proc(request_id: string, session: Host_Session) {
-	if session.identity.pid > 0 {
-		stop_worker_gracefully(session.identity)
+	// Read at cancel time: the pane's foreground is only the Station once it is running.
+	identity := host_pane_identity("herdr", session.pane_id)
+	if identity.pid > 0 {
+		stop_worker_gracefully(identity)
 		host_emit(Host_Event{type = "cancelled", request_id = request_id, shot_id = session.shot_id})
 		return
 	}
@@ -727,9 +738,7 @@ host_reply :: proc(root: json.Object, request_id: string) {
 // to safe characters.
 // A research Shot gets scratch-write tools; the Station then checks that it left the source as it found it.
 // A Pull passes its taste and message to the Station, which commits only if the taste passes.
-host_station_command :: proc(executable, report, extension, shot_id, request_id, prompt_file, model, thinking, kind, taste, message: string) -> string {
-	quoted_executable := shell_quote(executable)
-	defer delete(quoted_executable)
+host_station_command :: proc(launcher, report, extension, shot_id, request_id, prompt_file, model, thinking, kind, taste, message: string) -> string {
 	quoted_report := shell_quote(report)
 	defer delete(quoted_report)
 	quoted_extension := shell_quote(extension)
@@ -763,7 +772,7 @@ host_station_command :: proc(executable, report, extension, shot_id, request_id,
 		defer delete(quoted_message)
 		taste_argument = fmt.tprintf(" --taste %s --message %s", quoted_taste, quoted_message)
 	}
-	return fmt.tprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- pi --mode rpc%s%s%s -e %s", quoted_executable, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, tools_argument, model_argument, thinking_argument, quoted_extension)
+	return fmt.tprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- pi --mode rpc%s%s%s -e %s", launcher, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, tools_argument, model_argument, thinking_argument, quoted_extension)
 }
 
 // A Blend request is validated in full before any Git call. Its repository and
