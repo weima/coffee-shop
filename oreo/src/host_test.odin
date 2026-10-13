@@ -13,6 +13,7 @@ package oreo
 
 import "base:runtime"
 import "core:encoding/json"
+import "core:fmt"
 import "core:io"
 import "core:os"
 import "core:path/filepath"
@@ -765,6 +766,48 @@ test_host_quit_stops_cleanly :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_host_quit_cancels_a_silent_model_wait :: proc(t: ^testing.T) {
+	sync.mutex_lock(&host_test_lock)
+	defer sync.mutex_unlock(&host_test_lock)
+	sync.mutex_lock(&runtime_test_lock)
+	defer sync.mutex_unlock(&runtime_test_lock)
+
+	previous_timeout := host_model_timeout_ms
+	host_model_timeout_ms = 1_000
+	defer host_model_timeout_ms = previous_timeout
+
+	rig := host_test_rig_start(t, .Silent, "")
+	accepted_id := host_test_submit(t, rig, "host-session-quit-cancel", "nobody will answer", "test-provider", "test-model", "low")
+
+	request_line, request_found := host_test_wait_type(&rig.peer, "model_request", HOST_TEST_TIMEOUT_MS)
+	delete(request_line)
+	testing.expect(t, request_found, "the host asked for no model turn")
+	testing.expect(t, host_test_wait_replies(&rig.peer, 1, HOST_TEST_TIMEOUT_MS), "the peer saw no request")
+
+	started := time.now()
+	host_test_quit(rig)
+	status := host_test_rig_finish(t, rig)
+	elapsed_ms := cast(i64)(time.since(started) / time.Millisecond)
+	fmt.printf("%s: quit wait %d ms\n", "test_host_quit_cancels_a_silent_model_wait", elapsed_ms)
+	testing.expect_value(t, status, 0)
+	testing.expect(t, elapsed_ms < 500, "quit waited for the model timeout")
+
+	host := host_test_open_store(t, rig.store_path)
+	item_status := host_test_item_status(t, host, accepted_id)
+	testing.expect_value(t, item_status, store.WORK_ITEM_FAILED)
+	delete(item_status)
+	reason, reason_found := host_test_final_record_message(t, host, accepted_id)
+	testing.expect(t, reason_found, "the cancellation reason was not recorded")
+	testing.expect(t, !strings.contains(reason, "timeout"), "the quit was recorded as a timeout")
+	delete(reason)
+	close_err := close_host(&host)
+	host_error_destroy(&close_err)
+
+	delete(accepted_id)
+	host_test_rig_free(rig)
+}
+
+@(test)
 test_host_model_reply_timeout_fails_the_work_item :: proc(t: ^testing.T) {
 	sync.mutex_lock(&host_test_lock)
 	defer sync.mutex_unlock(&host_test_lock)
@@ -784,6 +827,9 @@ test_host_model_reply_timeout_fails_the_work_item :: proc(t: ^testing.T) {
 	delete(request_line)
 	testing.expect(t, request_found, "the host asked for no model turn")
 	testing.expect(t, host_test_wait_replies(&rig.peer, 1, HOST_TEST_TIMEOUT_MS), "the peer saw no request")
+	// Let the bounded model wait expire before quitting, so this test covers
+	// the no-quit anti-hang path rather than cancellation.
+	time.sleep(300 * time.Millisecond)
 
 	host_test_quit(rig)
 	status := host_test_rig_finish(t, rig)
