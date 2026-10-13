@@ -63,7 +63,8 @@ Station_Dialog :: struct {
 
 // The mutex guards the dialog and the agent's input: a reply is written before the
 // input is closed, or it is dropped. `agent_closed` is atomic because the reader
-// thread and the main flow can both close the input.
+// thread and the main flow both consult it; the close itself is decided by
+// station_close_file's atomic exchange on `agent`, so it happens once.
 Station_Relay :: struct {
 	input:        ^os.File,
 	agent:        ^os.File,
@@ -85,12 +86,16 @@ station_cancel_requested: bool
 STATION_CANCELLED_EXIT_CODE :: 130
 STATION_RELAY_POLL_MS :: 100
 
+// Closes a File once. The atomic exchange takes the pointer and clears the field in
+// one step, so exactly one caller ever closes a given File and no caller can act on a
+// pointer another thread has already freed. It takes no lock, so it cannot deadlock,
+// including on a thread a signal handler was delivered to.
 station_close_file :: proc(file: ^^os.File) {
-	if file^ == nil {
+	value := sync.atomic_exchange(file, nil)
+	if value == nil {
 		return
 	}
-	_ = os.close(file^)
-	file^ = nil
+	_ = os.close(value)
 }
 
 station_free_display :: proc(display: ^^Station_Display) {
@@ -464,9 +469,10 @@ station_handle_agent_line :: proc(
 
 // Closes the agent's input once. The agent exits when its input closes, and the
 // relay thread may still be writing, so both happen under the relay's mutex. Pi is
-// asked for its stats first, so it can answer before the Station exits. The atomic
-// exchange is the single decider, so a SIGTERM that arrives during the write does
-// not cause a second close.
+// asked for its stats first, so it can answer before the Station exits.
+// station_close_file's atomic exchange is the single decider, so a shutdown that
+// runs later — or a SIGTERM that arrives during the write — cannot close the same
+// File twice.
 station_relay_close_agent :: proc(relay: ^Station_Relay) {
 	sync.mutex_lock(&relay.mutex)
 	defer sync.mutex_unlock(&relay.mutex)
@@ -474,10 +480,8 @@ station_relay_close_agent :: proc(relay: ^Station_Relay) {
 		return
 	}
 	station_write_stats_request(relay.agent)
-	if sync.atomic_exchange(&relay.agent_closed, true) {
-		return
-	}
-	_ = os.close(relay.agent)
+	sync.atomic_store(&relay.agent_closed, true)
+	station_close_file(&relay.agent)
 }
 
 // The SIGTERM handler sets one atomic flag and nothing else: no relay read, no

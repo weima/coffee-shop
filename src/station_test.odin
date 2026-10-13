@@ -1101,6 +1101,48 @@ test_station_orderly_shutdown_reports_a_late_cancel :: proc(t: ^testing.T) {
 	testing.expect(t, relay == nil, "orderly shutdown must release the relay")
 }
 
+// The sequence that crashed: a one-turn Shot closes the agent's input from the relay,
+// and then the shutdown closes it again. Both closers reach the same File, so the
+// second must be a no-op rather than a second close of a handle the first freed.
+@(test)
+test_station_shutdown_does_not_close_an_already_closed_agent :: proc(t: ^testing.T) {
+	input_read, input_write, input_err := os.pipe()
+	agent_read, agent_write, agent_err := os.pipe()
+	testing.expect_value(t, input_err, os.Error(nil))
+	testing.expect_value(t, agent_err, os.Error(nil))
+	if input_err != nil || agent_err != nil {
+		if input_err == nil {
+			_ = os.close(input_read)
+			_ = os.close(input_write)
+		}
+		if agent_err == nil {
+			_ = os.close(agent_read)
+			_ = os.close(agent_write)
+		}
+		return
+	}
+	defer os.close(input_write)
+	defer os.close(agent_read)
+	// The handler's flag is process-wide, so start and end this test with it clear.
+	sync.atomic_store(&station_cancel_requested, false)
+	defer sync.atomic_store(&station_cancel_requested, false)
+
+	relay := new(Station_Relay)
+	relay.input = input_read
+	relay.agent = agent_write
+
+	// The reader's deferred close, exactly as station_relay_replies runs it.
+	station_relay_close_agent(relay)
+	testing.expect(t, relay.agent == nil, "the relay's close must clear the agent field")
+	testing.expect(t, sync.atomic_load(&relay.agent_closed), "the relay's close must mark the agent closed")
+
+	// The shutdown's close, the second closer of the same File. On the old code the
+	// field still held the freed File and this closed it a second time.
+	status := station_orderly_shutdown(&relay, nil)
+	testing.expect_value(t, status, 0)
+	testing.expect(t, relay == nil, "orderly shutdown must release the relay")
+}
+
 // An interactive Shot stays open after its first turn, so a reply sent a second later
 // still reaches the agent and gets its own turn.
 @(test)
