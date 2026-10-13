@@ -388,7 +388,8 @@ test_provider_remote_returns_text_and_tool_calls :: proc(t: ^testing.T) {
 	state: Provider_Remote_State
 	provider := remote_test_provider(&state, &peer, nil, REMOTE_TEST_TIMEOUT)
 
-	messages, _ := remote_test_conversation()
+	messages, calls := remote_test_conversation()
+	messages[1].tool_calls = calls[:]
 	response, provider_err := provider.complete(provider.user, remote_test_request(messages[:]), context.allocator)
 	defer {
 		delete(response.text, context.allocator)
@@ -443,7 +444,8 @@ test_provider_remote_delivers_events_while_waiting :: proc(t: ^testing.T) {
 	state: Provider_Remote_State
 	provider := remote_test_provider(&state, &peer, remote_test_event, REMOTE_TEST_TIMEOUT)
 
-	messages, _ := remote_test_conversation()
+	messages, calls := remote_test_conversation()
+	messages[1].tool_calls = calls[:]
 	response, provider_err := provider.complete(provider.user, remote_test_request(messages[:]), context.allocator)
 	defer {
 		delete(response.text, context.allocator)
@@ -467,7 +469,8 @@ test_provider_remote_model_error_becomes_provider_error :: proc(t: ^testing.T) {
 	state: Provider_Remote_State
 	provider := remote_test_provider(&state, &peer, nil, REMOTE_TEST_TIMEOUT)
 
-	messages, _ := remote_test_conversation()
+	messages, calls := remote_test_conversation()
+	messages[1].tool_calls = calls[:]
 	response, provider_err := provider.complete(provider.user, remote_test_request(messages[:]), context.allocator)
 	defer {
 		destroy_tool_calls(response.tool_calls, context.allocator)
@@ -488,7 +491,8 @@ test_provider_remote_timeout_becomes_provider_error :: proc(t: ^testing.T) {
 	state: Provider_Remote_State
 	provider := remote_test_provider(&state, &peer, nil, 7)
 
-	messages, _ := remote_test_conversation()
+	messages, calls := remote_test_conversation()
+	messages[1].tool_calls = calls[:]
 	_, provider_err := provider.complete(provider.user, remote_test_request(messages[:]), context.allocator)
 	defer provider_error_destroy(&provider_err, context.allocator)
 
@@ -506,7 +510,8 @@ test_provider_remote_write_failure_becomes_provider_error :: proc(t: ^testing.T)
 	state: Provider_Remote_State
 	provider := remote_test_provider(&state, &peer, nil, REMOTE_TEST_TIMEOUT)
 
-	messages, _ := remote_test_conversation()
+	messages, calls := remote_test_conversation()
+	messages[1].tool_calls = calls[:]
 	_, provider_err := provider.complete(provider.user, remote_test_request(messages[:]), context.allocator)
 	defer provider_error_destroy(&provider_err, context.allocator)
 
