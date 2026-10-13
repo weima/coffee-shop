@@ -83,7 +83,7 @@ test_foreground_host_accepts_dispatches_and_starts_sessions :: proc(t: ^testing.
 	prompt_data, prompt_err := os.read_entire_file(prompt_path, context.allocator)
 	defer delete(prompt_data)
 	testing.expect_value(t, prompt_err, os.Error(nil))
-	testing.expect_value(t, string(prompt_data), long_prompt)
+	testing.expect_value(t, string(prompt_data), fmt.tprintf("%s\n\n%s", HOST_REPLY_STYLE, long_prompt))
 
 	calls_data, calls_err := os.read_entire_file(fmt.tprintf("%s/calls.log", root), context.allocator)
 	defer delete(calls_data)

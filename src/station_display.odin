@@ -119,6 +119,12 @@ Station_Display :: struct {
 	dir:             int,
 }
 
+// Auto-wrap is switched back on first: a panic that abandoned a draw mid-way may have
+// left the pane with it off. Then the screen is cleared and the cursor homed.
+station_display_start_sequence :: proc() -> string {
+	return ansi.CSI + ansi.DECAWM_ON + ansi.CSI + "2" + ansi.ED + ansi.CSI + ansi.CUP
+}
+
 // Starts the display. When it is live, the screen is cleared and a header names the
 // Shot, so the pane shows the Station rather than the command that started it.
 station_display_start :: proc(display: ^Station_Display, title: string) {
@@ -130,7 +136,7 @@ station_display_start :: proc(display: ^Station_Display, title: string) {
 	display.status = strings.clone("thinking")
 	display.sprite = station_sprite_new()
 	if display.live {
-		fmt.print(ansi.CSI + "2" + ansi.ED + ansi.CSI + ansi.CUP)
+		fmt.print(station_display_start_sequence())
 		fmt.println(station_style(ansi.BOLD + ";" + ansi.FG_CYAN, title))
 		fmt.println(station_style(ansi.FAINT, "────────────────────────────────────────"))
 		display.animation_thread = thread.create_and_start_with_data(display, station_display_animate, self_cleanup = false)
@@ -206,15 +212,30 @@ station_display_clear_locked :: proc(display: ^Station_Display) {
 // several visual lines, the block would grow past STATION_BLOCK_ROWS, and the
 // cursor arithmetic would stop erasing the top row. Clamping stops on a rune
 // boundary so a multi-byte rune is never cut in half.
+// C0 (including ESC, tab, CR, LF), DEL and C1 controls can move the cursor or start an
+// escape sequence, so none may reach a drawn row.
+station_is_control :: proc(r: rune) -> bool {
+	return r < 0x20 || (r >= 0x7f && r <= 0x9f)
+}
+
+station_has_control :: proc(text: string) -> bool {
+	for r in text {
+		if station_is_control(r) {
+			return true
+		}
+	}
+	return false
+}
+
 station_row_text :: proc(text: string) -> string {
-	if len(text) <= STATION_STATUS_MAX && !strings.contains_any(text, "\r\n") {
+	if len(text) <= STATION_STATUS_MAX && !station_has_control(text) {
 		return text
 	}
 	clean := strings.builder_make(context.temp_allocator)
 	for offset := 0; offset < len(text); {
 		r, size := utf8.decode_rune_in_string(text[offset:])
 		offset += size
-		if r == '\r' || r == '\n' {
+		if station_is_control(r) {
 			continue
 		}
 		if len(clean.buf) + utf8.rune_size(r) > STATION_STATUS_MAX {

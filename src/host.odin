@@ -501,6 +501,9 @@ valid_commit_message :: proc(message: string) -> bool {
 }
 
 // shortcut: Shot tabs are not closed when a Shot finishes, so a repository's workspace keeps every tab; close each tab when its Shot ends, once Shots report completion through the host.
+// Every Shot prompt starts with this line, so agent replies stay short.
+HOST_REPLY_STYLE :: "Keep replies concise: lead with the answer, use short lists, and skip restating the question and filler."
+
 host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, thinkings, kinds, tastes, messages: []string) {
 	if _, launch_err := child_launch_argv(host_station_executable); launch_err != "" {
 		for id in ids {
@@ -534,7 +537,8 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, thin
 	herdr := "herdr"
 	for id, i in ids {
 		prompt_path, _ := filepath.join({prompts_dir, fmt.tprintf("%s.md", id)}, context.temp_allocator)
-		if os.write_entire_file(prompt_path, prompts[i], private_file_permissions()) != nil {
+		prompt_text := fmt.tprintf("%s\n\n%s", HOST_REPLY_STYLE, prompts[i])
+		if os.write_entire_file(prompt_path, prompt_text, private_file_permissions()) != nil {
 			host_session_failed(request_id, id, "could not write the prompt file")
 			continue
 		}

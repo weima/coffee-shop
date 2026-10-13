@@ -148,6 +148,12 @@ test_station_sprite_draw_and_clear_move_the_same_rows :: proc(t: ^testing.T) {
 	// The clear steps back over the block before erasing it, then steps back again to
 	// leave the cursor where the next permanent line goes. Both steps are the draw's.
 	testing.expect_value(t, len(clear_moves), 2)
+	// Exact bytes: step up, erase every row, step up again. A draw emitted in place of
+	// the clear (or the reverse) cannot match.
+	up := fmt.tprintf("\x1b[%dA", station_sprite_row_count(&display.sprite))
+	erase := strings.repeat("\r\x1b[2K\n", station_sprite_row_count(&display.sprite), context.temp_allocator)
+	testing.expect_value(t, string(clear_data), fmt.tprintf("%s%s%s", up, erase, up))
+	testing.expect(t, !strings.has_suffix(draw_text, erase), "a draw must not end with the clear's erase rows")
 	testing.expect_value(t, clear_moves[0], draw_moves[0])
 	testing.expect_value(t, clear_moves[1], draw_moves[0])
 	testing.expect(t, !display.sprite.on_pane, "the clear must record that the rows are gone")
@@ -363,4 +369,19 @@ test_station_walker_turns_at_both_ends :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, display.dir, 1)
 	testing.expect_value(t, display.sprite.x, 0)
+}
+
+@(test)
+test_station_display_start_turns_auto_wrap_on_first :: proc(t: ^testing.T) {
+	seq := station_display_start_sequence()
+	testing.expect(t, strings.has_prefix(seq, "\x1b[?7h"), "start must re-enable auto-wrap before anything else")
+	testing.expect(t, strings.has_suffix(seq, "\x1b[2J\x1b[H"), "start must then clear and home")
+}
+
+@(test)
+test_station_row_text_neutralises_control_characters :: proc(t: ^testing.T) {
+	testing.expect_value(t, station_row_text("a\tb\x1bc\x7fd\u0085e\x00f"), "abcdef")
+	sprite := station_sprite_new()
+	station_sprite_face(&sprite, true, "ls\t-l\x08\x1b[2J")
+	testing.expect_value(t, sprite.rows[STATION_CAT_ROWS], "ls-l[2J")
 }

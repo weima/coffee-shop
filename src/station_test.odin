@@ -469,6 +469,13 @@ printf 'changed\n' > changed.txt
 cat > /dev/null
 `
 
+// Fake agent that records its own work, leaving a clean tree.
+FAKE_COMMITTING_AGENT :: `#!/bin/sh
+printf 'changed\n' > changed.txt
+git add -A && git -c commit.gpgsign=false commit -q -m "agent work"
+cat > /dev/null
+`
+
 // Fake agent that writes only a scratch file, which research must allow.
 FAKE_SCRATCH_AGENT :: `#!/bin/sh
 mkdir -p .scratch && printf 'notes\n' > .scratch/notes.txt
@@ -1309,4 +1316,28 @@ test_station_sends_no_usage_when_pi_does_not_answer :: proc(t: ^testing.T) {
 	testing.expect_value(t, run.exit_code, 0)
 	count, _ := station_usage_of(&run)
 	testing.expect_value(t, count, 0)
+}
+
+@(test)
+test_pull_runs_taste_on_agent_commit :: proc(t: ^testing.T) {
+	for taste in ([]string{"true", "false"}) {
+		root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-pull-agent-commit-*", context.allocator)
+		testing.expect_value(t, make_err, os.Error(nil))
+		if make_err != nil {
+			return
+		}
+		defer os.remove_all(root)
+		defer delete(root)
+
+		run := run_station_pull(t, root, FAKE_COMMITTING_AGENT, taste, "Add the change")
+		defer delete(run.kind)
+		defer delete(run.description)
+		if taste == "true" {
+			testing.expect_value(t, run.kind, "pulled")
+			testing.expect_value(t, run.exit_code, 0)
+		} else {
+			testing.expect_value(t, run.kind, "taste_failed")
+			testing.expect_value(t, run.exit_code, 1)
+		}
+	}
 }

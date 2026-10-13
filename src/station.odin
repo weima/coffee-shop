@@ -158,6 +158,8 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 	}
 	defer activity_sender_close(&sender)
 
+	base_head := strings.clone(station_head()) // the read loop frees the temp allocator
+	defer delete(base_head)
 	display := new(Station_Display)
 	station_display_start(display, fmt.tprintf("Shot %s  ·  brew %s", station_id, brew_id))
 
@@ -253,12 +255,14 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 	if taste == "" {
 		return 0
 	}
-	return station_pull(&sender, brew_id, station_id, taste, message)
+	return station_pull(&sender, brew_id, station_id, taste, message, base_head)
 }
 
 // A Pull commits only after its Taste passes. The Taste's output stays on the
-// Station's stdout; reports carry the outcome, never the output.
-station_pull :: proc(sender: ^Activity_Sender, brew_id, station_id, taste, message: string) -> int {
+// Station's stdout; reports carry the outcome, never the output. The Taste runs
+// even when the agent committed its own work: a clean tree whose HEAD moved since
+// the Station started is that commit, reported as pulled once the Taste passes.
+station_pull :: proc(sender: ^Activity_Sender, brew_id, station_id, taste, message, base_head: string) -> int {
 	exit_code, ran := station_run_taste(taste)
 	if !ran {
 		station_report(sender, brew_id, station_id, "taste_failed", "Taste could not run")
@@ -272,6 +276,9 @@ station_pull :: proc(sender: ^Activity_Sender, brew_id, station_id, taste, messa
 	if status_err != nil || !state.success {
 		station_report(sender, brew_id, station_id, "taste_failed", "Taste could not check the changes")
 		return 1
+	}
+	if len(changes) == 0 && base_head != "" && station_head() != base_head {
+		return station_report_pulled(sender, brew_id, station_id)
 	}
 	if len(changes) == 0 {
 		station_report(sender, brew_id, station_id, "taste_passed", "Taste passed with no changes")
@@ -303,6 +310,21 @@ station_commit :: proc(sender: ^Activity_Sender, brew_id, station_id, message: s
 		station_report(sender, brew_id, station_id, "taste_failed", "commit failed")
 		return 1
 	}
+	return station_report_pulled(sender, brew_id, station_id)
+}
+
+// The full HEAD hash in the Station's directory, or empty when Git cannot say.
+// The string lives in the temp allocator.
+station_head :: proc() -> string {
+	state, stdout, _, err := os.process_exec(os.Process_Desc{command = {"git", "rev-parse", "HEAD"}}, context.temp_allocator)
+	if err != nil || !state.success {
+		return ""
+	}
+	return strings.trim_space(string(stdout))
+}
+
+// Reports `pulled` with the short hash of HEAD.
+station_report_pulled :: proc(sender: ^Activity_Sender, brew_id, station_id: string) -> int {
 	hash_state, hash_stdout, _, hash_err := os.process_exec(os.Process_Desc{command = {"git", "rev-parse", "--short", "HEAD"}}, context.temp_allocator)
 	description := "Committed; the commit hash is unavailable"
 	if hash_err == nil && hash_state.success {
