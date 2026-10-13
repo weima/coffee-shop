@@ -78,3 +78,9 @@ test_dev_cancel_escalate_kills_the_group_after_the_timeout :: proc(t: ^testing.T
 	_, wait_err := os.process_wait(leader, 10*time.Second)
 	testing.expect(t, wait_err == nil, "the escalation must kill the wrapper's process group after the timeout")
 }
+
+@(test)
+test_odin_run_child_is_zero_for_a_process_that_is_not_odin_run :: proc(t: ^testing.T) {
+	// The test runner is not an odin run wrapper, so no child may be signalled on its behalf.
+	testing.expect_value(t, odin_run_child(os.get_pid()), 0)
+}

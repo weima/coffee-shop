@@ -94,18 +94,27 @@ child_sweep_outputs :: proc(dir: string) {
 }
 
 // In dev mode the identified process can be the odin run wrapper, which does not forward
-// SIGTERM to its child. Returns the first child of an odin run wrapper, or 0 when pid is
-// not one, so every other process is signalled as before.
+// SIGTERM to its child. Returns the wrapper's first child, or 0 when pid is not an odin run.
+// ps is not used: under Odin's process_exec it reports Permission_Denied even on success.
 odin_run_child :: proc(pid: int) -> int {
-	command_state, command_out, _, command_err := os.process_exec(os.Process_Desc{command = {"ps", "-o", "command=", "-p", fmt.tprintf("%d", pid)}}, context.temp_allocator)
-	if command_err != nil || !command_state.success || !strings.has_prefix(strings.trim_space(string(command_out)), "odin run") {
+	wrappers_state, wrappers_out, _, wrappers_err := os.process_exec(os.Process_Desc{command = {"pgrep", "-f", "^odin run"}}, context.temp_allocator)
+	if wrappers_err != nil || !wrappers_state.success {
 		return 0
 	}
-	child_state, child_out, _, child_err := os.process_exec(os.Process_Desc{command = {"pgrep", "-P", fmt.tprintf("%d", pid)}}, context.temp_allocator)
-	if child_err != nil || !child_state.success {
+	is_wrapper := false
+	for listed in strings.fields(string(wrappers_out), context.temp_allocator) {
+		if listed == fmt.tprintf("%d", pid) {
+			is_wrapper = true
+		}
+	}
+	if !is_wrapper {
 		return 0
 	}
-	fields := strings.fields(string(child_out), context.temp_allocator)
+	children_state, children_out, _, children_err := os.process_exec(os.Process_Desc{command = {"pgrep", "-P", fmt.tprintf("%d", pid)}}, context.temp_allocator)
+	if children_err != nil || !children_state.success {
+		return 0
+	}
+	fields := strings.fields(string(children_out), context.temp_allocator)
 	if len(fields) == 0 {
 		return 0
 	}
@@ -121,11 +130,12 @@ odin_run_child :: proc(pid: int) -> int {
 // shortcut: a Station mid-turn loses that turn at the timeout, not at a clean stop; a clean stop would need the Station to answer the cancel itself.
 DEV_CANCEL_TIMEOUT_SECONDS :: 60
 
-// Schedules a SIGKILL of the wrapper's process group after seconds, unless the wrapper has exited by then.
+// Schedules a SIGKILL of the wrapper's process group after seconds. The group is killed even
+// when its leader has already exited: the Station and Pi can outlive the wrapper.
 dev_cancel_escalate :: proc(wrapper, seconds: int) {
 	command := []string{
 		"/bin/sh", "-c",
-		"(sleep \"$1\"; kill -0 \"$2\" 2>/dev/null && kill -KILL -- \"-$2\") </dev/null >/dev/null 2>&1 &",
+		"(sleep \"$1\"; kill -KILL -- \"-$2\" 2>/dev/null) </dev/null >/dev/null 2>&1 &",
 		"coffee-shop",
 		fmt.tprintf("%d", seconds),
 		fmt.tprintf("%d", wrapper),

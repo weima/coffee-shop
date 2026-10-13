@@ -30,14 +30,12 @@ host_history_root: string
 
 HOST_LOCK_FILE_NAME :: "host.lock"
 
-// Pane of each started Station, so a reply can be typed into the right pane.
-// The identity is the Station process Herdr reports for the pane, recorded when
-// the session starts so a cancel can signal it instead of killing the pane.
+// Pane of each started Station, so a reply can be typed into the right pane and a
+// cancel can find the Station's process at cancel time.
 Host_Session :: struct {
 	request_id: string,
 	shot_id:    string,
 	pane_id:    string,
-	identity:   Process_Identity,
 }
 host_sessions: [dynamic]Host_Session
 
@@ -563,8 +561,7 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, thin
 			host_session_failed(request_id, id, fmt.tprintf("could not start the Station: %s", run_err))
 			continue
 		}
-		identity := host_pane_identity(herdr, pane_id)
-		append(&host_sessions, Host_Session{request_id = strings.clone(request_id), shot_id = strings.clone(id), pane_id = strings.clone(pane_id), identity = identity})
+		append(&host_sessions, Host_Session{request_id = strings.clone(request_id), shot_id = strings.clone(id), pane_id = strings.clone(pane_id)})
 		host_emit(Host_Event{type = "session_started", request_id = request_id, shot_id = id, pane_id = pane_id})
 	}
 }
@@ -651,11 +648,13 @@ host_cancel :: proc(root: json.Object, request_id: string) {
 	}
 }
 
-// A positive recorded PID is asked to stop. A missing or unreadable identity is
-// not an error; it is reported as a reason instead of a signal.
+// A positive PID the pane reports now is asked to stop. A missing or unreadable identity
+// is not an error; it is reported as a reason instead of a signal.
 host_cancel_session :: proc(request_id: string, session: Host_Session) {
-	if session.identity.pid > 0 {
-		stop_worker_gracefully(session.identity)
+	// Read at cancel time: the pane's foreground is only the Station once it is running.
+	identity := host_pane_identity("herdr", session.pane_id)
+	if identity.pid > 0 {
+		stop_worker_gracefully(identity)
 		host_emit(Host_Event{type = "cancelled", request_id = request_id, shot_id = session.shot_id})
 		return
 	}
