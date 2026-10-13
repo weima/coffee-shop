@@ -1,5 +1,9 @@
 # Coffee Shop Repository Instructions
 
+## Reply style
+
+- Keep replies concise: lead with the answer, use short lists, and skip restating the question and filler.
+
 ## Clarifying questions
 
 - When a task needs decisions or information from the user, ask concise, answerable questions in a numbered `Q1`…`Qn` list instead of open-ended prose. Preserve the numbering so the user can reply point by point.
