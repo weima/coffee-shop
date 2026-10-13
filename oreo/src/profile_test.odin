@@ -3,6 +3,7 @@ package oreo
 import "base:runtime"
 import "core:os"
 import "core:path/filepath"
+import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:time"
@@ -50,12 +51,18 @@ profile_test_teardown :: proc "contextless" () {
 }
 
 @(test)
-test_profile_resolve_empty_uses_defaults_without_config :: proc(t: ^testing.T) {
+test_profile_resolve_without_config_or_input_fails :: proc(t: ^testing.T) {
 	sync.mutex_lock(&profile_test_lock)
 	defer sync.mutex_unlock(&profile_test_lock)
 	profile_test_clear_config(t)
 
-	profile_test_expect(t, "", "", "", DEFAULT_PROVIDER, DEFAULT_MODEL, DEFAULT_THINKING)
+	profile, profile_err := profile_resolve("", "", "")
+	defer profile_resolved_destroy(&profile)
+	defer config_error_destroy(&profile_err)
+
+	testing.expect_value(t, profile_err.kind, Config_Error_Kind.Not_Found)
+	testing.expect(t, strings.contains(profile_err.message, "provider"))
+	testing.expect(t, strings.contains(profile_err.message, "model"))
 }
 
 @(test)
@@ -68,23 +75,42 @@ test_profile_resolve_explicit_values_win :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_profile_resolve_partial_override_keeps_defaults :: proc(t: ^testing.T) {
+test_profile_resolve_model_without_provider_fails :: proc(t: ^testing.T) {
 	sync.mutex_lock(&profile_test_lock)
 	defer sync.mutex_unlock(&profile_test_lock)
 	profile_test_clear_config(t)
 
-	profile_test_expect(t, "", "gpt-4.1", "", DEFAULT_PROVIDER, "gpt-4.1", DEFAULT_THINKING)
+	profile, profile_err := profile_resolve("", "gpt-4.1", "")
+	defer profile_resolved_destroy(&profile)
+	defer config_error_destroy(&profile_err)
+
+	testing.expect_value(t, profile_err.kind, Config_Error_Kind.Invalid_Argument)
+	testing.expect(t, strings.contains(profile_err.message, "provider"))
 }
 
 @(test)
-test_profile_resolve_fills_each_empty_field_from_config :: proc(t: ^testing.T) {
+test_profile_resolve_provider_without_model_fails :: proc(t: ^testing.T) {
+	sync.mutex_lock(&profile_test_lock)
+	defer sync.mutex_unlock(&profile_test_lock)
+	profile_test_clear_config(t)
+
+	profile, profile_err := profile_resolve("anthropic", "", "")
+	defer profile_resolved_destroy(&profile)
+	defer config_error_destroy(&profile_err)
+
+	testing.expect_value(t, profile_err.kind, Config_Error_Kind.Invalid_Argument)
+	testing.expect(t, strings.contains(profile_err.message, "model"))
+}
+
+@(test)
+test_profile_resolve_uses_config_provider_and_model :: proc(t: ^testing.T) {
 	sync.mutex_lock(&profile_test_lock)
 	defer sync.mutex_unlock(&profile_test_lock)
 	profile_test_write_config(t, `{"provider": "anthropic", "model": "claude-haiku-5.5", "thinking": "xhigh"}`)
 
-	profile_test_expect(t, "", "explicit-model", "high", "anthropic", "explicit-model", "high")
-	profile_test_expect(t, "explicit-provider", "", "high", "explicit-provider", "claude-haiku-5.5", "high")
-	profile_test_expect(t, "explicit-provider", "explicit-model", "", "explicit-provider", "explicit-model", "xhigh")
+	profile_test_expect(t, "", "", "", "anthropic", "claude-haiku-5.5", "xhigh")
+	profile_test_expect(t, "", "", "medium", "anthropic", "claude-haiku-5.5", "medium")
+	profile_test_expect(t, "openai", "gpt-5", "high", "openai", "gpt-5", "high")
 }
 
 @(test)
@@ -93,7 +119,7 @@ test_profile_resolve_rejects_invalid_explicit_provider :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&profile_test_lock)
 	profile_test_clear_config(t)
 
-	profile, profile_err := profile_resolve("bad model;", "", "")
+	profile, profile_err := profile_resolve("bad model;", "gpt-4.1", "")
 	defer profile_resolved_destroy(&profile)
 	defer config_error_destroy(&profile_err)
 

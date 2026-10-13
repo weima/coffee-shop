@@ -10,10 +10,9 @@ import "core:strings"
 // The default configuration file lives under the user's home directory.
 DEFAULT_CONFIG_RELATIVE_PATH :: ".oreo/config.json"
 
-// Built-in defaults, used when the configuration file is absent or omits a
-// field.
-DEFAULT_PROVIDER :: "opencode-go"
-DEFAULT_MODEL :: "deepseek-v4.1-flash"
+// The thinking level is the only built-in default. Provider and model are
+// always supplied together, by the caller or by the config file; a lone model
+// name is ambiguous, so neither has a fallback literal.
 DEFAULT_THINKING :: "low"
 
 @(private)
@@ -30,8 +29,9 @@ MAX_PROVIDER_MODEL_LENGTH :: 80
 @(private)
 CONFIG_FIELD_NAMES :: [3]string{"provider", "model", "thinking"}
 
-// Config_Error_Kind is the configuration failure surface. A missing config file
-// is not a failure, so Not_Found is reserved and not currently returned.
+// Config_Error_Kind is the configuration failure surface. Not_Found means no
+// config file was present; Invalid_Argument means a present file was incomplete
+// or named an invalid value.
 Config_Error_Kind :: enum {
 	None,
 	Invalid_Argument,
@@ -76,7 +76,8 @@ default_config_path :: proc(allocator := context.allocator) -> (string, Config_E
 }
 
 // config_load reads a configuration file. An empty path means the resolved
-// default path. A missing file yields the built-in defaults with no error.
+// default path. Provider and model must both be present, from the caller or
+// from the file, so a missing or incomplete file is an error.
 config_load :: proc(path: string, allocator := context.allocator) -> (Oreo_Config, Config_Error) {
 	resolved := path
 	owns_path := len(path) == 0
@@ -98,7 +99,13 @@ config_load :: proc(path: string, allocator := context.allocator) -> (Oreo_Confi
 		return {}, defaults_err
 	}
 	if !os.exists(resolved) {
-		return config, Config_Error{}
+		config_destroy(&config)
+		return {}, config_errorf(
+			.Not_Found,
+			allocator,
+			"no config file at %s; set provider and model in that file or pass them explicitly",
+			resolved,
+		)
 	}
 	data, read_err := os.read_entire_file(resolved, allocator)
 	if read_err != nil {
@@ -122,6 +129,22 @@ config_load :: proc(path: string, allocator := context.allocator) -> (Oreo_Confi
 	if override_err := apply_config_overrides(&config, object, allocator); override_err.kind != .None {
 		config_destroy(&config)
 		return {}, override_err
+	}
+	if len(config.provider) == 0 || len(config.model) == 0 {
+		missing := "provider and model"
+		if len(config.provider) > 0 {
+			missing = "model"
+		} else if len(config.model) > 0 {
+			missing = "provider"
+		}
+		config_destroy(&config)
+		return {}, config_errorf(
+			.Invalid_Argument,
+			allocator,
+			"config file %s is missing %s; both provider and model must be named together",
+			resolved,
+			missing,
+		)
 	}
 	if !valid_provider_model(config.provider) || !valid_provider_model(config.model) {
 		config_destroy(&config)
@@ -157,16 +180,11 @@ config_error_destroy :: proc(err: ^Config_Error, allocator := context.allocator)
 @(private)
 built_in_config :: proc(allocator: runtime.Allocator) -> (Oreo_Config, Config_Error) {
 	config: Oreo_Config
-	destinations := [3]^string{&config.provider, &config.model, &config.thinking}
-	defaults := [3]string{DEFAULT_PROVIDER, DEFAULT_MODEL, DEFAULT_THINKING}
-	for value, index in defaults {
-		cloned, clone_err := strings.clone(value, allocator)
-		if clone_err != nil {
-			config_destroy(&config, allocator)
-			return {}, config_error(.Out_Of_Memory, "could not allocate the built-in config", allocator)
-		}
-		destinations[index]^ = cloned
+	cloned, clone_err := strings.clone(DEFAULT_THINKING, allocator)
+	if clone_err != nil {
+		return {}, config_error(.Out_Of_Memory, "could not allocate the built-in config", allocator)
 	}
+	config.thinking = cloned
 	return config, Config_Error{}
 }
 
