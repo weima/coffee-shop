@@ -7,8 +7,18 @@ check:
     odin check src/script -collection:oreo=src -no-entry-point
     odin check src -collection:oreo=src -no-entry-point
     # The host is a package main, so it has an entry point. The pi extension
-    # spawns it as oreo/bin/oreo-host.
+    # spawns the built host from oreo/bin/oreo-host.bin.
     odin check host -collection:oreo=src
+
+# Build the single Oreo work host used by the Pi extension.
+build-host:
+    #!/bin/sh
+    set -eu
+    build_dir=$(mktemp -d "${TMPDIR:-/tmp}/oreo-host.XXXXXX")
+    trap 'rm -rf "$build_dir"' EXIT
+    mkdir -p bin
+    cc -O2 -DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION -c src/sqlite/vendor/sqlite3.c -o "$build_dir/sqlite3.o"
+    odin build host -collection:oreo=src -extra-linker-flags:"$build_dir/sqlite3.o" -out:bin/oreo-host.bin
 
 # Compile the bundled amalgamation and link it into the package tests.
 test: check

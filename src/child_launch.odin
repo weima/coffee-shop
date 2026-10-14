@@ -135,7 +135,7 @@ DEV_CANCEL_TIMEOUT_SECONDS :: 60
 dev_cancel_escalate :: proc(wrapper, seconds: int) {
 	command := []string{
 		"/bin/sh", "-c",
-		"(sleep \"$1\"; kill -KILL -- \"-$2\" 2>/dev/null) </dev/null >/dev/null 2>&1 &",
+		"(sleep \"$1\"; kill -KILL -\"$2\" 2>/dev/null) </dev/null >/dev/null 2>&1 &",
 		"coffee-shop",
 		fmt.tprintf("%d", seconds),
 		fmt.tprintf("%d", wrapper),

@@ -192,7 +192,7 @@ test_foreground_host_passes_shot_kind_and_rejects_unknown_kind :: proc(t: ^testi
 }
 
 host_test_station_command :: proc(kind: string) -> string {
-	return host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "shot", "brew", "/tmp/prompt", "", "", kind, "", "")
+	return host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "/oreo/bin/oreo-host", "shot", "brew", "/tmp/prompt", "", "", "", kind, SHOT_RUNTIME_PI, "", "")
 }
 
 @(test)
@@ -493,6 +493,41 @@ test_foreground_host_rejects_invalid_thinking_level :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(run.out, `"type":"session_started","request_id":"order-h3"`), run.out)
 	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-h3/stations/shot-x", run.state)), "invalid thinking must not create a worktree")
 	testing.expect(t, !strings.contains(run.calls, "shot-x"), "invalid thinking must not call Herdr")
+}
+
+// Oreo is opt-in, requires an explicit provider/model route and thinking level,
+// and never gives the Pi wrapper direct work tools.
+@(test)
+test_foreground_host_validates_oreo_runtime_before_launch_and_uses_transport_only :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-oreo-runtime-*", `{"type":"dispatch","request_id":"oreo-good","repo":"@REPO@","recipe":{"shots":[{"id":"shot-o","prompt":"exact assignment","runtime":"oreo","model":"openai-codex/gpt-6-luna","thinking":"high"}]}}
+{"type":"dispatch","request_id":"oreo-bad-runtime","repo":"@REPO@","recipe":{"shots":[{"id":"shot-u","prompt":"x","runtime":"other"}]}}
+{"type":"dispatch","request_id":"oreo-no-route","repo":"@REPO@","recipe":{"shots":[{"id":"shot-m","prompt":"x","runtime":"oreo","thinking":"high"}]}}
+{"type":"dispatch","request_id":"oreo-bad-route","repo":"@REPO@","recipe":{"shots":[{"id":"shot-b","prompt":"x","runtime":"oreo","model":"openai-codex/","thinking":"high"}]}}
+{"type":"dispatch","request_id":"oreo-no-thinking","repo":"@REPO@","recipe":{"shots":[{"id":"shot-t","prompt":"x","runtime":"oreo","model":"openai-codex/gpt-6-luna"}]}}
+{"type":"shutdown","request_id":"shutdown-1"}
+`)
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"oreo-good","shot_id":"shot-o"`), "valid Oreo Shot should start")
+	testing.expect(t, strings.contains(run.calls, "OREO_HOST='") && strings.contains(run.calls, "OREO_PROVIDER='openai-codex' OREO_MODEL='gpt-6-luna' OREO_THINKING='high' OREO_SESSION_ID=shot-o pi --mode rpc --no-tools --no-mcp --no-extensions --model 'openai-codex/gpt-6-luna' --thinking high -e"), run.calls)
+	testing.expect(t, strings.contains(run.calls, "OREO_PROVIDER='openai-codex' OREO_MODEL='gpt-6-luna' OREO_THINKING='high'"), run.calls)
+	for id in ([]string{"shot-u", "shot-m", "shot-b", "shot-t"}) {
+		testing.expect(t, !strings.contains(run.calls, id), run.calls)
+	}
+	for request in ([]string{"oreo-bad-runtime", "oreo-no-route", "oreo-bad-route", "oreo-no-thinking"}) {
+		testing.expect(t, strings.contains(run.out, fmt.tprintf(`{{"type":"error","request_id":"%s"`, request)), run.out)
+		testing.expect(t, !strings.contains(run.out, fmt.tprintf(`{{"type":"dispatch_accepted","request_id":"%s"`, request)), run.out)
+		testing.expect(t, !os.exists(fmt.tprintf("%s/host/%s/stations", run.state, request)))
+	}
+}
+
+@(test)
+test_foreground_host_keeps_pi_runtime_as_default :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-pi-default-*", `{"type":"dispatch","request_id":"pi-default","repo":"@REPO@","recipe":{"shots":[{"id":"shot-p","prompt":"keep current behavior"}]}}
+{"type":"shutdown","request_id":"shutdown-1"}
+`)
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.calls, "-- pi --mode rpc --tools +codemode -e"), run.calls)
+	testing.expect(t, !strings.contains(run.calls, "OREO_PROVIDER"), run.calls)
 }
 
 // Every line the host reads is acknowledged with a received event before it is

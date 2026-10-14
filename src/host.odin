@@ -14,6 +14,8 @@ HOST_PROTOCOL :: 1
 
 // Compiled into the binary, so a Station can load it from any install location.
 HOST_EXTENSION_SOURCE :: #load("../extensions/coffee-shop.ts", string)
+HOST_OREO_EXTENSION_SOURCE :: #load("../extensions/oreo/index.ts", string)
+HOST_OREO_PROTOCOL_SOURCE :: #load("../extensions/oreo/protocol.ts", string)
 
 // Byte limit for one request line, the scanner token limit this loop replaces.
 HOST_LINE_MAX :: bufio.DEFAULT_MAX_SCAN_TOKEN_SIZE
@@ -26,6 +28,8 @@ HOST_LOOP_POLL_MS :: 20
 host_report_socket: string
 host_station_executable: string
 host_extension_path: string
+host_oreo_extension_path: string
+host_oreo_host_path: string
 host_history_root: string
 
 HOST_LOCK_FILE_NAME :: "host.lock"
@@ -89,6 +93,18 @@ run_host :: proc() -> int {
 		host_write_line(`{"type":"error","reason":"could not write the Coffee Shop extension"}`)
 		return 1
 	}
+	oreo_dir, _ := filepath.join({extension_dir, "oreo"}, context.temp_allocator)
+	if os.make_directory_all(oreo_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil && !os.is_directory(oreo_dir) {
+		host_write_line(`{"type":"error","reason":"could not create the Oreo extension directory"}`)
+		return 1
+	}
+	host_oreo_extension_path, _ = filepath.join({oreo_dir, "index.ts"}, context.allocator)
+	oreo_protocol_path, _ := filepath.join({oreo_dir, "protocol.ts"}, context.temp_allocator)
+	if os.write_entire_file(host_oreo_extension_path, HOST_OREO_EXTENSION_SOURCE, os.Permissions{.Read_User, .Write_User}) != nil ||
+		os.write_entire_file(oreo_protocol_path, HOST_OREO_PROTOCOL_SOURCE, os.Permissions{.Read_User, .Write_User}) != nil {
+		host_write_line(`{"type":"error","reason":"could not write the Oreo extension"}`)
+		return 1
+	}
 	host_extension_path = extension_path
 	host_history_root = strings.clone(host_dir, context.allocator)
 	host_lock, lock_ok := host_acquire_lock(host_dir)
@@ -114,6 +130,13 @@ run_host :: proc() -> int {
 	}
 	host_report_socket = socket_path
 	host_station_executable = executable_info.executable_path
+	if configured_host, configured := os.lookup_env("OREO_HOST", context.temp_allocator); configured && configured_host != "" {
+		host_oreo_host_path = strings.clone(configured_host, context.allocator)
+	} else {
+		executable_dir := filepath.dir(executable_info.executable_path)
+		defer delete(executable_dir)
+		host_oreo_host_path, _ = filepath.join({executable_dir, "oreo", "bin", "oreo-host.bin"}, context.allocator)
+	}
 
 	host_write_line(fmt.tprintf(`{{"type":"ready","protocol":%d}}`, HOST_PROTOCOL))
 	host_loop(&listener)
@@ -396,8 +419,10 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 	ids := make([dynamic]string, context.temp_allocator)
 	prompts := make([dynamic]string, context.temp_allocator)
 	models := make([dynamic]string, context.temp_allocator)
+	providers := make([dynamic]string, context.temp_allocator)
 	thinkings := make([dynamic]string, context.temp_allocator)
 	kinds := make([dynamic]string, context.temp_allocator)
+	runtimes := make([dynamic]string, context.temp_allocator)
 	tastes := make([dynamic]string, context.temp_allocator)
 	messages := make([dynamic]string, context.temp_allocator)
 	for shot_value in shots {
@@ -441,6 +466,33 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 				return
 			}
 		}
+		runtime := SHOT_RUNTIME_PI
+		if runtime_value, runtime_found := shot["runtime"]; runtime_found {
+			runtime_ok := false
+			runtime, runtime_ok = runtime_value.(json.String)
+			if !runtime_ok || !valid_shot_runtime(runtime) {
+				host_emit(Host_Event{type = "error", request_id = request_id, shot_id = id, reason = "shot runtime must be pi or oreo"})
+				return
+			}
+		}
+		provider := ""
+		if runtime == SHOT_RUNTIME_OREO {
+			if kind != SHOT_KIND_EXECUTE {
+				host_emit(Host_Event{type = "error", request_id = request_id, shot_id = id, reason = "oreo runtime requires an execute Shot"})
+				return
+			}
+			route_provider, route_model, route_ok := host_oreo_model_route(model)
+			if !route_ok {
+				host_emit(Host_Event{type = "error", request_id = request_id, shot_id = id, reason = "oreo requires a valid provider/model pair"})
+				return
+			}
+			provider = route_provider
+			model = route_model
+			if thinking == "" {
+				host_emit(Host_Event{type = "error", request_id = request_id, shot_id = id, reason = "oreo requires an explicit thinking level"})
+				return
+			}
+		}
 		taste, message, taste_reason := host_shot_taste(shot, kind)
 		if taste_reason != "" {
 			host_emit(Host_Event{type = "error", request_id = request_id, shot_id = id, reason = taste_reason})
@@ -450,14 +502,16 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 		append(&ids, id)
 		append(&prompts, prompt)
 		append(&models, model)
+		append(&providers, provider)
 		append(&thinkings, thinking)
 		append(&kinds, kind)
+		append(&runtimes, runtime)
 		append(&tastes, taste)
 		append(&messages, message)
 	}
 
 	host_emit(Host_Event{type = "dispatch_accepted", request_id = request_id})
-	host_start_sessions(repo, request_id, ids[:], prompts[:], models[:], thinkings[:], kinds[:], tastes[:], messages[:])
+	host_start_sessions(repo, request_id, ids[:], prompts[:], models[:], providers[:], thinkings[:], kinds[:], runtimes[:], tastes[:], messages[:])
 }
 
 // A Shot with a taste is a Pull: it needs a commit message, and only an execute Shot
@@ -504,7 +558,7 @@ valid_commit_message :: proc(message: string) -> bool {
 // Every Shot prompt starts with this line, so agent replies stay short.
 HOST_REPLY_STYLE :: "Keep replies concise: lead with the answer, use short lists, and skip restating the question and filler."
 
-host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, thinkings, kinds, tastes, messages: []string) {
+host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, providers, thinkings, kinds, runtimes, tastes, messages: []string) {
 	if _, launch_err := child_launch_argv(host_station_executable); launch_err != "" {
 		for id in ids {
 			host_session_failed(request_id, id, launch_err)
@@ -560,7 +614,11 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, thin
 			host_session_failed(request_id, id, launch_err)
 			continue
 		}
-		command := host_station_command(child_shell_prefix(launch), host_report_socket, host_extension_path, id, request_id, prompt_path, models[i], thinkings[i], kinds[i], tastes[i], messages[i])
+		extension := host_extension_path
+		if runtimes[i] == SHOT_RUNTIME_OREO {
+			extension = host_oreo_extension_path
+		}
+		command := host_station_command(child_shell_prefix(launch), host_report_socket, extension, host_oreo_host_path, id, request_id, prompt_path, models[i], providers[i], thinkings[i], kinds[i], runtimes[i], tastes[i], messages[i])
 		if run_err := herdr_run_worker(herdr, pane_id, command); run_err != "" {
 			host_session_failed(request_id, id, fmt.tprintf("could not start the Station: %s", run_err))
 			continue
@@ -742,7 +800,7 @@ host_reply :: proc(root: json.Object, request_id: string) {
 // to safe characters.
 // A research Shot gets scratch-write tools; the Station then checks that it left the source as it found it.
 // A Pull passes its taste and message to the Station, which commits only if the taste passes.
-host_station_command :: proc(launcher, report, extension, shot_id, request_id, prompt_file, model, thinking, kind, taste, message: string) -> string {
+host_station_command :: proc(launcher, report, extension, oreo_host, shot_id, request_id, prompt_file, model, provider, thinking, kind, runtime, taste, message: string) -> string {
 	quoted_report := shell_quote(report)
 	defer delete(quoted_report)
 	quoted_extension := shell_quote(extension)
@@ -776,6 +834,17 @@ host_station_command :: proc(launcher, report, extension, shot_id, request_id, p
 		defer delete(quoted_message)
 		taste_argument = fmt.tprintf(" --taste %s --message %s", quoted_taste, quoted_message)
 	}
+	if runtime == SHOT_RUNTIME_OREO {
+		quoted_oreo_host := shell_quote(oreo_host)
+		defer delete(quoted_oreo_host)
+		quoted_provider := shell_quote(provider)
+		defer delete(quoted_provider)
+		quoted_model := shell_quote(model)
+		defer delete(quoted_model)
+		quoted_thinking := shell_quote(thinking)
+		defer delete(quoted_thinking)
+		return fmt.tprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- env OREO_HOST=%s OREO_PROVIDER=%s OREO_MODEL=%s OREO_THINKING=%s OREO_SESSION_ID=%s pi --mode rpc --no-tools --no-mcp --no-extensions --model '%s/%s' --thinking %s -e %s", launcher, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, quoted_oreo_host, quoted_provider, quoted_model, quoted_thinking, shot_id, provider, model, thinking, quoted_extension)
+	}
 	return fmt.tprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- pi --mode rpc%s%s%s -e %s", launcher, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, tools_argument, model_argument, thinking_argument, quoted_extension)
 }
 
@@ -799,11 +868,43 @@ host_session_failed :: proc(request_id, shot_id, reason: string) {
 
 SHOT_KIND_EXECUTE :: "execute"
 SHOT_KIND_RESEARCH :: "research"
+SHOT_RUNTIME_PI :: "pi"
+SHOT_RUNTIME_OREO :: "oreo"
 // Research and review may write scratch files and run codemode; the Station or review checks the source.
 SCRATCH_WRITE_TOOLS :: "read,grep,find,ls,write,codemode"
 
 valid_shot_kind :: proc(kind: string) -> bool {
 	return kind == SHOT_KIND_EXECUTE || kind == SHOT_KIND_RESEARCH
+}
+
+valid_shot_runtime :: proc(runtime: string) -> bool {
+	return runtime == SHOT_RUNTIME_PI || runtime == SHOT_RUNTIME_OREO
+}
+
+host_oreo_model_route :: proc(route: string) -> (provider, model: string, ok: bool) {
+	separator := strings.index_byte(route, '/')
+	if separator <= 0 || separator == len(route)-1 || strings.index_byte(route[separator+1:], '/') >= 0 {
+		return "", "", false
+	}
+	provider = route[:separator]
+	model = route[separator+1:]
+	if !host_model_token(provider) || !host_model_token(model) {
+		return "", "", false
+	}
+	return provider, model, true
+}
+
+host_model_token :: proc(token: string) -> bool {
+	if len(token) == 0 || len(token) > 80 {
+		return false
+	}
+	for c in token {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_' || c == ':' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 valid_host_model :: proc(model: string) -> bool {
