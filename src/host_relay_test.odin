@@ -115,6 +115,8 @@ test_host_relays_station_reports_to_stdout :: proc(t: ^testing.T) {
 	defer delete(history)
 	testing.expect_value(t, history_err, os.Error(nil))
 	testing.expect(t, strings.contains(string(history), `"kind":"turn_done"`) && strings.contains(string(history), `"kind":"agent_exited"`), string(history))
+	spooled, _ := os.read_all_directory_by_path(fmt.tprintf("%s/host/spool", state), context.temp_allocator)
+	testing.expect_value(t, len(spooled), 0) // every relayed report leaves the spool
 }
 
 @(test)
@@ -485,4 +487,41 @@ test_host_reads_and_answers_every_request_under_load :: proc(t: ^testing.T) {
 		testing.expectf(t, received_count == 1, "request %s: %d received events, expected exactly 1", id, received_count)
 		testing.expectf(t, terminal_count == 1, "request %s: %d terminal replies, expected exactly 1", id, terminal_count)
 	}
+}
+
+// A report a Station spooled before the host died is relayed, recorded in the
+// history and removed from the spool on the next start, without reading a pane.
+@(test)
+test_host_recovers_unrelayed_spooled_report :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-recover-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	state := fmt.tprintf("%s/state", root)
+	spool := fmt.tprintf("%s/host/spool", state)
+	rwx := os.Permissions{.Read_User, .Write_User, .Execute_User}
+	testing.expect_value(t, os.make_directory_all(spool, rwx), os.Error(nil))
+	entry := fmt.tprintf("%s/0001-a.json", spool)
+	line := `{"brew_id":"order-1","shot_id":"shot-a","kind":"turn_done","description":"finished while the host was down","timestamp_ns":1,"spool":"0001-a.json"}`
+	testing.expect_value(t, os.write_entire_file(entry, line, rwx), os.Error(nil))
+
+	binary := build_test_binary(t, root)
+	defer delete(binary)
+	run_state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
+		command = {"sh", "-c", `printf '%s\n' '{"type":"shutdown","request_id":"done"}' | CS_STATE_DIR="$1" "$2" host`, "recover-test", state, binary},
+	}, context.allocator)
+	defer delete(stdout)
+	defer delete(stderr)
+	testing.expect_value(t, exec_err, os.Error(nil))
+	testing.expect(t, run_state.success, string(stderr))
+	testing.expect(t, strings.contains(string(stdout), `{"type":"station_report","request_id":"order-1","shot_id":"shot-a","kind":"turn_done","description":"finished while the host was down"}`), string(stdout))
+	history, history_err := os.read_entire_file(fmt.tprintf("%s/host/order-1/history.ndjson", state), context.allocator)
+	defer delete(history)
+	testing.expect_value(t, history_err, os.Error(nil))
+	testing.expect(t, strings.contains(string(history), "finished while the host was down"), string(history))
+	testing.expect(t, !os.exists(entry), "a relayed spool entry must be removed")
 }

@@ -1341,3 +1341,46 @@ test_pull_runs_taste_on_agent_commit :: proc(t: ^testing.T) {
 		}
 	}
 }
+
+// A report is on disk before the socket sees it, so a host that dies with the
+// message unread cannot lose it. The spool exists only where the host made one.
+@(test)
+test_station_report_spools_before_sending :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-spool-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	socket := fmt.tprintf("%s/activity.sock", root)
+	spool := fmt.tprintf("%s/spool", root)
+	listener, listener_ok := activity_listener_open(socket)
+	testing.expect(t, listener_ok)
+	defer activity_listener_close(&listener)
+	sender, sender_ok := activity_sender_open(socket)
+	testing.expect(t, sender_ok)
+	defer activity_sender_close(&sender)
+
+	station_report(&sender, "order-1", "shot-a", "turn_done", "no spool directory")
+	testing.expect(t, !os.exists(spool), "no spool directory means no spooling")
+	plain := activity_listener_receive(&listener)
+	testing.expect_value(t, plain.message.spool, "")
+	destroy_struct(&plain.message)
+
+	testing.expect_value(t, os.make_directory_all(spool, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
+	station_report(&sender, "order-1", "shot-a", "turn_done", "spooled text")
+	entries, read_err := os.read_all_directory_by_path(spool, context.temp_allocator)
+	testing.expect_value(t, read_err, os.Error(nil))
+	testing.expect_value(t, len(entries), 1)
+	if len(entries) != 1 {
+		return
+	}
+	data, data_err := os.read_entire_file(fmt.tprintf("%s/%s", spool, entries[0].name), context.temp_allocator)
+	testing.expect_value(t, data_err, os.Error(nil))
+	testing.expect(t, strings.contains(string(data), "spooled text"), string(data))
+	received := activity_listener_receive(&listener)
+	testing.expect_value(t, received.message.spool, entries[0].name)
+	destroy_struct(&received.message)
+}

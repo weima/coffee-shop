@@ -16,6 +16,7 @@ Activity_Message :: struct {
 	kind: string,
 	description: string,
 	timestamp_ns: i64,
+	spool: string `json:"spool,omitempty"`, // name of the durable copy in the host spool, if any
 }
 
 Activity_Client :: struct {
@@ -271,7 +272,8 @@ activity_valid_message :: proc(message: Activity_Message) -> bool {
 	return valid_shot_id(message.brew_id) && valid_shot_id(message.shot_id) &&
 		len(message.kind) > 0 && len(message.kind) <= ACTIVITY_MAX_KIND &&
 		len(message.description) > 0 && len(message.description) <= ACTIVITY_MAX_DESCRIPTION &&
-		message.timestamp_ns > 0
+		message.timestamp_ns > 0 &&
+		len(message.spool) <= ACTIVITY_MAX_ID*2 && !strings.contains_any(message.spool, "/\\") && message.spool != ".."
 }
 
 activity_valid_socket_path :: proc(path: string) -> bool {

@@ -759,13 +759,45 @@ station_report :: proc(sender: ^Activity_Sender, brew_id, station_id, kind, desc
 			delete(path, context.allocator)
 		}
 	}
-	_ = activity_sender_send(sender, Activity_Message{
+	message := Activity_Message{
 		brew_id = brew_id,
 		shot_id = station_id,
 		kind = kind,
 		description = text,
 		timestamp_ns = time.now()._nsec,
-	})
+	}
+	message.spool = station_spool_report(sender.path, message)
+	_ = activity_sender_send(sender, message)
+}
+
+STATION_SPOOL_DIR_NAME :: "spool"
+
+// Writes the report durably in <host>/spool/ before it is sent, so a host that dies
+// with the message unread cannot lose it. The host makes the directory; a socket
+// without one (a dispatch run) is not spooled. Returns the entry name, or "".
+station_spool_report :: proc(socket_path: string, message: Activity_Message) -> string {
+	slash := strings.last_index_byte(socket_path, '/')
+	if slash < 0 {
+		return ""
+	}
+	spool_dir, _ := filepath.join({socket_path[:slash], STATION_SPOOL_DIR_NAME}, context.temp_allocator)
+	if !os.is_directory(spool_dir) {
+		return ""
+	}
+	name := fmt.tprintf("%020d-%s.json", message.timestamp_ns, random_token(context.temp_allocator))
+	spooled := message
+	spooled.spool = name
+	data, marshal_err := json.marshal(spooled, {}, context.temp_allocator)
+	if marshal_err != nil {
+		return ""
+	}
+	path, _ := filepath.join({spool_dir, name}, context.temp_allocator)
+	temp_path := fmt.tprintf("%s.tmp", path)
+	if write_all_to_file(temp_path, data, os.O_WRONLY|os.O_CREATE|os.O_EXCL).kind != .None || os.rename(temp_path, path) != nil {
+		_ = os.remove(temp_path)
+		return ""
+	}
+	return name
 }
 
 STATION_FILE_PREFIX :: "file:"
