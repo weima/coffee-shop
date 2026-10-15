@@ -220,9 +220,10 @@ test_station_sprite_clamps_multi_byte_status_on_a_rune_boundary :: proc(t: ^test
 }
 
 @(test)
-test_station_display_has_no_residual_cat_rows_in_an_80_by_24_terminal :: proc(t: ^testing.T) {
-	// A long tool status is the case that can wrap a supposedly single row. Keep the
-	// exact draw bytes in the test temp directory, then let pyte inspect every frame.
+test_station_display_frames_are_bounded_and_clear_the_sprite :: proc(t: ^testing.T) {
+	// Inspect the exact bytes emitted by every frame without an external terminal
+	// emulator: each row is cleared before it is rewritten, and the sprite is four
+	// rows tall. The existing sprite tests cover the cursor-up and erase contract.
 	sync.mutex_lock(&capture_lock)
 	defer sync.mutex_unlock(&capture_lock)
 
@@ -237,6 +238,7 @@ test_station_display_has_no_residual_cat_rows_in_an_80_by_24_terminal :: proc(t:
 		return
 	}
 
+	frame_count := 200
 	display := Station_Display{live = true, dir = 1, started_at_ns = 1}
 	display.sprite = station_sprite_new()
 	display.status = strings.clone(strings.repeat("x", STATION_STATUS_MAX, context.temp_allocator))
@@ -244,7 +246,7 @@ test_station_display_has_no_residual_cat_rows_in_an_80_by_24_terminal :: proc(t:
 	old_stdout := os.stdout
 	os.stdout = out
 	station_styles_on = false
-	for frame := 0; frame < 200; frame += 1 {
+	for frame := 0; frame < frame_count; frame += 1 {
 		if frame > 0 {
 			station_display_advance_locked(&display)
 		}
@@ -256,53 +258,56 @@ test_station_display_has_no_residual_cat_rows_in_an_80_by_24_terminal :: proc(t:
 	os.stdout = old_stdout
 	_ = os.close(out)
 
-	pyte_check := `
-import sys
-from pathlib import Path
-import pyte
+	data, read_err := os.read_entire_file(path, context.temp_allocator)
+	if read_err != nil {
+		testing.fail(t)
+		return
+	}
+	frames := strings.split(string(data), "\x1b[4A", context.temp_allocator)
+	// 199 moves between drawn frames, one move before clear, and one after it.
+	testing.expect_value(t, len(frames), frame_count+2)
+	if len(frames) < frame_count+2 {
+		return
+	}
 
-frame_count = int(sys.argv[2])
-data = Path(sys.argv[1]).read_bytes()
-parts = data.split(b"\x1b[4A")
-frames = [parts[0]] + [b"\x1b[4A" + part for part in parts[1:]]
-if len(frames) < frame_count:
-    raise SystemExit(f"only found {len(frames)} frames, wanted {frame_count}")
+	x, step := 0, 1
+	for frame_index := 0; frame_index < frame_count; frame_index += 1 {
+		frame := frames[frame_index]
+		art := STATION_CAT_RIGHT if step > 0 else STATION_CAT_LEFT
+		line_start := 0
+		for row := 0; row < STATION_BLOCK_ROWS; row += 1 {
+			newline := strings.index_byte(frame[line_start:], '\n')
+			if newline < 0 {
+				testing.fail(t)
+				return
+			}
+			line := frame[line_start : line_start+newline]
+			testing.expect(t, strings.has_prefix(line, "\r\x1b[2K"), fmt.tprintf("frame %d row %d must clear before drawing", frame_index, row))
+			text := line[len("\r\x1b[2K"):]
+			if row < STATION_CAT_ROWS {
+				expected := fmt.tprintf("%s%s", strings.repeat(" ", x, context.temp_allocator), art[row])
+				testing.expect_value(t, text, expected)
+				testing.expect(t, len(text) <= 80, fmt.tprintf("frame %d row %d must fit the terminal", frame_index, row))
+			} else {
+				testing.expect(t, len(text) <= STATION_STATUS_MAX, fmt.tprintf("frame %d status must fit one terminal row", frame_index))
+			}
+			line_start += newline + 1
+		}
+		testing.expect_value(t, line_start, len(frame))
+		if frame_index+1 < frame_count {
+			x += step
+			if x <= 0 {
+				x, step = 0, 1
+			}
+			if x >= STATION_TRACK-STATION_SPRITE_WIDTH {
+				x, step = STATION_TRACK-STATION_SPRITE_WIDTH, -1
+			}
+		}
+	}
 
-right = ["     /\\_/\\   ", "  ___( o.o)  ", " /   >  ^  > "]
-left = ["   /\\_/\\     ", "  (o.o )___  ", " <  ^  <   \\ "]
-markers = ("/\\_/\\", "( o.o)", "(o.o )___", "/   >  ^  >", "<  ^  <")
-screen = pyte.Screen(80, 24)
-stream = pyte.Stream(screen)
-x = 0
-step = 1
-for frame in range(frame_count):
-    stream.feed(frames[frame].decode("utf-8"))
-    cat_rows = [row for row, text in enumerate(screen.display) if any(marker in text for marker in markers)]
-    if len(cat_rows) != 3 or cat_rows != list(range(cat_rows[0], cat_rows[0] + 3)):
-        raise SystemExit(f"frame {frame}: cat rows are {cat_rows}, screen={screen.display!r}")
-    art = right if step > 0 else left
-    top = cat_rows[0]
-    for row, expected in enumerate(art):
-        actual = screen.display[top + row]
-        if actual[:x] != " " * x or actual[x:x + len(expected)] != expected:
-            raise SystemExit(f"frame {frame}: unexpected cat row {row}: {actual!r}")
-    if frame + 1 < frame_count:
-        x += step
-        if x <= 0:
-            x, step = 0, 1
-        if x >= 40 - 13:
-            x, step = 40 - 13, -1
-
-stream.feed(frames[frame_count].decode("utf-8"))
-if any(any(marker in text for marker in markers) for text in screen.display):
-    raise SystemExit("clear left cat rows on screen")
-`
-	state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"python3", "-c", pyte_check, path, "200"},
-	}, context.allocator)
-	defer delete(stdout)
-	defer delete(stderr)
-	testing.expect(t, exec_err == nil && state.success, string(stderr))
+	expected_clear := strings.repeat("\r\x1b[2K\n", STATION_BLOCK_ROWS, context.temp_allocator)
+	testing.expect_value(t, frames[frame_count], expected_clear)
+	testing.expect_value(t, frames[frame_count+1], "")
 }
 
 @(test)

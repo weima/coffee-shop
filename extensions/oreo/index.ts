@@ -27,6 +27,12 @@ export default function oreoBridge(pi: ExtensionAPI): void {
 	let child: ChildProcess | undefined;
 	let pending = "";
 	let stopping = false;
+	let readyResolve: (() => void) | undefined;
+	let readyReject: ((error: Error) => void) | undefined;
+	let readyPromise: Promise<void> | undefined;
+	let workResolve: ((result: string) => void) | undefined;
+	let workReject: ((error: Error) => void) | undefined;
+	let activeSession = "";
 
 	function writeLine(message: unknown): void {
 		try {
@@ -94,13 +100,37 @@ export default function oreoBridge(pi: ExtensionAPI): void {
 				await answerModelRequest(message);
 				return;
 			case "event":
-				// needs_input asks the user for something; the rest is progress.
-				report(message.message, message.kind === "needs_input" ? "warning" : "info");
+				if (message.kind === "final_result" && message.session_id === activeSession) {
+					workResolve?.(message.message);
+					workResolve = undefined;
+					workReject = undefined;
+					return;
+				}
+				if (message.session_id === activeSession && message.kind === "needs_input") {
+					workReject?.(new Error("Oreo requested human input; one-shot execution cannot continue"));
+					workResolve = undefined;
+					workReject = undefined;
+					return;
+				}
+				if (message.kind !== "progress") {
+					report(message.message, message.kind === "needs_input" ? "warning" : "info");
+				}
 				return;
 			case "error":
+				if (workReject) {
+					workReject(new Error(tokenFree(message.reason)));
+					workResolve = undefined;
+					workReject = undefined;
+				} else {
+					readyReject?.(new Error(tokenFree(message.reason)));
+				}
 				report(tokenFree(message.reason), "error");
 				return;
 			case "ready":
+				readyResolve?.();
+				readyResolve = undefined;
+				readyReject = undefined;
+				return;
 			case "accepted":
 			case "closed":
 			case "stopped":
@@ -118,7 +148,12 @@ export default function oreoBridge(pi: ExtensionAPI): void {
 	}
 
 	function startHost(ctx: ExtensionContext): void {
-		const hostPath = process.env.OREO_HOST ?? "oreo/bin/oreo-host";
+		const hostPath = process.env.OREO_HOST ?? "oreo/bin/oreo-host.bin";
+		readyPromise = new Promise<void>((resolve, reject) => {
+			readyResolve = resolve;
+			readyReject = reject;
+		});
+		void readyPromise.catch(() => {});
 		let running: ChildProcess;
 		try {
 			running = spawn(hostPath, [], { cwd: ctx.cwd, stdio: ["pipe", "pipe", "pipe"] });
@@ -135,9 +170,22 @@ export default function oreoBridge(pi: ExtensionAPI): void {
 		running.stderr?.setEncoding("utf8");
 		running.stderr?.on("data", (chunk: string) => process.stderr.write(chunk));
 		running.on("error", (error) => {
+			readyReject?.(error);
+			workReject?.(error);
+			workResolve = undefined;
+			workReject = undefined;
+			readyResolve = undefined;
+			readyReject = undefined;
 			report(`could not start the Oreo host at ${hostPath}: ${tokenFree(errorReason(error))}`, "error");
 		});
 		running.on("exit", (code, signal) => {
+			const exitError = new Error(`Oreo host exited (${signal ?? code})`);
+			readyReject?.(exitError);
+			workReject?.(exitError);
+			workResolve = undefined;
+			workReject = undefined;
+			readyResolve = undefined;
+			readyReject = undefined;
 			if (child === running) {
 				child = undefined;
 			}
@@ -155,20 +203,19 @@ export default function oreoBridge(pi: ExtensionAPI): void {
 		}
 		stopping = true;
 		writeLine({ type: "quit" });
-		await new Promise<void>((resolve) => {
-			if (running.exitCode !== null || running.signalCode !== null) {
-				resolve();
-				return;
+		const closed = running.exitCode !== null || running.signalCode !== null
+			? Promise.resolve()
+			: new Promise<void>((resolve) => running.once("close", () => resolve()));
+		try {
+			await withTimeout(closed, STOP_TIMEOUT_MS);
+		} catch {
+			running.kill("SIGKILL");
+			try {
+				await withTimeout(closed, 1_000);
+			} catch {
+				report("could not confirm the Oreo host exited", "error");
 			}
-			const timer = setTimeout(() => {
-				running.kill();
-				resolve();
-			}, 2000);
-			running.once("close", () => {
-				clearTimeout(timer);
-				resolve();
-			});
-		});
+		}
 		if (child === running) {
 			child = undefined;
 		}
@@ -181,8 +228,134 @@ export default function oreoBridge(pi: ExtensionAPI): void {
 		}
 	});
 
+	let submitted = false;
+	pi.on("input", async (event, ctx) => {
+		const provider = process.env.OREO_PROVIDER ?? "";
+		if (submitted) {
+			return { action: "handled" };
+		}
+		submitted = true;
+		const model = process.env.OREO_MODEL ?? "";
+		const thinking = process.env.OREO_THINKING ?? "";
+		try {
+			const result = await runOreoSubmission({
+				submit: async (request, signal) => {
+					await withTimeout(readyPromise ?? Promise.reject(new Error("Oreo host did not start")), READY_TIMEOUT_MS);
+					activeSession = request.session_id;
+					return new Promise<string>((resolve, reject) => {
+						workResolve = resolve;
+						workReject = reject;
+						signal.addEventListener("abort", () => reject(new Error("Oreo work cancelled")), { once: true });
+						writeLine({ type: "submit", ...request });
+					});
+				},
+				closeSession: async (sessionId) => {
+					if (child) writeLine({ type: "close_session", session_id: sessionId });
+				},
+				quit: stopHost,
+			}, process.env.OREO_SESSION_ID ?? "shot", event.text, `${provider}/${model}`, thinking, ctx.signal);
+			emitRpcResult(result);
+		} catch (error) {
+			const cancelled = ctx.signal?.aborted ?? false;
+			process.exitCode = cancelled ? 130 : 1;
+			emitRpcResult(cancelled ? "Oreo work cancelled" : `Oreo work failed: ${tokenFree(errorReason(error))}`);
+		} finally {
+			ctx.shutdown();
+		}
+		return { action: "handled" };
+	});
+
 	pi.on("session_shutdown", async () => {
 		await stopHost();
+	});
+}
+
+export interface OreoSubmissionRequest {
+	session_id: string;
+	prompt: string;
+	provider: string;
+	model: string;
+	thinking: string;
+}
+
+export interface OreoSubmissionHost {
+	submit(request: OreoSubmissionRequest, signal: AbortSignal): Promise<string>;
+	closeSession(sessionId: string): Promise<void>;
+	quit(): Promise<void>;
+}
+
+const READY_TIMEOUT_MS = 5_000;
+const WORK_TIMEOUT_MS = 30 * 60 * 1_000;
+const STOP_TIMEOUT_MS = 2_000;
+
+export function validateOreoRoute(route: string): { provider: string; model: string } {
+	const parts = route.split("/");
+	if (parts.length !== 2 || !/^[A-Za-z0-9._:-]{1,80}$/.test(parts[0]) || !/^[A-Za-z0-9._:-]{1,80}$/.test(parts[1])) {
+		throw new Error("Oreo model route must be a provider/model pair");
+	}
+	return { provider: parts[0], model: parts[1] };
+}
+
+export async function runOreoSubmission(
+	host: OreoSubmissionHost,
+	sessionId: string,
+	prompt: string,
+	route: string,
+	thinking: string,
+	externalSignal?: AbortSignal,
+): Promise<string> {
+	const { provider, model } = validateOreoRoute(route);
+	if (!sessionId || !prompt || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(thinking)) {
+		throw new Error("Oreo submission needs a session, task, and valid explicit thinking level");
+	}
+	const controller = new AbortController();
+	let rejectAbort!: (error: Error) => void;
+	const aborted = new Promise<never>((_, reject) => { rejectAbort = reject; });
+	const cancel = () => {
+		controller.abort();
+		rejectAbort(new Error(externalSignal?.aborted ? "Oreo work cancelled" : "Oreo work timed out"));
+	};
+	const timer = setTimeout(cancel, WORK_TIMEOUT_MS);
+	externalSignal?.addEventListener("abort", cancel, { once: true });
+	if (externalSignal?.aborted) cancel();
+	let succeeded = false;
+	try {
+		if (controller.signal.aborted) throw new Error(externalSignal?.aborted ? "Oreo work cancelled" : "Oreo work timed out");
+		const result = await Promise.race([
+			host.submit({ session_id: sessionId, prompt, provider, model, thinking }, controller.signal),
+			aborted,
+		]);
+		succeeded = true;
+		return result;
+	} finally {
+		clearTimeout(timer);
+		externalSignal?.removeEventListener("abort", cancel);
+		try {
+			await withTimeout(host.closeSession(sessionId), STOP_TIMEOUT_MS);
+		} catch {
+			// quit still gets a chance to cancel the host's active work.
+		}
+		try {
+			await withTimeout(host.quit(), STOP_TIMEOUT_MS);
+		} catch {
+			// The extension's process owner kills the host if graceful quit times out.
+		}
+		if (!succeeded) controller.abort();
+	}
+}
+
+export function stationRpcResult(text: string) {
+	return { type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text }] }] };
+}
+
+function emitRpcResult(text: string): void {
+	process.stdout.write(`${JSON.stringify(stationRpcResult(text))}\n`);
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error("Oreo operation timed out")), timeoutMs);
+		promise.then(resolve, reject).finally(() => clearTimeout(timer));
 	});
 }
 
