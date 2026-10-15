@@ -385,7 +385,11 @@ run_herdr :: proc(herdr: string, args: []string, allocator := context.allocator)
 		if detail == "" {
 			detail = "Herdr command failed"
 		}
-		return stdout, stderr, detail
+		owned_detail, clone_err := strings.clone(detail, context.temp_allocator)
+		if clone_err != nil {
+			return stdout, stderr, "Herdr command failed"
+		}
+		return stdout, stderr, owned_detail
 	}
 	return stdout, stderr, ""
 }
@@ -530,8 +534,12 @@ worker_command :: proc(launcher, state_root, brew_id, shot_id, token: string) ->
 }
 
 shell_quote :: proc(value: string) -> string {
-	escaped, _ := strings.replace_all(value, "'", "'\\''", context.temp_allocator)
-	return fmt.aprintf("'%s'", escaped)
+	escaped, was_allocation := strings.replace_all(value, "'", "'\\''", context.allocator)
+	quoted := fmt.aprintf("'%s'", escaped)
+	if was_allocation {
+		delete(escaped)
+	}
+	return quoted
 }
 
 run_pi_json_with_activity :: proc(

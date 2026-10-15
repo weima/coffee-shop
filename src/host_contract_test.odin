@@ -198,13 +198,22 @@ host_test_station_command :: proc(kind: string) -> string {
 @(test)
 test_host_station_command_execute_always_includes_codemode :: proc(t: ^testing.T) {
 	command := host_test_station_command(SHOT_KIND_EXECUTE)
+	defer delete(command)
 	testing.expect(t, strings.contains(command, "-- pi --mode rpc --tools +codemode -e"), command)
 }
 
 @(test)
 test_host_station_command_research_gets_scratch_write_tools :: proc(t: ^testing.T) {
 	command := host_test_station_command(SHOT_KIND_RESEARCH)
+	defer delete(command)
 	testing.expect(t, strings.contains(command, "-- pi --mode rpc --tools read,grep,find,ls,write,codemode -e"), command)
+}
+
+@(test)
+test_host_station_command_with_taste_is_ascii :: proc(t: ^testing.T) {
+	command := host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "/oreo/bin/oreo-host", "shot", "brew", "/tmp/prompt", "", "", "", SHOT_KIND_EXECUTE, SHOT_RUNTIME_PI, "just test", "Add the taste check")
+	defer delete(command)
+	testing.expect(t, host_station_command_is_ascii(command), command)
 }
 
 HOST_TEST_TEMP_DIR :: "/private/tmp" when ODIN_OS == .Darwin else "/tmp"
@@ -240,7 +249,7 @@ Host_Contract_Run :: struct {
 // a second repository at other_path under root, "pulses" by default. A non-empty
 // saved_workspace is written as the workspace id already saved for the repository.
 // save_blocked makes the saved-workspace path a directory, so the host cannot save.
-run_host_requests :: proc(t: ^testing.T, prefix, requests: string, saved_workspace := "", other_path := "pulses", save_blocked := false) -> (run: Host_Contract_Run) {
+run_host_requests :: proc(t: ^testing.T, prefix, requests: string, saved_workspace := "", other_path := "pulses", save_blocked := false, state_name := "state") -> (run: Host_Contract_Run) {
 	root, make_err := os.make_directory_temp(HOST_TEST_TEMP_DIR, prefix, context.allocator)
 	testing.expect_value(t, make_err, os.Error(nil))
 	if make_err != nil {
@@ -250,7 +259,7 @@ run_host_requests :: proc(t: ^testing.T, prefix, requests: string, saved_workspa
 	repo := fmt.tprintf("%s/beans", root)
 	other := fmt.tprintf("%s/%s", root, other_path)
 	bin := fmt.tprintf("%s/bin", root)
-	run.state = fmt.aprintf("%s/state", root)
+	run.state = fmt.aprintf("%s/%s", root, state_name)
 	rwx := os.Permissions{.Read_User, .Write_User, .Execute_User}
 	testing.expect_value(t, os.make_directory_all(repo), os.Error(nil))
 	testing.expect_value(t, os.make_directory_all(bin), os.Error(nil))
@@ -596,6 +605,17 @@ test_host_cancel_signals_the_named_shot :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-c1","shot_id":"shot-a","pane_id":"p0"}`), run.out)
 	testing.expect(t, strings.contains(run.out, `{"type":"cancelled","request_id":"cancel-1","shot_id":"shot-a"}`), run.out)
 	testing.expect(t, !strings.contains(run.out, `"request_id":"cancel-1","shot_id":"shot-a","reason"`), run.out)
+}
+
+@(test)
+test_host_refuses_non_ascii_station_command :: proc(t: ^testing.T) {
+	requests := `{"type":"dispatch","request_id":"order-u1","repo":"@REPO@","recipe":{"shots":[{"id":"shot-u","prompt":"make the change"}]}}
+{"type":"shutdown","request_id":"shutdown-1"}
+`
+	run := run_host_requests(t, "coffee-shop-host-nonascii-*", requests, "", "pulses", false, "state-é")
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.out, `"reason":"generated Station command contains non-ASCII bytes"`), run.out)
+	testing.expect(t, !strings.contains(run.calls, "pane run"), run.calls)
 }
 
 // A cancel for a Shot that is not running says nothing matched and does not end

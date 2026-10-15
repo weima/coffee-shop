@@ -24,6 +24,10 @@
 - Configure Worktrunk's user `worktree-path` as `~/.wt/{{ remote_repo | sanitize }}/{{ branch | sanitize }}` and use it. Never create worktrees as siblings under the repository's work directory.
 - Keep branch names slash-free (for example, `feat-oreo-sqlite-binding`); use hyphens for hierarchy so each worktree occupies one branch-named directory.
 
+## Terminology
+
+When the user says “Station” or “Stations” in this repository, they mean Coffee Shop Station(s): interactive agent processes in Herdr panes for Shots. Use Coffee Shop’s host workflow to create them; do not interpret this as a Nodeterm session.
+
 ## Sessions run with codemode
 
 - Every Pi session — the Barista and every Station — runs with Pi's `codemode` tool enabled. Cost here is driven by turn count, not prompt size: `cacheRead` was 95% of 18.0M tokens across the v0.4 dogfood runs, so collapsing N tool-call turns into one script is the point.

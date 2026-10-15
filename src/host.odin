@@ -134,7 +134,6 @@ run_host :: proc() -> int {
 		host_oreo_host_path = strings.clone(configured_host, context.allocator)
 	} else {
 		executable_dir := filepath.dir(executable_info.executable_path)
-		defer delete(executable_dir)
 		host_oreo_host_path, _ = filepath.join({executable_dir, "oreo", "bin", "oreo-host.bin"}, context.allocator)
 	}
 
@@ -510,8 +509,31 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 		append(&messages, message)
 	}
 
-	host_emit(Host_Event{type = "dispatch_accepted", request_id = request_id})
-	host_start_sessions(repo, request_id, ids[:], prompts[:], models[:], providers[:], thinkings[:], kinds[:], runtimes[:], tastes[:], messages[:])
+	owned_repo, _ := strings.clone(repo, context.allocator)
+	defer delete(owned_repo)
+	owned_request_id, _ := strings.clone(request_id, context.allocator)
+	defer delete(owned_request_id)
+	owned_ids := host_clone_string_slice(ids[:])
+	defer host_delete_string_slice(owned_ids)
+	owned_prompts := host_clone_string_slice(prompts[:])
+	defer host_delete_string_slice(owned_prompts)
+	owned_models := host_clone_string_slice(models[:])
+	defer host_delete_string_slice(owned_models)
+	owned_providers := host_clone_string_slice(providers[:])
+	defer host_delete_string_slice(owned_providers)
+	owned_thinkings := host_clone_string_slice(thinkings[:])
+	defer host_delete_string_slice(owned_thinkings)
+	owned_kinds := host_clone_string_slice(kinds[:])
+	defer host_delete_string_slice(owned_kinds)
+	owned_runtimes := host_clone_string_slice(runtimes[:])
+	defer host_delete_string_slice(owned_runtimes)
+	owned_tastes := host_clone_string_slice(tastes[:])
+	defer host_delete_string_slice(owned_tastes)
+	owned_messages := host_clone_string_slice(messages[:])
+	defer host_delete_string_slice(owned_messages)
+
+	host_emit(Host_Event{type = "dispatch_accepted", request_id = owned_request_id})
+	host_start_sessions_owned(owned_repo, owned_request_id, owned_ids, owned_prompts, owned_models, owned_providers, owned_thinkings, owned_kinds, owned_runtimes, owned_tastes, owned_messages)
 }
 
 // A Shot with a taste is a Pull: it needs a commit message, and only an execute Shot
@@ -558,7 +580,22 @@ valid_commit_message :: proc(message: string) -> bool {
 // Every Shot prompt starts with this line, so agent replies stay short.
 HOST_REPLY_STYLE :: "Keep replies concise: lead with the answer, use short lists, and skip restating the question and filler."
 
-host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, providers, thinkings, kinds, runtimes, tastes, messages: []string) {
+host_clone_string_slice :: proc(values: []string) -> []string {
+	owned := make([]string, len(values), context.allocator)
+	for value, index in values {
+		owned[index], _ = strings.clone(value, context.allocator)
+	}
+	return owned
+}
+
+host_delete_string_slice :: proc(values: []string) {
+	for value in values {
+		delete(value)
+	}
+	delete(values)
+}
+
+host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models, providers, thinkings, kinds, runtimes, tastes, messages: []string) {
 	if _, launch_err := child_launch_argv(host_station_executable); launch_err != "" {
 		for id in ids {
 			host_session_failed(request_id, id, launch_err)
@@ -566,21 +603,24 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, prov
 		return
 	}
 
-	state_root, state_err := default_state_root(context.temp_allocator)
+	state_root, state_err := default_state_root(context.allocator)
+	defer delete(state_root)
 	if state_err != "" {
 		for id in ids {
 			host_session_failed(request_id, id, state_err)
 		}
 		return
 	}
-	prompts_dir, _ := filepath.join({state_root, "host", request_id, "prompts"}, context.temp_allocator)
+	prompts_dir, _ := filepath.join({state_root, "host", request_id, "prompts"}, context.allocator)
+	defer delete(prompts_dir)
 	if os.make_directory_all(prompts_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
 		for id in ids {
 			host_session_failed(request_id, id, "could not create the prompts directory")
 		}
 		return
 	}
-	stations_dir, _ := filepath.join({state_root, "host", request_id, "stations"}, context.temp_allocator)
+	stations_dir, _ := filepath.join({state_root, "host", request_id, "stations"}, context.allocator)
+	defer delete(stations_dir)
 	if os.make_directory_all(stations_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
 		for id in ids {
 			host_session_failed(request_id, id, "could not create the Stations directory")
@@ -590,14 +630,19 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, prov
 
 	herdr := "herdr"
 	for id, i in ids {
-		prompt_path, _ := filepath.join({prompts_dir, fmt.tprintf("%s.md", id)}, context.temp_allocator)
+		prompt_name := fmt.aprintf("%s.md", id)
+		defer delete(prompt_name)
+		prompt_path, _ := filepath.join({prompts_dir, prompt_name}, context.allocator)
+		defer delete(prompt_path)
 		prompt_text := fmt.tprintf("%s\n\n%s", HOST_REPLY_STYLE, prompts[i])
 		if os.write_entire_file(prompt_path, prompt_text, private_file_permissions()) != nil {
 			host_session_failed(request_id, id, "could not write the prompt file")
 			continue
 		}
-		station, _ := filepath.join({stations_dir, id}, context.temp_allocator)
-		branch := fmt.tprintf("cs-host-%s-%s", request_id, id)
+		station, _ := filepath.join({stations_dir, id}, context.allocator)
+		defer delete(station)
+		branch := fmt.aprintf("cs-host-%s-%s", request_id, id)
+		defer delete(branch)
 		if git_err := create_git_worktree(repo, branch, station, context.temp_allocator); git_err != "" {
 			host_session_failed(request_id, id, git_err)
 			continue
@@ -618,8 +663,16 @@ host_start_sessions :: proc(repo, request_id: string, ids, prompts, models, prov
 		if runtimes[i] == SHOT_RUNTIME_OREO {
 			extension = host_oreo_extension_path
 		}
-		command := host_station_command(child_shell_prefix(launch), host_report_socket, extension, host_oreo_host_path, id, request_id, prompt_path, models[i], providers[i], thinkings[i], kinds[i], runtimes[i], tastes[i], messages[i])
-		if run_err := herdr_run_worker(herdr, pane_id, command); run_err != "" {
+		launcher := child_shell_prefix(launch)
+		command := host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, id, request_id, prompt_path, models[i], providers[i], thinkings[i], kinds[i], runtimes[i], tastes[i], messages[i])
+		if !host_station_command_is_ascii(command) {
+			delete(command)
+			host_session_failed(request_id, id, "generated Station command contains non-ASCII bytes")
+			continue
+		}
+		run_err := herdr_run_worker(herdr, pane_id, command)
+		delete(command)
+		if run_err != "" {
 			host_session_failed(request_id, id, fmt.tprintf("could not start the Station: %s", run_err))
 			continue
 		}
@@ -795,6 +848,17 @@ host_reply :: proc(root: json.Object, request_id: string) {
 	host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = "no Station is running for that shot"})
 }
 
+// Herdr's command argument is ASCII-only; checking the encoded bytes also catches
+// a command invalidated by a temporary-allocation lifetime error.
+host_station_command_is_ascii :: proc(command: string) -> bool {
+	for index in 0 ..< len(command) {
+		if command[index] > 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 // The Station runs in the Herdr pane and launches the agent. Paths and the
 // optional model and thinking level are quoted; the IDs are already restricted
 // to safe characters.
@@ -811,17 +875,17 @@ host_station_command :: proc(launcher, report, extension, oreo_host, shot_id, re
 	if model != "" {
 		quoted_model := shell_quote(model)
 		defer delete(quoted_model)
-		model_argument = fmt.tprintf(" --model %s", quoted_model)
+		model_argument = fmt.aprintf(" --model %s", quoted_model)
 	}
 	thinking_argument := ""
 	if thinking != "" {
 		quoted_thinking := shell_quote(thinking)
 		defer delete(quoted_thinking)
-		thinking_argument = fmt.tprintf(" --thinking %s", quoted_thinking)
+		thinking_argument = fmt.aprintf(" --thinking %s", quoted_thinking)
 	}
 	tools_argument := ""
 	if kind == SHOT_KIND_RESEARCH {
-		tools_argument = " --tools " + SCRATCH_WRITE_TOOLS
+		tools_argument = " --tools read,grep,find,ls,write,codemode"
 	} else {
 		// Every execute Shot runs codemode; there is no switch to turn it off.
 		tools_argument = " --tools +codemode"
@@ -832,8 +896,9 @@ host_station_command :: proc(launcher, report, extension, oreo_host, shot_id, re
 		defer delete(quoted_taste)
 		quoted_message := shell_quote(message)
 		defer delete(quoted_message)
-		taste_argument = fmt.tprintf(" --taste %s --message %s", quoted_taste, quoted_message)
+		taste_argument = fmt.aprintf(" --taste %s --message %s", quoted_taste, quoted_message)
 	}
+	command := ""
 	if runtime == SHOT_RUNTIME_OREO {
 		quoted_oreo_host := shell_quote(oreo_host)
 		defer delete(quoted_oreo_host)
@@ -843,9 +908,20 @@ host_station_command :: proc(launcher, report, extension, oreo_host, shot_id, re
 		defer delete(quoted_model)
 		quoted_thinking := shell_quote(thinking)
 		defer delete(quoted_thinking)
-		return fmt.tprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- env OREO_HOST=%s OREO_PROVIDER=%s OREO_MODEL=%s OREO_THINKING=%s OREO_SESSION_ID=%s pi --mode rpc --no-tools --no-mcp --no-extensions --model '%s/%s' --thinking %s -e %s", launcher, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, quoted_oreo_host, quoted_provider, quoted_model, quoted_thinking, shot_id, provider, model, thinking, quoted_extension)
+		command = fmt.aprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- env OREO_HOST=%s OREO_PROVIDER=%s OREO_MODEL=%s OREO_THINKING=%s OREO_SESSION_ID=%s pi --mode rpc --no-tools --no-mcp --no-extensions --model '%s/%s' --thinking %s -e %s", launcher, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, quoted_oreo_host, quoted_provider, quoted_model, quoted_thinking, shot_id, provider, model, thinking, quoted_extension)
+	} else {
+		command = fmt.aprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- pi --mode rpc%s%s%s -e %s", launcher, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, tools_argument, model_argument, thinking_argument, quoted_extension)
 	}
-	return fmt.tprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- pi --mode rpc%s%s%s -e %s", launcher, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, tools_argument, model_argument, thinking_argument, quoted_extension)
+	if model_argument != "" {
+		delete(model_argument)
+	}
+	if thinking_argument != "" {
+		delete(thinking_argument)
+	}
+	if taste_argument != "" {
+		delete(taste_argument)
+	}
+	return command
 }
 
 // A Blend request is validated in full before any Git call. Its repository and
