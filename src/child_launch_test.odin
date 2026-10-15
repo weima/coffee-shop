@@ -38,9 +38,15 @@ test_child_launch_refuses_dev_without_a_usable_repo :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_child_shell_prefix_quotes_every_element :: proc(t: ^testing.T) {
+test_child_shell_prefix_leaves_odin_run_unquoted :: proc(t: ^testing.T) {
 	prefix := child_shell_prefix([]string{"odin", "run", "/a b/src", "-out:/tmp/x.bin", "--"})
-	testing.expect_value(t, prefix, "'odin' 'run' '/a b/src' '-out:/tmp/x.bin' '--'")
+	testing.expect_value(t, prefix, "odin run '/a b/src' '-out:/tmp/x.bin' '--'")
+}
+
+@(test)
+test_child_shell_prefix_quotes_executable_paths :: proc(t: ^testing.T) {
+	prefix := child_shell_prefix([]string{"/path with spaces/coffee-shop"})
+	testing.expect_value(t, prefix, "'/path with spaces/coffee-shop'")
 }
 
 @(test)
