@@ -7,6 +7,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 import "core:sys/posix"
 
@@ -107,6 +108,11 @@ run_host :: proc() -> int {
 	}
 	host_extension_path = extension_path
 	host_history_root = strings.clone(host_dir, context.allocator)
+	spool_dir, _ := filepath.join({host_dir, STATION_SPOOL_DIR_NAME}, context.temp_allocator)
+	if !os.is_directory(spool_dir) && os.make_directory_all(spool_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
+		host_write_line(`{"type":"error","reason":"could not create the report spool"}`)
+		return 1
+	}
 	host_lock, lock_ok := host_acquire_lock(host_dir)
 	if !lock_ok {
 		write_error("another host is already running")
@@ -138,6 +144,7 @@ run_host :: proc() -> int {
 	}
 
 	host_write_line(fmt.tprintf(`{{"type":"ready","protocol":%d}}`, HOST_PROTOCOL))
+	host_recover_spool()
 	host_loop(&listener)
 	return 0
 }
@@ -199,13 +206,7 @@ host_relay_pending :: proc(listener: ^Activity_Listener) {
 		result := activity_listener_receive(listener)
 		switch result.kind {
 		case .Message:
-			host_emit(Host_Event{
-				type = "station_report",
-				request_id = result.message.brew_id,
-				shot_id = result.message.shot_id,
-				kind = result.message.kind,
-				description = host_report_text(result.message.description),
-			})
+			host_relay_message(result.message)
 			destroy_struct(&result.message)
 		case .Unavailable:
 			return
@@ -213,6 +214,56 @@ host_relay_pending :: proc(listener: ^Activity_Listener) {
 		case .Failed:
 			return
 		}
+		free_all(context.temp_allocator)
+	}
+}
+
+// Relays one report. The history record is written before stdout is, and only then is
+// the spooled copy removed, so a crash at any point leaves the report recoverable.
+host_relay_message :: proc(message: Activity_Message) {
+	relayed := host_emit(Host_Event{
+		type = "station_report",
+		request_id = message.brew_id,
+		shot_id = message.shot_id,
+		kind = message.kind,
+		description = host_report_text(message.description),
+	})
+	if relayed && message.spool != "" {
+		spool_path, _ := filepath.join({host_history_root, STATION_SPOOL_DIR_NAME, message.spool}, context.temp_allocator)
+		_ = os.remove(spool_path)
+	}
+}
+
+// Relays every report a Station spooled that no host relayed, oldest first. It runs
+// once at start, before any Station of this host exists, so it never races a live
+// relay. An unreadable entry stays on disk for inspection.
+host_recover_spool :: proc() {
+	spool_dir, _ := filepath.join({host_history_root, STATION_SPOOL_DIR_NAME}, context.temp_allocator)
+	entries, read_err := os.read_all_directory_by_path(spool_dir, context.temp_allocator)
+	if read_err != nil {
+		return
+	}
+	names: [dynamic]string // outlives the free_all below
+	defer {
+		for name in names {
+			delete(name)
+		}
+		delete(names)
+	}
+	for entry in entries {
+		if entry.type == .Regular && strings.has_suffix(entry.name, ".json") {
+			append(&names, strings.clone(entry.name))
+		}
+	}
+	slice.sort(names[:])
+	for name in names {
+		path, _ := filepath.join({spool_dir, name}, context.temp_allocator)
+		data, file_err := os.read_entire_file(path, context.temp_allocator)
+		message: Activity_Message
+		if file_err != nil || json.unmarshal(data, &message, .JSON, context.temp_allocator) != nil || !activity_valid_message(message) || message.spool != name {
+			continue
+		}
+		host_relay_message(message)
 		free_all(context.temp_allocator)
 	}
 }
@@ -998,17 +1049,18 @@ valid_host_model :: proc(model: string) -> bool {
 
 // Every caller runs on the one loop thread, so stdout writes cannot interleave and
 // need no lock.
-host_emit :: proc(event: Host_Event) {
+host_emit :: proc(event: Host_Event) -> bool {
 	data, err := json.marshal(event, {}, context.temp_allocator)
 	if err != nil {
 		host_write_line(`{"type":"error","reason":"could not encode event"}`)
-		return
+		return false
 	}
 
 	if host_history_event(event) && !host_history_append(event, data) {
-		return
+		return false
 	}
 	fmt.println(string(data))
+	return true
 }
 
 host_write_line :: proc(line: string) {
