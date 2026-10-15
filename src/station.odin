@@ -5,6 +5,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
+import "core:strconv"
 import "core:strings"
 import "core:sync"
 import "core:sys/posix"
@@ -75,6 +76,65 @@ Station_Relay :: struct {
 	agent_closed: bool,
 	cancelled:    bool,
 	reader_done:  ^bool,
+	// Turn deadline state; all atomic. A turn runs from a prompt to its agent_end.
+	turn_active:      bool,
+	last_output_ns:   i64,
+	deadline_expired: bool,
+	watchdog_stop:    bool,
+}
+
+// A turn with no agent output for this long is a provider that never replied: the
+// Station kills the agent and fails the Shot. Pi streams while it generates, so
+// quiet this long is not work in progress. Twice the 12-minute quiet mark of
+// docs/architecture.md, so a long silent tool call is not mistaken for a hang.
+// CS_STATION_TURN_DEADLINE_SECONDS overrides it, for tests.
+// shortcut: only the agent process is killed, not children it spawned.
+STATION_TURN_DEADLINE_SECONDS :: 1800
+STATION_TURN_DEADLINE_ENV :: "CS_STATION_TURN_DEADLINE_SECONDS"
+
+station_turn_deadline_seconds :: proc() -> int {
+	text := os.get_env(STATION_TURN_DEADLINE_ENV, context.temp_allocator)
+	if value, ok := strconv.parse_int(text); ok && value > 0 {
+		return value
+	}
+	return STATION_TURN_DEADLINE_SECONDS
+}
+
+Station_Watchdog :: struct {
+	relay:            ^Station_Relay,
+	process:          os.Process,
+	deadline_seconds: int,
+}
+
+// Kills the agent when a turn has had no output past the deadline. A pending dialog
+// is waiting on a person, so it is exempt.
+station_watchdog :: proc(data: rawptr) {
+	watchdog := (^Station_Watchdog)(data)
+	relay := watchdog.relay
+	limit := i64(watchdog.deadline_seconds) * i64(time.Second)
+	for !sync.atomic_load(&relay.watchdog_stop) {
+		time.sleep(STATION_RELAY_POLL_MS * time.Millisecond)
+		if !sync.atomic_load(&relay.turn_active) {
+			continue
+		}
+		sync.mutex_lock(&relay.mutex)
+		waiting := relay.dialog.active
+		sync.mutex_unlock(&relay.mutex)
+		if waiting {
+			continue
+		}
+		if time.now()._nsec - sync.atomic_load(&relay.last_output_ns) < limit {
+			continue
+		}
+		sync.atomic_store(&relay.deadline_expired, true)
+		_ = os.process_kill(watchdog.process)
+		return
+	}
+}
+
+station_turn_started :: proc(relay: ^Station_Relay) {
+	sync.atomic_store(&relay.last_output_ns, time.now()._nsec)
+	sync.atomic_store(&relay.turn_active, true)
 }
 
 // The SIGTERM handler sets only this flag. It must never read the relay: the main
@@ -208,6 +268,7 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 	relay.display = display
 	relay.one_turn = shot_kind == SHOT_KIND_RESEARCH || taste != ""
 	station_install_sigterm()
+	station_turn_started(relay)
 	if !station_write_prompt(agent_in_write, first_prompt, "") {
 		write_error("could not send the first prompt to the agent")
 		_ = station_orderly_shutdown(&relay, nil)
@@ -224,6 +285,9 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 		return 1
 	}
 
+	watchdog := Station_Watchdog{relay = relay, process = process, deadline_seconds = station_turn_deadline_seconds()}
+	watchdog_thread := thread.create_and_start_with_data(&watchdog, station_watchdog, self_cleanup = false)
+
 	parser: Pi_Event_State
 	reader: bufio.Reader
 	bufio.reader_init(&reader, os.to_reader(agent_out_read))
@@ -238,6 +302,12 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 		free_all(context.temp_allocator)
 	}
 
+	sync.atomic_store(&relay.watchdog_stop, true)
+	if watchdog_thread != nil {
+		thread.join(watchdog_thread)
+		thread.destroy(watchdog_thread)
+	}
+	deadline_expired := sync.atomic_load(&relay.deadline_expired)
 	state, wait_err := os.process_wait(process)
 	shutdown_status := station_orderly_shutdown(&relay, reader_thread)
 	station_close_file(&agent_out_read)
@@ -245,6 +315,10 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 	station_report(&sender, brew_id, station_id, "agent_exited", "Agent exited")
 	if shutdown_status == STATION_CANCELLED_EXIT_CODE {
 		return shutdown_status
+	}
+	if deadline_expired {
+		station_report(&sender, brew_id, station_id, "incomplete", fmt.tprintf("Agent gave no reply for %d seconds; the Station stopped it", watchdog.deadline_seconds))
+		return 1
 	}
 	if shot_kind == SHOT_KIND_RESEARCH && !station_research_clean(&sender, brew_id, station_id) {
 		return 1
@@ -465,6 +539,7 @@ station_handle_agent_line :: proc(
 	}
 
 	// Any other agent output means the agent moved past a dialog it had open.
+	sync.atomic_store(&relay.last_output_ns, time.now()._nsec)
 	sync.mutex_lock(&relay.mutex)
 	station_dialog_clear(&relay.dialog)
 	sync.mutex_unlock(&relay.mutex)
@@ -474,6 +549,7 @@ station_handle_agent_line :: proc(
 	}
 	_ = pi_event_consume(parser, text)
 	if station_is_turn_end(text) {
+		sync.atomic_store(&relay.turn_active, false)
 		report := parser.final_report
 		if report == "" {
 			report = "Turn finished without a text reply."
@@ -621,8 +697,10 @@ station_relay_reply_line :: proc(relay: ^Station_Relay, text: string) -> bool {
 	if relay.dialog.active {
 		response := station_dialog_response(relay.dialog, trimmed)
 		station_dialog_clear(&relay.dialog)
+		sync.atomic_store(&relay.last_output_ns, time.now()._nsec)
 		return station_write_line(relay.agent, response)
 	}
+	station_turn_started(relay)
 	return station_write_prompt(relay.agent, trimmed, "followUp")
 }
 

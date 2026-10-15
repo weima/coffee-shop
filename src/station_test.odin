@@ -825,7 +825,12 @@ held_station_destroy :: proc(run: ^Held_Station_Run) {
 // Runs one execute or research Station in a fresh one-commit repository, with its stdin
 // held open by the test. Only the Station can end the run: a Station still alive after
 // the timeout is killed and marked timed_out. extra holds the Station's own flags.
-run_station_held_open :: proc(t: ^testing.T, root, agent_script: string, extra: ..string) -> (run: Held_Station_Run) {
+run_station_held_open :: proc(t: ^testing.T, root, agent_script: string, extra: ..string) -> Held_Station_Run {
+	return run_station_held_open_env(t, root, agent_script, nil, ..extra)
+}
+
+// env holds NAME=value settings given to the Station through env(1).
+run_station_held_open_env :: proc(t: ^testing.T, root, agent_script: string, env: []string, extra: ..string) -> (run: Held_Station_Run) {
 	repo, _ := filepath.join({root, "beans"}, context.temp_allocator)
 	socket, _ := filepath.join({root, "report.sock"}, context.temp_allocator)
 	agent, _ := filepath.join({root, "agent.sh"}, context.temp_allocator)
@@ -845,6 +850,10 @@ run_station_held_open :: proc(t: ^testing.T, root, agent_script: string, extra: 
 	defer activity_listener_close(&listener)
 
 	command := make([dynamic]string, context.temp_allocator)
+	if len(env) > 0 {
+		append(&command, "env")
+		append(&command, ..env)
+	}
 	append(&command, binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt", "hi")
 	append(&command, ..extra)
 	append(&command, "--", "sh", agent)
@@ -1383,4 +1392,34 @@ test_station_report_spools_before_sending :: proc(t: ^testing.T) {
 	received := activity_listener_receive(&listener)
 	testing.expect_value(t, received.message.spool, entries[0].name)
 	destroy_struct(&received.message)
+}
+
+// Fake agent that takes its prompt and then never answers, as a provider that never replies.
+FAKE_UNRESPONSIVE_AGENT :: `#!/bin/sh
+IFS= read -r line
+exec sleep 600
+`
+
+@(test)
+test_station_fails_and_reaps_agent_when_a_turn_gets_no_reply :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-turn-deadline-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	run := run_station_held_open_env(t, root, FAKE_UNRESPONSIVE_AGENT, {"CS_STATION_TURN_DEADLINE_SECONDS=1"}, "--kind", "research")
+	defer held_station_destroy(&run)
+	testing.expect(t, !run.timed_out, "a Station whose agent never replies must stop itself")
+	testing.expect_value(t, run.exit_code, 1)
+	testing.expect(t, slice_contains(run.kinds[:], "incomplete"), "a missed deadline must report incomplete")
+	testing.expect(t, !slice_contains(run.kinds[:], "turn_done"), "a missed deadline must never report a finished turn")
+	testing.expect(t, slice_contains(run.kinds[:], "agent_exited"), "the killed agent must be reaped and reported")
+	for kind, index in run.kinds {
+		if kind == "incomplete" {
+			testing.expect(t, strings.contains(run.descriptions[index], "no reply"), run.descriptions[index])
+		}
+	}
 }
