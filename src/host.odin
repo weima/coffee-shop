@@ -144,7 +144,24 @@ run_host :: proc() -> int {
 	}
 
 	host_write_line(fmt.tprintf(`{{"type":"ready","protocol":%d}}`, HOST_PROTOCOL))
+	// Initialize dispatch pool and recover from previous crash.
+	host_dispatch_init(host_pane_pool.workspace_id)
+	recovery_ok, _ := host_pool_recover(state_root, "herdr")
+	if !recovery_ok {
+		when ODIN_DEBUG {
+			log.warnf("run_host: pool recovery incomplete")
+		}
+	}
+	// Initialize progress supervision ledger and rebuild from persisted history.
+	if !progress_supervision_init(host_history_root) {
+		// Ledger init failure is not fatal; continue with empty ledger.
+	}
 	host_recover_spool()
+	defer {
+		// Persist pool state and close all host-owned panes on exit.
+		_, _ = host_pool_persist(state_root)
+		_ = host_dispatch_cleanup("herdr")
+	}
 	host_loop(&listener)
 	return 0
 }
@@ -199,8 +216,8 @@ host_loop :: proc(listener: ^Activity_Listener) {
 	}
 }
 
-// Forwards every Station report already waiting, then returns. The listener and
-// its clients are non-blocking, so this never holds up stdin.
+// Forwards every Station report already waiting, then checks for stale and needs_input Stations.
+// The listener and its clients are non-blocking, so this never holds up stdin.
 host_relay_pending :: proc(listener: ^Activity_Listener) {
 	for {
 		result := activity_listener_receive(listener)
@@ -209,6 +226,8 @@ host_relay_pending :: proc(listener: ^Activity_Listener) {
 			host_relay_message(result.message)
 			destroy_struct(&result.message)
 		case .Unavailable:
+			// Check for stale and needs_input after processing all available messages.
+			_ = progress_supervision_check_and_emit()
 			return
 		case .Malformed:
 		case .Failed:
@@ -221,6 +240,9 @@ host_relay_pending :: proc(listener: ^Activity_Listener) {
 // Relays one report. The history record is written before stdout is, and only then is
 // the spooled copy removed, so a crash at any point leaves the report recoverable.
 host_relay_message :: proc(message: Activity_Message) {
+	// Record in progress ledger before emitting.
+	progress_supervision_record_report(message.brew_id, message.shot_id, message.kind)
+
 	relayed := host_emit(Host_Event{
 		type = "station_report",
 		request_id = message.brew_id,
@@ -228,9 +250,158 @@ host_relay_message :: proc(message: Activity_Message) {
 		kind = message.kind,
 		description = host_report_text(message.description),
 	})
-	if relayed && message.spool != "" {
+	if !relayed {
+		return
+	}
+
+	// Remove spool file after successful relay.
+	if message.spool != "" {
 		spool_path, _ := filepath.join({host_history_root, STATION_SPOOL_DIR_NAME, message.spool}, context.temp_allocator)
 		_ = os.remove(spool_path)
+	}
+
+	// Handle pool reclamation for different report kinds.
+	switch message.kind {
+	case "needs_input":
+		// Pin pane until reply or cancel.
+		for session in host_sessions {
+			if session.request_id == message.brew_id && session.shot_id == message.shot_id {
+				host_pane_pin(session.pane_id)
+				break
+			}
+		}
+
+	case "process_gone":
+		// Process unexpectedly exited. Reclaim pane immediately.
+		pane_id := ""
+		for i in 0..<len(host_sessions) {
+			if host_sessions[i].request_id == message.brew_id && host_sessions[i].shot_id == message.shot_id {
+				pane_id = host_sessions[i].pane_id
+				delete(host_sessions[i].request_id)
+				delete(host_sessions[i].shot_id)
+				delete(host_sessions[i].pane_id)
+				unordered_remove(&host_sessions, i)
+				break
+			}
+		}
+
+		if pane_id != "" {
+			// Mark reclaimable and make report durable.
+			host_pane_mark_terminal(pane_id)
+			state_root, _ := default_state_root(context.temp_allocator)
+			_, _ = host_report_make_durable(state_root, message.brew_id, message.shot_id, message.kind)
+
+			// Clear pane (ANSI reset sequences).
+			if !pane_prepare_for_reuse("herdr", host_pane_pool.workspace_id, pane_id) {
+				when ODIN_DEBUG {
+					log.warnf("host_relay_message: pane clear failed for %s", pane_id)
+				}
+			}
+
+			// Reclaim pane (mark FREE).
+			if !host_pane_reclaim(pane_id) {
+				when ODIN_DEBUG {
+					log.warnf("host_relay_message: pane reclaim failed for %s", pane_id)
+				}
+			}
+
+			// Dequeue and auto-retry waiting Shots.
+			dequeued := host_dispatch_dequeue()
+			defer delete(dequeued)
+			if len(dequeued) > 0 {
+				state_root_inner, _ := default_state_root(context.temp_allocator)
+				host_retry_dequeued_shots(dequeued, state_root_inner)
+			}
+			for pair in dequeued {
+				req_id := pair[0]
+				shot := pair[1]
+				host_emit(Host_Event{type = "dispatch_dequeued", request_id = req_id, shot_id = shot})
+				delete(req_id)
+				delete(shot)
+			}
+		}
+
+	case "reply_received":
+		// User replied to needs_input. Unpin and mark reclaimable.
+		pane_id := ""
+		for i in 0..<len(host_sessions) {
+			if host_sessions[i].request_id == message.brew_id && host_sessions[i].shot_id == message.shot_id {
+				pane_id = host_sessions[i].pane_id
+				break
+			}
+		}
+
+		if pane_id != "" {
+			host_pane_unpin(pane_id)
+			host_pane_mark_terminal(pane_id)
+		}
+
+	case "cancelled":
+		// User or system cancelled needs_input. Unpin and mark reclaimable.
+		pane_id := ""
+		for i in 0..<len(host_sessions) {
+			if host_sessions[i].request_id == message.brew_id && host_sessions[i].shot_id == message.shot_id {
+				pane_id = host_sessions[i].pane_id
+				break
+			}
+		}
+
+		if pane_id != "" {
+			host_pane_unpin(pane_id)
+			host_pane_mark_terminal(pane_id)
+		}
+
+	case "pulled", "taste_failed", "incomplete", "session_failed":
+		// Terminal report: reclaim pane, clear it, dequeue waiting Shots.
+		pane_id := ""
+		for i in 0..<len(host_sessions) {
+			if host_sessions[i].request_id == message.brew_id && host_sessions[i].shot_id == message.shot_id {
+				pane_id = host_sessions[i].pane_id
+				// Remove session record.
+				delete(host_sessions[i].request_id)
+				delete(host_sessions[i].shot_id)
+				delete(host_sessions[i].pane_id)
+				unordered_remove(&host_sessions, i)
+				break
+			}
+		}
+
+		if pane_id != "" {
+			// Mark reclaimable and make report durable.
+			host_pane_mark_terminal(pane_id)
+			state_root, _ := default_state_root(context.temp_allocator)
+			_, _ = host_report_make_durable(state_root, message.brew_id, message.shot_id, message.kind)
+
+			// Clear pane (ANSI reset sequences).
+			if !pane_prepare_for_reuse("herdr", host_pane_pool.workspace_id, pane_id) {
+				when ODIN_DEBUG {
+					log.warnf("host_relay_message: pane clear failed for %s", pane_id)
+				}
+			}
+
+			// Reclaim pane (mark FREE).
+			if !host_pane_reclaim(pane_id) {
+				when ODIN_DEBUG {
+					log.warnf("host_relay_message: pane reclaim failed for %s", pane_id)
+				}
+			}
+
+			// Dequeue and auto-retry waiting Shots.
+			dequeued := host_dispatch_dequeue()
+			defer delete(dequeued)
+			if len(dequeued) > 0 {
+				// Auto-retry dequeued Shots (they have acquired panes from pool).
+				state_root, _ := default_state_root(context.temp_allocator)
+				host_retry_dequeued_shots(dequeued, state_root)
+			}
+			for pair in dequeued {
+				req_id := pair[0]
+				shot := pair[1]
+				host_emit(Host_Event{type = "dispatch_dequeued", request_id = req_id, shot_id = shot})
+				delete(req_id)
+				delete(shot)
+			}
+		}
 	}
 }
 
@@ -700,7 +871,28 @@ host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models
 			continue
 		}
 
+		// Try to acquire a pane from the pool (may queue if at capacity).
+		pool_pane_id, queued, acquire_ok := host_dispatch_acquire(request_id, id)
+		if !acquire_ok {
+			host_session_failed(request_id, id, "dispatch pool error")
+			continue
+		}
+		if queued {
+			// Pane not available; Shot is queued for retry when pane reclaims.
+			// Store full metadata now for auto-retry.
+			host_dispatch_queue_store_metadata(request_id, id, repo, prompts[i], models[i], providers[i], thinkings[i], kinds[i], runtimes[i], tastes[i], messages[i], station)
+			host_emit(Host_Event{type = "dispatch_queued", request_id = request_id, shot_id = id})
+			continue
+		}
+
+		// Acquired pane; proceed with Station launch.
 		pane_id, pane_err := host_open_shot_pane(herdr, state_root, repo, request_id, id, station)
+		if pane_err != "" {
+			host_pane_mark_terminal(pool_pane_id)
+			_ = host_pane_reclaim(pool_pane_id)
+			host_session_failed(request_id, id, pane_err)
+			continue
+		}
 		if pane_err != "" {
 			host_session_failed(request_id, id, pane_err)
 			continue
@@ -708,6 +900,8 @@ host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models
 
 		launch, launch_err := child_launch_argv(host_station_executable)
 		if launch_err != "" {
+			host_pane_mark_terminal(pool_pane_id)
+			_ = host_pane_reclaim(pool_pane_id)
 			host_session_failed(request_id, id, launch_err)
 			continue
 		}
@@ -719,17 +913,24 @@ host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models
 		command := host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, id, request_id, prompt_path, models[i], providers[i], thinkings[i], kinds[i], runtimes[i], tastes[i], messages[i])
 		if !host_station_command_is_ascii(command) {
 			delete(command)
+			host_pane_mark_terminal(pool_pane_id)
+			_ = host_pane_reclaim(pool_pane_id)
 			host_session_failed(request_id, id, "generated Station command contains non-ASCII bytes")
 			continue
 		}
 		run_err := herdr_run_worker(herdr, pane_id, command)
 		delete(command)
 		if run_err != "" {
+			host_pane_mark_terminal(pool_pane_id)
+			_ = host_pane_reclaim(pool_pane_id)
 			host_session_failed(request_id, id, fmt.tprintf("could not start the Station: %s", run_err))
 			continue
 		}
-		append(&host_sessions, Host_Session{request_id = strings.clone(request_id), shot_id = strings.clone(id), pane_id = strings.clone(pane_id)})
+		// Record session with pool-owned pane.
+		append(&host_sessions, Host_Session{request_id = strings.clone(request_id), shot_id = strings.clone(id), pane_id = strings.clone(pool_pane_id)})
 		host_emit(Host_Event{type = "session_started", request_id = request_id, shot_id = id, pane_id = pane_id})
+		// Track in progress ledger.
+		progress_supervision_add_station(request_id, id, pane_id)
 	}
 }
 
@@ -756,6 +957,10 @@ host_open_shot_pane :: proc(herdr, state_root, repo, request_id, shot_id, statio
 	}
 	if write_err := os.write_entire_file(saved_path, workspace.result.workspace.workspace_id, private_file_permissions()); write_err != nil {
 		host_emit(Host_Event{type = "warning", request_id = request_id, shot_id = shot_id, reason = "could not save the workspace id; the next dispatch will create a new workspace"})
+	}
+	// Initialize pool with actual workspace ID on first workspace creation.
+	if host_pane_pool.workspace_id == "" || host_pane_pool.workspace_id == "ws-host-default" {
+		host_pane_pool.workspace_id = strings.clone(workspace.result.workspace.workspace_id, context.allocator)
 	}
 	if rename_err := herdr_rename_tab(herdr, workspace.result.tab.tab_id, shot_id); rename_err != "" {
 		return "", fmt.tprintf("Herdr could not label the Shot tab: %s", rename_err)
@@ -1085,4 +1290,112 @@ host_request_id :: proc(root: json.Object) -> string {
 		return ""
 	}
 	return id
+}
+
+// Pool integration helpers wired into host dispatch and relay.
+
+// Check if a report kind is terminal (work is done, pane can be reclaimed).
+is_terminal_report :: proc(kind: string) -> bool {
+	switch kind {
+	case "pulled", "taste_failed", "incomplete", "session_failed":
+		return true
+	}
+	return false
+}
+
+// Auto-retry queued Shots when a pane is reclaimed.
+// Called from host_relay_message after dequeue, before emit.
+host_retry_dequeued_shots :: proc(dequeued: [dynamic][2]string, state_root: string) {
+	if len(dequeued) == 0 {
+		return
+	}
+
+	herdr := "herdr"
+	for pair in dequeued {
+		req_id := pair[0]
+		shot_id := pair[1]
+
+		// Find queued Shot metadata.
+		queued_shot: Queued_Shot
+		found := false
+		for i in 0..<len(host_dispatch_queue) {
+			if host_dispatch_queue[i].request_id == req_id && host_dispatch_queue[i].shot_id == shot_id {
+				queued_shot = host_dispatch_queue[i]
+				found = true
+				break
+			}
+		}
+		if !found {
+			when ODIN_DEBUG {
+				log.warnf("host_retry_dequeued_shots: no metadata for %s/%s", req_id, shot_id)
+			}
+			continue
+		}
+
+		// Re-launch the queued Shot (pane already acquired during dequeue).
+		pane_id, pool_ok := host_pane_acquire(req_id, shot_id)
+		if !pool_ok {
+			// Should not happen; dequeue already acquired.
+			when ODIN_DEBUG {
+				log.warnf("host_retry_dequeued_shots: re-acquire failed for %s", shot_id)
+			}
+			continue
+		}
+
+		// Open pane (workspace tab).
+		pane_from_herdr, pane_err := host_open_shot_pane(herdr, state_root, queued_shot.repo, req_id, shot_id, queued_shot.station_path)
+		if pane_err != "" {
+			host_pane_mark_terminal(pane_id)
+			_ = host_pane_reclaim(pane_id)
+			host_session_failed(req_id, shot_id, pane_err)
+			continue
+		}
+
+		// Launch Station.
+		launch, launch_err := child_launch_argv(host_station_executable)
+		if launch_err != "" {
+			host_pane_mark_terminal(pane_id)
+			_ = host_pane_reclaim(pane_id)
+			host_session_failed(req_id, shot_id, launch_err)
+			continue
+		}
+
+		extension := host_extension_path
+		if queued_shot.runtime == SHOT_RUNTIME_OREO {
+			extension = host_oreo_extension_path
+		}
+		launcher := child_shell_prefix(launch)
+
+		// Re-read prompt file (it was written during initial dispatch).
+		prompt_name := fmt.aprintf("%s.md", shot_id)
+		defer delete(prompt_name)
+		prompts_dir, _ := filepath.join({state_root, "host", req_id, "prompts"}, context.temp_allocator)
+		prompt_path, _ := filepath.join({prompts_dir, prompt_name}, context.temp_allocator)
+
+		command := host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, shot_id, req_id, prompt_path, queued_shot.model, queued_shot.provider, queued_shot.thinking, queued_shot.kind, queued_shot.runtime, queued_shot.taste, queued_shot.message)
+		if !host_station_command_is_ascii(command) {
+			delete(command)
+			host_pane_mark_terminal(pane_id)
+			_ = host_pane_reclaim(pane_id)
+			host_session_failed(req_id, shot_id, "generated Station command contains non-ASCII bytes")
+			continue
+		}
+
+		run_err := herdr_run_worker(herdr, pane_from_herdr, command)
+		delete(command)
+		if run_err != "" {
+			host_pane_mark_terminal(pane_id)
+			_ = host_pane_reclaim(pane_id)
+			host_session_failed(req_id, shot_id, fmt.tprintf("queued retry failed: %s", run_err))
+			continue
+		}
+
+		// Record session with pool pane.
+		append(&host_sessions, Host_Session{request_id = strings.clone(req_id), shot_id = strings.clone(shot_id), pane_id = strings.clone(pane_id)})
+		host_emit(Host_Event{type = "session_started", request_id = req_id, shot_id = shot_id, pane_id = pane_id})
+
+		when ODIN_DEBUG {
+			log.infof("host_retry_dequeued_shots: relaunched %s/%s from queue", req_id, shot_id)
+		}
+	}
 }
