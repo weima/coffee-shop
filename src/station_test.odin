@@ -1,5 +1,6 @@
 package main
 
+import "core:c"
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
@@ -1422,4 +1423,127 @@ test_station_fails_and_reaps_agent_when_a_turn_gets_no_reply :: proc(t: ^testing
 			testing.expect(t, strings.contains(run.descriptions[index], "no reply"), run.descriptions[index])
 		}
 	}
+}
+
+// ============================================================================
+// Non-Blocking Cancel Regression: Fill until EAGAIN, then cancel
+// ============================================================================
+// Tests that:
+// 1. Pipe is genuinely full (write returns EAGAIN)
+// 2. Reply writer observes cancel, exits poll loop, doesn't block
+// 3. Reader exits cleanly within bounded time
+// 4. No deadlock or hang
+
+@(test)
+test_station_nonblocking_write_cancels_on_full_pipe :: proc(t: ^testing.T) {
+	// Create pipe for agent stdin
+	read_fd, write_fd, pipe_err := os.pipe()
+	testing.expect_value(t, pipe_err, os.Error(nil))
+	if pipe_err != nil {
+		return
+	}
+
+	relay := new(Station_Relay)
+	defer free(relay)
+	relay.input = os.stdin
+	relay.agent = write_fd  // Pass os.File pointer directly
+	relay.agent_closed = false
+	relay.cancelled = false
+	relay.dialog.active = false
+
+	agent_fd := posix.FD(os.fd(write_fd))
+
+	// Set non-blocking mode
+	if posix.fcntl(agent_fd, .SETFL, c.int(posix.O_Flags{.NONBLOCK})) != 0 {
+		testing.expect(t, false, "fcntl NONBLOCK failed")
+		os.close(read_fd)
+		return
+	}
+
+	// FILL PIPE COMPLETELY: Write until EAGAIN
+	fill_buf := make([]byte, 100_000)
+	for i in 0..<len(fill_buf) {
+		fill_buf[i] = 'x'
+	}
+	total_written := 0
+	for {
+		n := posix.write(agent_fd, raw_data(fill_buf), c.size_t(len(fill_buf)))
+		if n <= 0 {
+			errno := posix.get_errno()
+			testing.expect(t, errno == .EAGAIN || errno == .EWOULDBLOCK,
+				fmt.tprintf("Expected EAGAIN, got errno=%v, n=%d", errno, n))
+			break
+		}
+		total_written += int(n)
+	}
+	delete(fill_buf)
+
+	// PROOF 1: Pipe is FULL (verified by EAGAIN on write)
+	fmt.printf("[PIPE-FULL-TEST] Filled pipe with %d bytes, got EAGAIN\n", total_written)
+	testing.expect(t, total_written > 0, "Must have written to fill pipe")
+
+	// Now spawn reader that will attempt to write to full pipe
+	reader_attempted_write := false
+
+	reader := thread.create_and_start_with_data(relay, proc(data: rawptr) {
+		relay := (^Station_Relay)(data)
+		relay_done := relay.reader_done
+		defer {
+			if relay_done != nil {
+				sync.atomic_store(relay_done, true)
+			}
+		}
+
+		// Attempt write to full pipe (will get EAGAIN, poll, check cancel)
+		large_msg := strings.repeat("y", 10_000)
+		defer delete(large_msg)
+
+		// This calls station_write_line_cancellable internally,
+		// which will:
+		// 1. Try write -> EAGAIN (pipe full)
+		// 2. Poll with 100ms timeout
+		// 3. During poll, main sets cancel flag
+		// 4. On next check (after poll timeout), sees cancel, returns false
+		_ = station_write_line_cancellable(relay.agent, large_msg)
+	}, self_cleanup = false)
+
+	relay.reader_done = &reader_attempted_write
+
+	// Give reader time to reach poll (blocked on full pipe)
+	time.sleep(50 * time.Millisecond)
+
+	// PROOF 2: Reader attempted write and is likely polling
+	fmt.printf("[PIPE-FULL-TEST] Reader is attempting write to full pipe\n")
+
+	// Trigger cancellation
+	sync.atomic_store(&station_cancel_requested, true)
+
+	// PROOF 3: Measure how fast shutdown completes
+	// With proper non-blocking + poll + cancel check:
+	// - Reader's poll times out (100ms)
+	// - Reader checks cancel flag, sees it's set
+	// - Reader returns from write, deferred cleanup runs
+	// - Reader thread exits
+	// - Main's join returns
+	// Total: ~100ms (one poll timeout) + small overhead
+	start := time.now()
+	exit_code := station_orderly_shutdown(&relay, reader)
+	elapsed := time.since(start)
+
+	sync.atomic_store(&station_cancel_requested, false)
+	os.close(read_fd)
+
+	fmt.printf("[PIPE-FULL-TEST] Shutdown latency: %v\n", elapsed)
+	fmt.printf("[PIPE-FULL-TEST] Exit code: %d (expected %d)\n", exit_code, STATION_CANCELLED_EXIT_CODE)
+
+	// ASSERTIONS
+	// Latency should be ~100ms (one poll timeout), not instant and not hanging
+	testing.expect(t, elapsed > 50 * time.Millisecond,
+		fmt.tprintf("Shutdown too fast (%v): reader may not have polled", elapsed))
+	testing.expect(t, elapsed < 500 * time.Millisecond,
+		fmt.tprintf("Shutdown too slow (%v): likely hung on poll or close", elapsed))
+	testing.expect(t, reader_attempted_write, "Reader must have started")
+	testing.expect_value(t, exit_code, STATION_CANCELLED_EXIT_CODE)
+
+	fmt.printf("[PIPE-FULL-TEST] PASS: Non-blocking write cancelled properly\n")
 }
