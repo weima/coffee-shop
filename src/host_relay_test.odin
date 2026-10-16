@@ -525,3 +525,52 @@ test_host_recovers_unrelayed_spooled_report :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(string(history), "finished while the host was down"), string(history))
 	testing.expect(t, !os.exists(entry), "a relayed spool entry must be removed")
 }
+
+// Recovery must keep scanning after relaying each report, even though relay uses
+// temporary allocations. Each valid spool entry is observable on stdout/history.
+@(test)
+test_host_recovers_multiple_unrelayed_spooled_reports :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-recover-many-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	state := fmt.tprintf("%s/state", root)
+	spool := fmt.tprintf("%s/host/spool", state)
+	rwx := os.Permissions{.Read_User, .Write_User, .Execute_User}
+	testing.expect_value(t, os.make_directory_all(spool, rwx), os.Error(nil))
+	ids := [5]string{"shot-a", "shot-b", "shot-c", "shot-d", "shot-e"}
+	names := [5]string{"0001-a.json", "0002-b.json", "0003-c.json", "0004-d.json", "0005-e.json"}
+	for i in 0 ..< len(ids) {
+		entry := fmt.tprintf("%s/%s", spool, names[i])
+		line := fmt.tprintf(`{{"brew_id":"order-1","shot_id":"%s","kind":"turn_done","description":"pending %s","timestamp_ns":%d,"spool":"%s"}}`, ids[i], ids[i], i + 1, names[i])
+		testing.expect_value(t, os.write_entire_file(entry, line, rwx), os.Error(nil))
+	}
+
+	binary := build_test_binary(t, root)
+	defer delete(binary)
+	run_state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
+		command = {"sh", "-c", `printf '%s\n' '{"type":"shutdown","request_id":"done"}' | CS_STATE_DIR="$1" "$2" host`, "recover-many-test", state, binary},
+	}, context.allocator)
+	defer delete(stdout)
+	defer delete(stderr)
+	testing.expect_value(t, exec_err, os.Error(nil))
+	testing.expect(t, run_state.success, string(stderr))
+	out := string(stdout)
+	for i in 0 ..< len(ids) {
+		expected := fmt.tprintf(`{{"type":"station_report","request_id":"order-1","shot_id":"%s","kind":"turn_done","description":"pending %s"}}`, ids[i], ids[i])
+		testing.expect_value(t, strings.count(out, expected), 1)
+	}
+	testing.expect_value(t, strings.count(out, `"type":"station_report"`), len(ids))
+
+	history, history_err := os.read_entire_file(fmt.tprintf("%s/host/order-1/history.ndjson", state), context.allocator)
+	defer delete(history)
+	testing.expect_value(t, history_err, os.Error(nil))
+	testing.expect_value(t, strings.count(string(history), `"type":"station_report"`), len(ids))
+	spooled, spool_err := os.read_all_directory_by_path(spool, context.temp_allocator)
+	testing.expect_value(t, spool_err, os.Error(nil))
+	testing.expect_value(t, len(spooled), 0)
+}
