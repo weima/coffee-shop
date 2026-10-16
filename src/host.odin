@@ -238,7 +238,8 @@ host_relay_message :: proc(message: Activity_Message) {
 // once at start, before any Station of this host exists, so it never races a live
 // relay. An unreadable entry stays on disk for inspection.
 host_recover_spool :: proc() {
-	spool_dir, _ := filepath.join({host_history_root, STATION_SPOOL_DIR_NAME}, context.temp_allocator)
+	spool_dir, _ := filepath.join({host_history_root, STATION_SPOOL_DIR_NAME}, context.allocator)
+	defer delete(spool_dir)
 	entries, read_err := os.read_all_directory_by_path(spool_dir, context.temp_allocator)
 	if read_err != nil {
 		return
