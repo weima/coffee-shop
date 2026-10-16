@@ -1,6 +1,7 @@
 package main
 
 import "core:bufio"
+import "core:c"
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
@@ -178,6 +179,10 @@ station_orderly_shutdown :: proc(relay_ptr: ^^Station_Relay, reader: ^thread.Thr
 	cancelled_before := sync.atomic_load(&relay.cancelled)
 	sync.atomic_store(&relay.cancelled, true)
 	sync.atomic_store(&relay.agent_closed, true)
+	// Close agent's input immediately to wake any blocked write before joining.
+	// station_close_file uses atomic_exchange, so calling it twice is safe.
+	// Reader wakes from os.write_string() with EPIPE and can exit.
+	station_close_file(&relay.agent)
 	if reader != nil {
 		thread.join(reader)
 		thread.destroy(reader)
@@ -187,7 +192,6 @@ station_orderly_shutdown :: proc(relay_ptr: ^^Station_Relay, reader: ^thread.Thr
 	sync.mutex_unlock(&relay.mutex)
 	station_free_display(&relay.display)
 	station_close_file(&relay.input)
-	station_close_file(&relay.agent)
 	free(relay)
 	relay_ptr^ = nil
 	// Decide the status only now, so a cancel that arrived while shutdown was
@@ -267,6 +271,14 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 	relay.agent = agent_in_write
 	relay.display = display
 	relay.one_turn = shot_kind == SHOT_KIND_RESEARCH || taste != ""
+	// Set agent's stdin to non-blocking for cancellable write
+	if posix.fcntl(posix.FD(os.fd(agent_in_write)), .SETFL, c.int(posix.O_Flags{.NONBLOCK})) != 0 {
+		write_error("could not set non-blocking mode on agent stdin")
+		_ = station_orderly_shutdown(&relay, nil)
+		_, _ = os.process_wait(process)
+		station_close_file(&agent_out_read)
+		return 1
+	}
 	station_install_sigterm()
 	station_turn_started(relay)
 	if !station_write_prompt(agent_in_write, first_prompt, "") {
@@ -577,7 +589,10 @@ station_relay_close_agent :: proc(relay: ^Station_Relay) {
 	if sync.atomic_load(&relay.agent_closed) {
 		return
 	}
-	station_write_stats_request(relay.agent)
+	// Skip stats request if cancelled; closed FD would cause EPIPE anyway
+	if !sync.atomic_load(&station_cancel_requested) {
+		station_write_stats_request(relay.agent)
+	}
 	sync.atomic_store(&relay.agent_closed, true)
 	station_close_file(&relay.agent)
 }
@@ -698,10 +713,10 @@ station_relay_reply_line :: proc(relay: ^Station_Relay, text: string) -> bool {
 		response := station_dialog_response(relay.dialog, trimmed)
 		station_dialog_clear(&relay.dialog)
 		sync.atomic_store(&relay.last_output_ns, time.now()._nsec)
-		return station_write_line(relay.agent, response)
+		return station_write_line_cancellable(relay.agent, response)
 	}
 	station_turn_started(relay)
-	return station_write_prompt(relay.agent, trimmed, "followUp")
+	return station_write_prompt_cancellable(relay.agent, trimmed, "followUp")
 }
 
 station_relay_replies :: proc(data: rawptr) {
@@ -800,6 +815,18 @@ station_write_prompt :: proc(file: ^os.File, message, behavior: string) -> bool 
 	return station_write_line(file, string(data))
 }
 
+// Cancellable version of write_prompt for reply path
+station_write_prompt_cancellable :: proc(file: ^os.File, message, behavior: string) -> bool {
+	if sync.atomic_load(&station_cancel_requested) {
+		return false
+	}
+	data, err := json.marshal(Station_Prompt{type = "prompt", message = message, streamingBehavior = behavior}, {}, context.temp_allocator)
+	if err != nil {
+		return false
+	}
+	return station_write_line_cancellable(file, string(data))
+}
+
 station_write_stats_request :: proc(file: ^os.File) -> bool {
 	data, err := json.marshal(Station_Stats_Request{type = "get_session_stats"}, {}, context.temp_allocator)
 	if err != nil {
@@ -814,6 +841,96 @@ station_write_line :: proc(file: ^os.File, line: string) -> bool {
 	}
 	_, newline_err := os.write_string(file, "\n")
 	return newline_err == nil
+}
+
+// Writes a line with non-blocking I/O: sets FD non-blocking, retries EAGAIN via poll,
+// checks cancellation during poll timeout. Returns false if cancelled or write fails.
+station_write_line_cancellable :: proc(file: ^os.File, line: string) -> bool {
+	if sync.atomic_load(&station_cancel_requested) {
+		return false
+	}
+
+	fd := posix.FD(os.fd(file))
+	data := transmute([]byte)line
+	written := 0
+
+	// Write data
+	for written < len(data) {
+		if sync.atomic_load(&station_cancel_requested) {
+			return false
+		}
+
+		n := posix.write(fd, &data[written], c.size_t(int(len(data)) - written))
+		if n > 0 {
+			written += int(n)
+			continue
+		}
+
+		if n == 0 {
+			return false  // No progress
+		}
+
+		// n < 0: check errno
+		errno := posix.get_errno()
+		if errno == .EAGAIN || errno == .EWOULDBLOCK {
+			// Pipe full, wait for writable with cancel check
+			fds := [1]posix.pollfd{{fd = fd, events = {.OUT}}}
+			poll_result := posix.poll(&fds[0], 1, 100)  // STATION_RELAY_POLL_MS
+			if poll_result < 0 {
+				return false  // Poll error
+			}
+			if poll_result == 0 {
+				// Timeout; loop back to check cancel
+				continue
+			}
+			if .OUT not_in fds[0].revents {
+				return false  // FD not writable
+			}
+			// FD is writable, retry write
+			continue
+		}
+
+		// Other error (EPIPE, etc.)
+		return false
+	}
+
+	// Write newline
+	if sync.atomic_load(&station_cancel_requested) {
+		return false
+	}
+	newline := byte('\n')
+	for {
+		if sync.atomic_load(&station_cancel_requested) {
+			return false
+		}
+
+		n := posix.write(fd, &newline, 1)
+		if n == 1 {
+			return true
+		}
+
+		if n == 0 {
+			return false
+		}
+
+		errno := posix.get_errno()
+		if errno == .EAGAIN || errno == .EWOULDBLOCK {
+			fds := [1]posix.pollfd{{fd = fd, events = {.OUT}}}
+			poll_result := posix.poll(&fds[0], 1, 100)
+			if poll_result < 0 {
+				return false
+			}
+			if poll_result == 0 {
+				continue
+			}
+			if .OUT not_in fds[0].revents {
+				return false
+			}
+			continue
+		}
+
+		return false
+	}
 }
 
 station_is_turn_end :: proc(line: string) -> bool {
