@@ -276,9 +276,9 @@ host_relay_message :: proc(message: Activity_Message) {
 		pane_id := ""
 		for i in 0..<len(host_sessions) {
 			if host_sessions[i].request_id == message.brew_id && host_sessions[i].shot_id == message.shot_id {
-				pane_id = host_sessions[i].pane_id
 				delete(host_sessions[i].request_id)
 				delete(host_sessions[i].shot_id)
+				pane_id = strings.clone(host_sessions[i].pane_id, context.temp_allocator)
 				delete(host_sessions[i].pane_id)
 				unordered_remove(&host_sessions, i)
 				break
@@ -316,8 +316,6 @@ host_relay_message :: proc(message: Activity_Message) {
 				req_id := pair[0]
 				shot := pair[1]
 				host_emit(Host_Event{type = "dispatch_dequeued", request_id = req_id, shot_id = shot})
-				delete(req_id)
-				delete(shot)
 			}
 		}
 
@@ -356,10 +354,10 @@ host_relay_message :: proc(message: Activity_Message) {
 		pane_id := ""
 		for i in 0..<len(host_sessions) {
 			if host_sessions[i].request_id == message.brew_id && host_sessions[i].shot_id == message.shot_id {
-				pane_id = host_sessions[i].pane_id
 				// Remove session record.
 				delete(host_sessions[i].request_id)
 				delete(host_sessions[i].shot_id)
+				pane_id = strings.clone(host_sessions[i].pane_id, context.temp_allocator)
 				delete(host_sessions[i].pane_id)
 				unordered_remove(&host_sessions, i)
 				break
@@ -398,8 +396,6 @@ host_relay_message :: proc(message: Activity_Message) {
 				req_id := pair[0]
 				shot := pair[1]
 				host_emit(Host_Event{type = "dispatch_dequeued", request_id = req_id, shot_id = shot})
-				delete(req_id)
-				delete(shot)
 			}
 		}
 	}

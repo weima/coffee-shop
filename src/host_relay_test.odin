@@ -574,3 +574,67 @@ test_host_recovers_multiple_unrelayed_spooled_reports :: proc(t: ^testing.T) {
 	testing.expect_value(t, spool_err, os.Error(nil))
 	testing.expect_value(t, len(spooled), 0)
 }
+
+// Drives one terminal report through host_relay_message with the pool, a session and a
+// queued Shot in place. A bad free (temp-allocator dequeue strings, freed pane_id) fails
+// under ODIN_TEST_FAIL_ON_BAD_MEMORY. A fake herdr on PATH keeps the test off real panes.
+@(test)
+test_host_terminal_report_frees_only_owned_strings :: proc(t: ^testing.T) {
+	host_pool_test_lock()
+	defer host_pool_test_unlock()
+
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-terminal-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+	bin_dir, _ := filepath.join({root, "bin"})
+	defer delete(bin_dir)
+	_ = os.make_directory_all(bin_dir, os.Permissions{.Read_User, .Write_User, .Execute_User})
+	fake, _ := filepath.join({bin_dir, "herdr"})
+	defer delete(fake)
+	_ = os.write_entire_file(fake, "#!/bin/sh\nexit 1\n", os.Permissions{.Read_User, .Write_User, .Execute_User})
+	old_path := os.get_env("PATH", context.temp_allocator)
+	_ = os.set_env("PATH", fmt.tprintf("%s:%s", bin_dir, old_path))
+	_ = os.set_env("CS_STATE_DIR", root)
+	defer {
+		_ = os.set_env("PATH", old_path)
+		_ = os.unset_env("CS_STATE_DIR")
+	}
+	host_history_root = strings.clone(root, context.allocator)
+	defer {
+		delete(host_history_root)
+		host_history_root = ""
+	}
+
+	host_dispatch_init("ws-terminal")
+	defer host_dispatch_cleanup(fake)
+	defer {
+		for s in host_sessions {
+			delete(s.request_id)
+			delete(s.shot_id)
+			delete(s.pane_id)
+		}
+		delete(host_sessions)
+		host_sessions = nil
+	}
+
+	// Fill the pool; the sixth Shot queues and is dequeued when shot-0 ends.
+	for i in 0..<5 {
+		id := fmt.aprintf("shot-%d", i)
+		pane, _, _ := host_dispatch_acquire("req-1", id)
+		append(&host_sessions, Host_Session{request_id = strings.clone("req-1"), shot_id = strings.clone(id), pane_id = pane})
+		delete(id)
+	}
+	_, queued, _ := host_dispatch_acquire("req-1", "shot-queued")
+	testing.expect(t, queued, "sixth Shot must queue")
+	host_dispatch_queue_store_metadata("req-1", "shot-queued", "/repo", "prompt", "model", "provider", "thinking", "execute", "pi", "taste", "message", "/station")
+
+	for kind in ([]string{"pulled", "taste_failed"}) {
+		sid := "shot-0" if kind == "pulled" else "shot-1"
+		host_relay_message(Activity_Message{brew_id = "req-1", shot_id = sid, kind = kind, description = "done"})
+	}
+	testing.expect_value(t, len(host_sessions), 3)
+}
