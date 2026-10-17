@@ -11,8 +11,10 @@ import "core:strings"
 host_pane_pool: Pane_Pool
 
 // Initialize the pool for a workspace. Called once per host startup.
-host_pane_pool_init :: proc(workspace_id: string, capacity: int = 5) {
+// A non-empty machine_root joins the machine-wide limit under that state root.
+host_pane_pool_init :: proc(workspace_id: string, capacity: int = 5, machine_root: string = "") {
 	host_pane_pool = pane_pool_init(capacity, workspace_id, context.allocator)
+	host_pane_pool.machine_root = strings.clone(machine_root, context.allocator)
 }
 
 // Destroy the pool and close all host-owned panes. Called on host exit.
