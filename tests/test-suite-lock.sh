@@ -58,19 +58,30 @@ while [ ! -e "$ODIN_STARTED" ]; do
     sleep 0.02
 done
 
-if (cd "$tmp/other" && sh scripts/test-suite.sh) >"$tmp/second.out" 2>&1; then
+holder=$(cat "$lock/pid")
+if (cd "$tmp/other" && COFFEE_SHOP_TEST_LOCK_TIMEOUT=1 sh scripts/test-suite.sh) >"$tmp/second.out" 2>&1; then
     echo "second concurrent suite unexpectedly succeeded" >&2
     exit 1
 fi
-if ! grep -qi 'another Coffee Shop test suite is running' "$tmp/second.out"; then
-    cat "$tmp/second.out" >&2
-    echo "second suite did not explain the exclusion" >&2
-    exit 1
-fi
+for want in 'another Coffee Shop test suite is running' "PID $holder" "$lock" 'timed out'; do
+    if ! grep -qiF "$want" "$tmp/second.out"; then
+        cat "$tmp/second.out" >&2
+        echo "timed-out suite did not report: $want" >&2
+        exit 1
+    fi
+done
 [ -d "$lock" ] || { echo "first suite lost its lock" >&2; exit 1; }
 [ "$(wc -l <"$ODIN_STARTED")" -eq 1 ] || { echo "more than one underlying test runner started" >&2; exit 1; }
+# A waiting second suite must run once the first finishes.
+(cd "$tmp/other" && COFFEE_SHOP_TEST_LOCK_TIMEOUT=30 sh scripts/test-suite.sh) >"$tmp/waiter.out" 2>&1 &
+waiter=$!
+sleep 0.5
+kill -0 "$waiter" 2>/dev/null || { echo "waiting suite did not wait" >&2; exit 1; }
+[ "$(wc -l <"$ODIN_STARTED")" -eq 1 ] || { echo "waiter ran while the lock was held" >&2; exit 1; }
 printf release >"$ODIN_RELEASE"
 wait "$first"
+wait "$waiter" || { cat "$tmp/waiter.out" >&2; echo "waiting suite failed after the lock freed" >&2; exit 1; }
+[ "$(wc -l <"$ODIN_STARTED")" -eq 2 ] || { echo "waiting suite never ran its tests" >&2; exit 1; }
 [ ! -e "$lock" ] || { echo "successful suite left its lock" >&2; exit 1; }
 
 rm -f "$ODIN_STARTED" "$ODIN_RELEASE"
@@ -126,4 +137,18 @@ for signal in HUP INT TERM; do
     [ ! -e "$lock" ] || { echo "$signal-interrupted suite left its lock" >&2; exit 1; }
 done
 
-echo "cross-worktree suite lock exclusion, failure, and interruption release passed"
+# A holder killed by a signal releases the lock for a new acquirer.
+rm -f "$ODIN_STARTED" "$ODIN_RELEASE" "$ODIN_PID_FILE"
+(cd "$tmp/repo" && exec sh scripts/test-suite.sh) >/dev/null 2>&1 &
+dying=$!
+tries=0
+while [ ! -e "$ODIN_STARTED" ] && [ "$tries" -lt 100 ]; do tries=$((tries + 1)); sleep 0.02; done
+kill -TERM "$dying"
+wait "$dying" 2>/dev/null || :
+[ ! -e "$lock" ] || { echo "dead holder left its lock" >&2; exit 1; }
+rm -f "$ODIN_STARTED"
+: >"$ODIN_RELEASE"
+(cd "$tmp/other" && COFFEE_SHOP_TEST_LOCK_TIMEOUT=5 sh scripts/test-suite.sh) >/dev/null 2>&1 \
+    || { echo "new acquirer failed after the holder died" >&2; exit 1; }
+
+echo "cross-worktree suite lock exclusion, bounded wait, timeout, failure, and interruption release passed"

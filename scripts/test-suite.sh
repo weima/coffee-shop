@@ -13,11 +13,26 @@ esac
 git_common=$(CDPATH= cd -- "$git_common" && pwd -P)
 lock_dir="$git_common/.coffee-shop-test.lock"
 
-if ! mkdir "$lock_dir" 2>/dev/null; then
+# Wait for the lock: the suite takes ~35s, and a Pull's Taste shares this lock,
+# so a false failure costs more than a wait. 300s covers several queued suites.
+wait_secs=${COFFEE_SHOP_TEST_LOCK_TIMEOUT:-300}
+case "$wait_secs" in
+    ''|*[!0-9]*) echo "COFFEE_SHOP_TEST_LOCK_TIMEOUT must be whole seconds." >&2; exit 1 ;;
+esac
+ticks=$((wait_secs * 10))
+waited=0
+while ! mkdir "$lock_dir" 2>/dev/null; do
     owner=$(cat "$lock_dir/pid" 2>/dev/null || printf unknown)
-    printf 'Another Coffee Shop test suite is running (PID %s; lock: %s). Wait for it to finish. If no suite is running, remove the stale lock directory.\n' "$owner" "$lock_dir" >&2
-    exit 1
-fi
+    if [ "$waited" -ge "$ticks" ]; then
+        printf 'Another Coffee Shop test suite is running (PID %s; lock: %s). Timed out after %ss waiting for it. If no suite is running, remove the stale lock directory.\n' "$owner" "$lock_dir" "$wait_secs" >&2
+        exit 1
+    fi
+    if [ "$waited" -eq 0 ]; then
+        printf 'Waiting up to %ss for the Coffee Shop test suite held by PID %s (lock: %s).\n' "$wait_secs" "$owner" "$lock_dir" >&2
+    fi
+    waited=$((waited + 1))
+    sleep 0.1
+done
 
 build_dir=
 runner_pid=
