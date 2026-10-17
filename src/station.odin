@@ -207,6 +207,11 @@ station_orderly_shutdown :: proc(relay_ptr: ^^Station_Relay, reader: ^thread.Thr
 }
 
 run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_kind, taste, message: string, agent: []string) -> int {
+	_ = spans_init(station_id)
+	defer spans_close()
+	span_begin("station start")
+	span_started := true
+	defer if span_started {span_end()}
 	first_prompt := prompt
 	prompt_data: []byte
 	if prompt_file != "" {
@@ -293,6 +298,8 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 		return 1
 	}
 	station_display_line(display, station_style(ansi.FAINT, fmt.tprintf("sent the first prompt to the agent")))
+	span_end() // station start ends once the agent has its first prompt
+	span_started = false
 	reader_thread := thread.create_and_start_with_data(relay, station_relay_replies, self_cleanup = false)
 	if reader_thread == nil {
 		_ = station_orderly_shutdown(&relay, nil)

@@ -364,6 +364,8 @@ herdr_create_tab :: proc(herdr, workspace_id, shot_id, cwd: string, allocator :=
 }
 
 run_herdr :: proc(herdr: string, args: []string, allocator := context.allocator) -> (stdout, stderr: []byte, err: string) {
+	span_begin("herdr call")
+	defer span_end()
 	command := make([]string, 1+len(args), allocator)
 	command[0] = herdr
 	copy(command[1:], args)

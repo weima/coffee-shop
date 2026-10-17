@@ -74,6 +74,11 @@ Host_Event :: struct {
 // stdout. It exits on shutdown or end of input; it never daemonizes. While it
 // runs, a relay thread forwards Station reports to stdout as station_report.
 run_host :: proc() -> int {
+	_ = spans_init("host")
+	defer spans_close()
+	span_begin("host start")
+	span_started := true
+	defer if span_started {span_end()}
 	state_root, state_err := default_state_root(context.temp_allocator)
 	if state_err != "" {
 		host_write_line(fmt.tprintf(`{{"type":"error","reason":"%s"}}`, state_err))
@@ -144,6 +149,8 @@ run_host :: proc() -> int {
 	}
 
 	host_write_line(fmt.tprintf(`{{"type":"ready","protocol":%d}}`, HOST_PROTOCOL))
+	span_end() // host start ends once the host is ready
+	span_started = false
 	// Initialize dispatch pool and recover from previous crash.
 	host_dispatch_init(host_pane_pool.workspace_id)
 	recovery_ok, _ := host_pool_recover(state_root, "herdr")
@@ -240,6 +247,8 @@ host_relay_pending :: proc(listener: ^Activity_Listener) {
 // Relays one report. The history record is written before stdout is, and only then is
 // the spooled copy removed, so a crash at any point leaves the report recoverable.
 host_relay_message :: proc(message: Activity_Message) {
+	span_begin("report relay")
+	defer span_end()
 	// Record in progress ledger before emitting.
 	progress_supervision_record_report(message.brew_id, message.shot_id, message.kind)
 
@@ -615,6 +624,8 @@ host_handle_line :: proc(line: string) -> bool {
 // shortcut: the host blocks while sessions start; phase D relays reports but
 // replies are not yet routed back from the host.
 host_dispatch :: proc(root: json.Object, request_id: string) {
+	span_begin("dispatch request")
+	defer span_end()
 	repo, repo_ok := host_string(root, "repo")
 	if !repo_ok || !filepath.is_abs(repo) {
 		host_emit(Host_Event{type = "error", request_id = request_id, reason = "repo must be an absolute path"})
