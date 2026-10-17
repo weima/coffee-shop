@@ -496,6 +496,41 @@ The design is [the Station tab lifecycle](docs/tab-lifecycle.md): a tab is an **
 12. **`workers.md` and the flow disagree** about committing: the file tells every Worker "Do not commit", while the flow requires the Station to commit the Pull after Taste. An agent obeying the file and an agent committing on its own both occur, and the second bypasses the Taste gate. Decide which is intended and make the two agree.
 13. **Active-Station ledger and progress-supervision safeguard.** **Problem:** Station reports land in the host pane, but the coordinator can miss them; a Station can sit at "Waiting for your reply" without the user being told. Panes are not a reliable relay. **Goal:** Surface `needs_input` and stale-Station warnings durably and immediately, so the coordinator relays pending reports before ending a turn. **Implementation:** `progress_ledger.odin` tracks each Station by request_id+shot_id with pane_id, phase, last_progress time, and report kind; `progress_supervision.odin` integrates with the host relay thread, rebuilds the ledger from host history on restart, and emits "needs_input_alert" and "stale_warning" Host_Events to stdout. `progress_supervision_test.odin` covers rebuild, stale detection, needs_input alerting, and terminal settlement; `host_integration_test.odin` verifies events through the real host path. **Coordinator responsibility:** The Barista or supervisor must watch the host stdout event stream, parse JSON events, and relay alerts: on "needs_input_alert", tell the user immediately (do not end turn); on "stale_warning", inform the user (advisory, not auto-cancel). See EVENT_WATCH_PATH.md for precise watch/consume implementation and limitations. **Acceptance criteria:** Every Station tracked durably; needs_input alert and stale warning reach host stdout; coordinator relays alerts before ending turn (operational, not code-enforced); stale warning never auto-cancels (10 min is advisory threshold); host restart rebuilds ledger and resumes detection; relay thread runs in existing host loop with no other changes to Station behavior. **Gate.** Multi-Station dispatch surfaces alerts correctly in stdout; host restart rebuilds ledger; integration tests pass; coordinator documentation is clear about automatic vs. manual relay.
 
+## Roadmap: v0.5.0 — top priority: remove the Herdr dependency
+
+**Priority, decided 2026-10-17.** Removing Herdr is v0.5's first work item. The developer reached this after three days of running Coffee Shop on Windows under WSL2: the difference between macOS and Windows WSL2 is stark enough that removing Herdr outranks everything else in v0.5. That is direct experience, and it outranks the second-hand analysis that first raised the subject, so the ordering no longer waits on a measurement and the redesign must not wait on a release deciding whether the problem is real.
+
+**How to remove it.** Put a pane-backend seam behind the existing `herdr_*` procedures with at least `herdr` and `none`. Land `none` first: a Station's stdio goes to a per-Shot log; the human channel becomes `status`, a log tail, alerts and a routed reply, which the host already accepts; and the pane pool, clearing, reuse and pane-based recovery are deleted, because they exist only to manage scarce and stateful panes. Keep Herdr optional for macOS rather than deleting it in the same step. Do **not** implement a terminal emulator or PTY capture — that is Herdr's slow part, and it is the work being removed. If live multi-pane watching turns out to be essential, tmux is the one to adopt, with its config surface and its daemon as known costs; the guardrails below currently exclude tmux and zmx and would have to be amended deliberately.
+
+**Why this is on the table.** A report (2026-10-17, second-hand analysis, **not reproduced here**) says Herdr performs badly on WSL2 under Windows: Herdr captures terminal input, output and TUI events, which is already costly on native macOS and Linux, and Windows adds the ConPTY layer with different Unicode width tables and VT handling, so scrolling and resizing corrupt layout and slow down. The generic WSL2 factors are separate and worth ruling out first: project files on the Windows side through `/mnt/c` (9P translation) and default resource limits.
+
+The developer's own experience is the decisive evidence here: three days on Windows under WSL2 produced a difference against macOS that is stark enough to reorder the roadmap, so this is not a hypothesis awaiting proof. Local measurements agree in kind: one long session left **21 stale panes** in a Station workspace, enough that the developer could feel the rendering drag on macOS, which is why the tab pool exists (item 3); and the v0.4 five-Station trace shows a dispatch making **thirteen** `herdr call` spans at 6.1 ms mean, so every dispatch pays the terminal manager again and again.
+
+**The measurement now sizes the fix, not the decision.** Record wall-clock time per Shot, host CPU, and the developer-visible responsiveness on WSL2 with the project inside the Linux filesystem, then repeat on macOS, so that the before and after of the removal is a number. Do not spend a release on deciding whether the penalty is real: it has been paid for three days.
+
+**What does not change either way.** The guardrails below still hold until amended deliberately, and this section does not by itself authorise code changes beyond the removal itself.
+
+**What the dependency actually is, measured 2026-10-17.** Twelve operations, and one client:
+
+| Area | Operations |
+|---|---|
+| Workspace | `workspace create`, `workspace get`, `workspace close` |
+| Tab | `tab create`, `tab close`, `tab rename`, `tab list` |
+| Pane | `pane run`, `pane close`, `pane get`, `pane process-info` |
+
+`src/dispatch.odin` is the client (57 mentions). The pane *lifecycle* sits in `src/pane_pool.odin`, `src/host_pane_pool.odin`, `src/pane_clear.odin`, `src/host_pool_persistence.odin`, `src/host_dispatch_queue.odin` and `src/host.odin`; `src/pr.odin` finds panes by scanning process arguments; six test files fake Herdr.
+
+**What does not depend on Herdr.** The activity-socket relay, the Station's Pi-RPC pipe protocol, the isolated Git worktrees, the Register, Receipt, reports and Tray, Taste, Blend, the five-Shot concurrency limit (now the machine-wide slot limit of item 10) and the state server all run without it. Herdr supplies *presentation and pane lifecycle*, not the workflow. Removing it removes a layer rather than the product.
+
+**What still needs a replacement, in rough order of difficulty:**
+
+1. **The human channel.** Today the developer watches a pane and types a reply into it, and `herdr workspace focus` is the jump-to affordance. The host already accepts a routed `reply` request, so the routing exists; what is missing is a way to *see* live output and to *type* a reply without a pane.
+2. **The pane pool and its recovery.** Reuse, pinning, clearing and exact crash recovery (item 3.3–3.5) exist only because panes are scarce and stateful resources. Removing panes removes most of the need.
+3. **`pr.odin`'s pane discovery and cleanup**, which currently identifies a run's panes from process arguments.
+4. **Six test files** that fake Herdr, plus `host_contract_test.odin` and the e2e path.
+
+**Open questions this section does not answer.** Whether anything replaces a pane at all — the guardrails exclude tmux and zmx, so dropping Herdr means either no multiplexer or a deliberately amended guardrail. Whether the developer still follows a Shot live, or only reads its report afterwards. And whether the reported WSL2 cost is Herdr at all, which the measurement above settles.
+
 ## Scope guardrails
 
 The target is one machine, a main-agent/Barista session (Pi first), a foreground Coffee Shop host, and Herdr. Pi is required for the first usable path. Oreo may take the main or worker agent role after the Pi-based flow is usable and Oreo is stable; Rachel is an optional developer aid. Neither is a core dependency. Keep task decomposition with the Barista and integration decisions with the developer. The foreground host is in scope; a detached daemon is not. Do not add remote workers, unrelated agent harnesses, tmux or zmx backends, Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.
