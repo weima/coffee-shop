@@ -30,6 +30,8 @@ Command :: struct {
 	shot_kind: string,
 	taste: string,
 	message: string,
+	interactive: bool,
+	codemode: bool,
 	agent: []string,
 	run_id: string,
 	branch: string,
@@ -76,6 +78,8 @@ Station_Arguments :: struct {
 	kind:        string `usage:"Shot kind: execute (default) or research."`,
 	taste:       string `usage:"Taste command a Pull must pass before it commits."`,
 	message:     string `usage:"Commit message for a Pull that passes its Taste."`,
+	interactive: bool `usage:"Keep the Shot open for typed replies after each turn."`,
+	codemode:    string `usage:"true (default) or false: whether an execute Shot gets codemode."`,
 }
 
 Worker_Arguments :: struct {
@@ -199,7 +203,10 @@ parse_station_args :: proc(args: []string) -> (command: Command, err: string) {
 			return Command{kind = .Help}, "station taste needs an execute kind, a taste, and a message"
 		}
 	}
-	return Command{kind = .Station, report_path = options.report, shot_id = options.station, brew_id = options.brew, prompt = options.prompt, prompt_file = options.prompt_file, shot_kind = options.kind, taste = options.taste, message = options.message, agent = args[split+1:]}, ""
+	if options.codemode != "" && options.codemode != "true" && options.codemode != "false" {
+		return Command{kind = .Help}, "station codemode must be true or false"
+	}
+	return Command{kind = .Station, interactive = options.interactive, codemode = options.codemode != "false", report_path = options.report, shot_id = options.station, brew_id = options.brew, prompt = options.prompt, prompt_file = options.prompt_file, shot_kind = options.kind, taste = options.taste, message = options.message, agent = args[split+1:]}, ""
 }
 
 has_help_flag :: proc(args: []string) -> bool {

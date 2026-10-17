@@ -671,3 +671,32 @@ test_host_cancel_without_request_id_is_rejected :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(run.out, `"type":"cancelled"`), run.out)
 	testing.expect(t, strings.contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
 }
+
+@(test)
+test_host_station_command_codemode_option_controls_plus_codemode :: proc(t: ^testing.T) {
+	for case_ in ([]struct{options: Shot_Options, codemode: bool}{{{codemode = true}, true}, {{codemode = false}, false}, {{interactive = true, codemode = true}, true}}) {
+		command := host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "/oreo/bin/oreo-host", "shot", "brew", "/tmp/prompt", "", "", "", SHOT_KIND_EXECUTE, SHOT_RUNTIME_PI, "", "", case_.options)
+		defer delete(command)
+		testing.expect_value(t, strings.contains(command, "+codemode"), case_.codemode)
+		testing.expect_value(t, strings.contains(command, "--interactive"), case_.options.interactive)
+		testing.expect_value(t, strings.contains(command, "--codemode false"), !case_.codemode)
+	}
+	research := host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "/oreo/bin/oreo-host", "shot", "brew", "/tmp/prompt", "", "", "", SHOT_KIND_RESEARCH, SHOT_RUNTIME_PI, "", "", Shot_Options{codemode = false})
+	defer delete(research)
+	testing.expect(t, strings.contains(research, "--tools read,grep,find,ls,write,codemode"), research)
+}
+
+@(test)
+test_foreground_host_refuses_invalid_interactive_and_codemode :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-bad-options-*", `{"type":"dispatch","request_id":"order-o1","repo":"@REPO@","recipe":{"order":"x","shots":[{"id":"shot-i","prompt":"go","interactive":"yes"}]}}
+{"type":"dispatch","request_id":"order-o2","repo":"@REPO@","recipe":{"order":"x","shots":[{"id":"shot-c","prompt":"go","codemode":1}]}}
+{"type":"dispatch","request_id":"order-o3","repo":"@REPO@","recipe":{"order":"x","shots":[{"id":"shot-ok","prompt":"go","interactive":true,"codemode":false}]}}
+{"type":"shutdown","request_id":"shutdown-1"}
+`)
+	defer host_contract_destroy(run)
+	testing.expect(t, strings.contains(run.out, `"request_id":"order-o1","shot_id":"shot-i","reason":"shot interactive must be true or false"`), run.out)
+	testing.expect(t, strings.contains(run.out, `"request_id":"order-o2","shot_id":"shot-c","reason":"shot codemode must be true or false"`), run.out)
+	testing.expect(t, !strings.contains(run.calls, "shot-i") && !strings.contains(run.calls, "shot-c"), "a refused option must not call Herdr")
+	testing.expect(t, strings.contains(run.calls, "--station shot-ok") && strings.contains(run.calls, "--interactive --codemode false"), run.calls)
+	testing.expect(t, !strings.contains(run.calls, "+codemode"), run.calls)
+}

@@ -655,6 +655,7 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 	runtimes := make([dynamic]string, context.temp_allocator)
 	tastes := make([dynamic]string, context.temp_allocator)
 	messages := make([dynamic]string, context.temp_allocator)
+	options := make([dynamic]Shot_Options, context.temp_allocator)
 	for shot_value in shots {
 		shot, is_shot := shot_value.(json.Object)
 		id, id_ok := host_string(shot, "id")
@@ -729,6 +730,13 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 			return
 		}
 
+		shot_options, options_reason := host_shot_options(shot)
+		if options_reason != "" {
+			host_emit(Host_Event{type = "error", request_id = request_id, shot_id = id, reason = options_reason})
+			return
+		}
+
+		append(&options, shot_options)
 		append(&ids, id)
 		append(&prompts, prompt)
 		append(&models, model)
@@ -764,7 +772,51 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 	defer host_delete_string_slice(owned_messages)
 
 	host_emit(Host_Event{type = "dispatch_accepted", request_id = owned_request_id})
-	host_start_sessions_owned(owned_repo, owned_request_id, owned_ids, owned_prompts, owned_models, owned_providers, owned_thinkings, owned_kinds, owned_runtimes, owned_tastes, owned_messages)
+	host_start_sessions_owned(owned_repo, owned_request_id, owned_ids, owned_prompts, owned_models, owned_providers, owned_thinkings, owned_kinds, owned_runtimes, owned_tastes, owned_messages, options[:])
+}
+
+// Per-Shot dispatch options. Absent fields keep today's behaviour: not interactive,
+// codemode on. Construct with codemode = true unless the Shot turned it off.
+Shot_Options :: struct {
+	interactive: bool,
+	codemode:    bool,
+}
+
+// Queued Shots live in host_dispatch_queue, which has no options field, so a queued
+// Shot's options wait here until it launches.
+host_queued_options: map[string]Shot_Options
+
+host_queued_options_remember :: proc(request_id, shot_id: string, options: Shot_Options) {
+	host_queued_options[fmt.aprintf("%s/%s", request_id, shot_id)] = options
+}
+
+host_queued_options_take :: proc(request_id, shot_id: string) -> Shot_Options {
+	key := fmt.tprintf("%s/%s", request_id, shot_id)
+	stored_key, options := delete_key(&host_queued_options, key)
+	if stored_key == "" {
+		return Shot_Options{codemode = true}
+	}
+	delete(stored_key)
+	return options
+}
+
+host_shot_options :: proc(shot: json.Object) -> (options: Shot_Options, reason: string) {
+	options.codemode = true
+	if value, found := shot["interactive"]; found {
+		ok := false
+		options.interactive, ok = value.(json.Boolean)
+		if !ok {
+			return {}, "shot interactive must be true or false"
+		}
+	}
+	if value, found := shot["codemode"]; found {
+		ok := false
+		options.codemode, ok = value.(json.Boolean)
+		if !ok {
+			return {}, "shot codemode must be true or false"
+		}
+	}
+	return options, ""
 }
 
 // A Shot with a taste is a Pull: it needs a commit message, and only an execute Shot
@@ -826,7 +878,7 @@ host_delete_string_slice :: proc(values: []string) {
 	delete(values)
 }
 
-host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models, providers, thinkings, kinds, runtimes, tastes, messages: []string) {
+host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models, providers, thinkings, kinds, runtimes, tastes, messages: []string, options: []Shot_Options) {
 	if _, launch_err := child_launch_argv(host_station_executable); launch_err != "" {
 		for id in ids {
 			host_session_failed(request_id, id, launch_err)
@@ -889,6 +941,7 @@ host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models
 			// Pane not available; Shot is queued for retry when pane reclaims.
 			// Store full metadata now for auto-retry.
 			host_dispatch_queue_store_metadata(request_id, id, repo, prompts[i], models[i], providers[i], thinkings[i], kinds[i], runtimes[i], tastes[i], messages[i], station)
+			host_queued_options_remember(request_id, id, options[i])
 			host_emit(Host_Event{type = "dispatch_queued", request_id = request_id, shot_id = id})
 			continue
 		}
@@ -918,7 +971,7 @@ host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models
 			extension = host_oreo_extension_path
 		}
 		launcher := child_shell_prefix(launch)
-		command := host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, id, request_id, prompt_path, models[i], providers[i], thinkings[i], kinds[i], runtimes[i], tastes[i], messages[i])
+		command := host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, id, request_id, prompt_path, models[i], providers[i], thinkings[i], kinds[i], runtimes[i], tastes[i], messages[i], options[i])
 		if !host_station_command_is_ascii(command) {
 			delete(command)
 			host_pane_mark_terminal(pool_pane_id)
@@ -1129,7 +1182,7 @@ host_station_command_is_ascii :: proc(command: string) -> bool {
 // to safe characters.
 // A research Shot gets scratch-write tools; the Station then checks that it left the source as it found it.
 // A Pull passes its taste and message to the Station, which commits only if the taste passes.
-host_station_command :: proc(launcher, report, extension, oreo_host, shot_id, request_id, prompt_file, model, provider, thinking, kind, runtime, taste, message: string) -> string {
+host_station_command :: proc(launcher, report, extension, oreo_host, shot_id, request_id, prompt_file, model, provider, thinking, kind, runtime, taste, message: string, options := Shot_Options{codemode = true}) -> string {
 	quoted_report := shell_quote(report)
 	defer delete(quoted_report)
 	quoted_extension := shell_quote(extension)
@@ -1151,9 +1204,15 @@ host_station_command :: proc(launcher, report, extension, oreo_host, shot_id, re
 	tools_argument := ""
 	if kind == SHOT_KIND_RESEARCH {
 		tools_argument = " --tools read,grep,find,ls,write,codemode"
-	} else {
-		// Every execute Shot runs codemode; there is no switch to turn it off.
+	} else if options.codemode {
 		tools_argument = " --tools +codemode"
+	}
+	options_argument := ""
+	if options.interactive {
+		options_argument = " --interactive"
+	}
+	if !options.codemode {
+		options_argument = fmt.tprintf("%s --codemode false", options_argument)
 	}
 	taste_argument := ""
 	if taste != "" {
@@ -1173,9 +1232,9 @@ host_station_command :: proc(launcher, report, extension, oreo_host, shot_id, re
 		defer delete(quoted_model)
 		quoted_thinking := shell_quote(thinking)
 		defer delete(quoted_thinking)
-		command = fmt.aprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- env OREO_HOST=%s OREO_PROVIDER=%s OREO_MODEL=%s OREO_THINKING=%s OREO_SESSION_ID=%s pi --mode rpc --no-tools --no-mcp --no-extensions --model '%s/%s' --thinking %s -e %s", launcher, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, quoted_oreo_host, quoted_provider, quoted_model, quoted_thinking, shot_id, provider, model, thinking, quoted_extension)
+		command = fmt.aprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s%s -- env OREO_HOST=%s OREO_PROVIDER=%s OREO_MODEL=%s OREO_THINKING=%s OREO_SESSION_ID=%s pi --mode rpc --no-tools --no-mcp --no-extensions --model '%s/%s' --thinking %s -e %s", launcher, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, options_argument, quoted_oreo_host, quoted_provider, quoted_model, quoted_thinking, shot_id, provider, model, thinking, quoted_extension)
 	} else {
-		command = fmt.aprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- pi --mode rpc%s%s%s -e %s", launcher, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, tools_argument, model_argument, thinking_argument, quoted_extension)
+		command = fmt.aprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s%s -- pi --mode rpc%s%s%s -e %s", launcher, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, options_argument, tools_argument, model_argument, thinking_argument, quoted_extension)
 	}
 	if model_argument != "" {
 		delete(model_argument)
@@ -1380,7 +1439,7 @@ host_retry_dequeued_shots :: proc(dequeued: [dynamic][2]string, state_root: stri
 		prompts_dir, _ := filepath.join({state_root, "host", req_id, "prompts"}, context.temp_allocator)
 		prompt_path, _ := filepath.join({prompts_dir, prompt_name}, context.temp_allocator)
 
-		command := host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, shot_id, req_id, prompt_path, queued_shot.model, queued_shot.provider, queued_shot.thinking, queued_shot.kind, queued_shot.runtime, queued_shot.taste, queued_shot.message)
+		command := host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, shot_id, req_id, prompt_path, queued_shot.model, queued_shot.provider, queued_shot.thinking, queued_shot.kind, queued_shot.runtime, queued_shot.taste, queued_shot.message, host_queued_options_take(req_id, shot_id))
 		if !host_station_command_is_ascii(command) {
 			delete(command)
 			host_pane_mark_terminal(pane_id)
