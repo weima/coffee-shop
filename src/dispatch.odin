@@ -822,7 +822,6 @@ run_worker_with :: proc(state_root, brew_id, shot_id, token, pi: string) -> int 
 
 station_has_changes :: proc(station: string) -> bool {
 	state, stdout, stderr, err := os.process_exec(os.Process_Desc{command = []string{"git", "-C", station, "status", "--short"}}, context.temp_allocator)
-	defer delete(stdout, context.temp_allocator); defer delete(stderr, context.temp_allocator)
 	return err == nil && state.success && state.exit_code == 0 && strings.trim_space(transmute(string)stdout) != ""
 }
 
