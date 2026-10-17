@@ -13,7 +13,8 @@ test_dispatch_pool_acquire_and_queue :: proc(t: ^testing.T) {
 	host_pool_test_lock()
 	defer host_pool_test_unlock()
 	// Initialize pool with capacity 2.
-	host_dispatch_init("ws-e2e-1")
+	pool_root := host_pool_test_init("ws-e2e-1")
+	defer host_pool_test_end(pool_root)
 	host_pane_pool.capacity = 2
 	defer host_dispatch_cleanup("herdr")
 
@@ -48,7 +49,8 @@ test_dispatch_pool_dequeue_on_reclaim :: proc(t: ^testing.T) {
 	host_pool_test_lock()
 	defer host_pool_test_unlock()
 	// Initialize pool with capacity 1.
-	host_dispatch_init("ws-e2e-2")
+	pool_root := host_pool_test_init("ws-e2e-2")
+	defer host_pool_test_end(pool_root)
 	host_pane_pool.capacity = 1
 	defer host_dispatch_cleanup("herdr")
 
@@ -88,7 +90,8 @@ test_dispatch_pool_dequeue_by_request :: proc(t: ^testing.T) {
 	host_pool_test_lock()
 	defer host_pool_test_unlock()
 	// Initialize pool with capacity 1.
-	host_dispatch_init("ws-e2e-3")
+	pool_root := host_pool_test_init("ws-e2e-3")
+	defer host_pool_test_end(pool_root)
 	host_pane_pool.capacity = 1
 	defer host_dispatch_cleanup("herdr")
 
@@ -114,7 +117,8 @@ test_dispatch_pool_reuse_after_clear :: proc(t: ^testing.T) {
 	host_pool_test_lock()
 	defer host_pool_test_unlock()
 	// Initialize pool with capacity 1.
-	host_dispatch_init("ws-e2e-4")
+	pool_root := host_pool_test_init("ws-e2e-4")
+	defer host_pool_test_end(pool_root)
 	host_pane_pool.capacity = 1
 	defer host_dispatch_cleanup("herdr")
 
@@ -143,7 +147,8 @@ test_dispatch_pool_waiting_for_human :: proc(t: ^testing.T) {
 	host_pool_test_lock()
 	defer host_pool_test_unlock()
 	// Initialize pool with capacity 2.
-	host_dispatch_init("ws-e2e-5")
+	pool_root := host_pool_test_init("ws-e2e-5")
+	defer host_pool_test_end(pool_root)
 	host_pane_pool.capacity = 2
 	defer host_dispatch_cleanup("herdr")
 

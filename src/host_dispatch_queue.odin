@@ -50,7 +50,13 @@ host_dispatch_init :: proc(workspace_id: string) {
 	if root_err != "" {
 		root = "" // no state root: fall back to the per-host limit only
 	}
-	host_pane_pool_init(workspace_id, 5, root) // Capacity = concurrency limit
+	host_dispatch_init_at(workspace_id, root)
+}
+
+// Same as host_dispatch_init with an explicit machine-limit root. Production uses the
+// real state root (one limit for the whole machine); tests pass a private one.
+host_dispatch_init_at :: proc(workspace_id, machine_root: string) {
+	host_pane_pool_init(workspace_id, 5, machine_root) // Capacity = concurrency limit
 	host_dispatch_queue = make([dynamic]Queued_Shot, 0, 100, context.allocator)
 }
 

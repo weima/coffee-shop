@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:os"
 import "core:sync"
 import "core:testing"
 
@@ -14,6 +15,21 @@ host_pool_test_unlock :: proc() {
 	sync.mutex_unlock(&host_pool_test_mutex)
 }
 
+// Starts the pool on a private machine-limit root so another process's slots under the
+// real state root can never refuse a test's acquire. Returns the root; pass it to
+// host_pool_test_end after the cleanup. The limit itself is covered by machine_limit_test.odin.
+host_pool_test_init :: proc(workspace_id: string) -> string {
+	root, err := os.make_directory_temp(HOST_TEST_TEMP_DIR, "coffee-shop-pool-*", context.allocator)
+	assert(err == nil, "cannot create the test state root")
+	host_dispatch_init_at(workspace_id, root)
+	return root
+}
+
+host_pool_test_end :: proc(root: string) {
+	os.remove_all(root)
+	delete(root)
+}
+
 // Regression tests for pool integration into host.odin.
 // These test the real wired seams: dispatch queue, pane reclamation, terminal reports.
 
@@ -23,7 +39,8 @@ test_host_dispatch_acquire_queues_at_capacity :: proc(t: ^testing.T) {
 	defer host_pool_test_unlock()
 
 	// Test that dispatch queue works with real pool.
-	host_dispatch_init("ws-host-test")
+	pool_root := host_pool_test_init("ws-host-test")
+	defer host_pool_test_end(pool_root)
 	defer host_dispatch_cleanup("herdr")
 
 	// Acquire up to capacity (default 5).
@@ -48,7 +65,8 @@ test_host_pane_terminal_reclaims :: proc(t: ^testing.T) {
 	defer host_pool_test_unlock()
 
 	// Test that terminal reports trigger pane reclaim.
-	host_dispatch_init("ws-host-test-2")
+	pool_root := host_pool_test_init("ws-host-test-2")
+	defer host_pool_test_end(pool_root)
 	defer host_dispatch_cleanup("herdr")
 
 	// Acquire a pane.
@@ -69,7 +87,8 @@ test_host_pane_pin_unpin_for_input :: proc(t: ^testing.T) {
 	defer host_pool_test_unlock()
 
 	// Test that needs_input pins pane until reply/cancel.
-	host_dispatch_init("ws-host-test-3")
+	pool_root := host_pool_test_init("ws-host-test-3")
+	defer host_pool_test_end(pool_root)
 	defer host_dispatch_cleanup("herdr")
 
 	// Acquire a pane.
@@ -95,7 +114,8 @@ test_host_dispatch_cleanup_releases_owned_state :: proc(t: ^testing.T) {
 	host_pool_test_lock()
 	defer host_pool_test_unlock()
 
-	host_dispatch_init("ws-host-cleanup-test")
+	pool_root := host_pool_test_init("ws-host-cleanup-test")
+	defer host_pool_test_end(pool_root)
 	for i in 0..<5 {
 		shot_id := fmt.aprintf("shot-%d", i)
 		pane, _, _ := host_dispatch_acquire("req-1", shot_id)
