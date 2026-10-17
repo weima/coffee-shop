@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:sync"
 import "core:testing"
 
@@ -143,4 +144,119 @@ test_is_terminal_report_kinds :: proc(t: ^testing.T) {
 	testing.expect(t, is_terminal_report("session_failed"), "session_failed should be terminal")
 	testing.expect(t, !is_terminal_report("needs_input"), "needs_input should not be terminal")
 	testing.expect(t, !is_terminal_report("progress"), "progress should not be terminal")
+}
+
+// One-turn Station fixture: capacity 1, shot-a running (session recorded), shot-b queued,
+// a fake herdr that logs the command it is asked to run, and a private state root.
+Reap_Fixture :: struct {
+	root:      string,
+	fake_dir:  string,
+	old_state: string,
+}
+
+reap_fixture_begin :: proc(t: ^testing.T) -> Reap_Fixture {
+	fx: Reap_Fixture
+	fx.root = host_pool_test_init("ws-reap")
+	fx.fake_dir = fmt.aprintf("%s/fake-herdr", fx.root)
+	_ = os.make_directory_all(fx.fake_dir)
+	herdr := fmt.aprintf("%s/herdr", fx.root)
+	_ = os.write_entire_file(herdr, FAKE_HERDR, os.Permissions{.Read_User, .Write_User, .Execute_User})
+	_ = os.set_env("FAKE_HERDR_DIR", fx.fake_dir)
+	fx.old_state = os.get_env("CS_STATE_DIR", context.allocator)
+	_ = os.set_env("CS_STATE_DIR", fx.root)
+	host_herdr_exe = herdr
+	host_history_root = fmt.aprintf("%s/host", fx.root)
+	_ = os.make_directory_all(host_history_root)
+	host_station_executable = "coffee-shop"
+	host_pane_pool.capacity = 1
+
+	pane, _, ok := host_dispatch_acquire("req-1", "shot-a")
+	testing.expect(t, ok, "shot-a takes the only pane")
+	append(&host_sessions, Host_Session{request_id = strings.clone("req-1"), shot_id = strings.clone("shot-a"), pane_id = pane})
+	_, queued, _ := host_dispatch_acquire("req-1", "shot-b")
+	testing.expect(t, queued, "shot-b queues behind the full pool")
+	host_dispatch_queue_store_metadata("req-1", "shot-b", fx.root, "prompt", "", "", "", "research", "pi", "", "", fx.root)
+	return fx
+}
+
+reap_fixture_end :: proc(fx: Reap_Fixture) {
+	for session in host_sessions {
+		delete(session.request_id)
+		delete(session.shot_id)
+		delete(session.pane_id)
+	}
+	delete(host_sessions)
+	host_sessions = nil
+	delete(host_history_root)
+	host_history_root = ""
+	delete(host_herdr_exe)
+	host_herdr_exe = "herdr"
+	_ = os.set_env("CS_STATE_DIR", fx.old_state)
+	delete(fx.old_state)
+	delete(fx.fake_dir)
+	_ = host_dispatch_cleanup("herdr")
+	free_all(context.temp_allocator)
+	host_pool_test_end(fx.root)
+}
+
+// What a one-turn Shot reports in the gate run: no terminal kind.
+reap_relay_one_turn :: proc(shot_id: string) {
+	for kind in ([]string{"turn_done", "usage", "agent_exited"}) {
+		host_relay_message(Activity_Message{brew_id = "req-1", shot_id = shot_id, kind = kind, description = "x"})
+	}
+}
+
+@(test)
+test_one_turn_exit_without_terminal_report_leaves_the_queue_stuck :: proc(t: ^testing.T) {
+	host_pool_test_lock()
+	defer host_pool_test_unlock()
+	fx := reap_fixture_begin(t)
+	defer reap_fixture_end(fx)
+
+	// Reproduction of the gate run: the reports arrive, the relay alone frees nothing.
+	reap_relay_one_turn("shot-a")
+	queued_count, _ := host_dispatch_queue_status()
+	testing.expect_value(t, queued_count, 1)
+	testing.expect_value(t, host_pane_in_use_count(), 1)
+}
+
+@(test)
+test_station_gone_after_agent_exited_releases_slot_and_starts_queued_shot :: proc(t: ^testing.T) {
+	host_pool_test_lock()
+	defer host_pool_test_unlock()
+	fx := reap_fixture_begin(t)
+	defer reap_fixture_end(fx)
+	reap_relay_one_turn("shot-a")
+
+	// Still running its Taste: nothing is released.
+	live := []Process_Command{{pid = 7, args = {"coffee-shop", "station", "--station", "shot-a", "--brew", "req-1"}}}
+	testing.expect_value(t, host_reap_gone_sessions(live), 0)
+	testing.expect_value(t, host_pane_in_use_count(), 1)
+
+	// The process is gone and no terminal report came: the slot is released and shot-b starts.
+	testing.expect_value(t, host_reap_gone_sessions(nil), 1)
+	queued_count, _ := host_dispatch_queue_status()
+	testing.expect_value(t, queued_count, 0)
+	testing.expect_value(t, len(host_sessions), 1)
+	if len(host_sessions) == 1 {
+		testing.expect_value(t, host_sessions[0].shot_id, "shot-b")
+	}
+	testing.expect_value(t, host_pane_in_use_count(), 1)
+	// The fake herdr records a pid file only when asked to run the Station command.
+	testing.expect(t, os.exists(fmt.tprintf("%s/pid-p0", fx.fake_dir)), "shot-b's Station command was run")
+}
+
+@(test)
+test_pinned_station_is_not_reaped_when_its_process_is_gone :: proc(t: ^testing.T) {
+	host_pool_test_lock()
+	defer host_pool_test_unlock()
+	fx := reap_fixture_begin(t)
+	defer reap_fixture_end(fx)
+	reap_relay_one_turn("shot-a")
+	host_relay_message(Activity_Message{brew_id = "req-1", shot_id = "shot-a", kind = "needs_input", description = "?"})
+
+	testing.expect_value(t, host_reap_gone_sessions(nil), 0)
+	queued_count, _ := host_dispatch_queue_status()
+	testing.expect_value(t, queued_count, 1)
+	testing.expect(t, host_pane_is_pinned(host_sessions[0].pane_id), "the pane stays pinned")
 }

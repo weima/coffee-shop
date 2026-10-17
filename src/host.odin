@@ -28,6 +28,7 @@ HOST_LOOP_POLL_MS :: 20
 
 // Set once by run_host and read by dispatch when it launches Station panes.
 host_report_socket: string
+host_herdr_exe := "herdr" // tests point this at a fake
 host_station_executable: string
 host_extension_path: string
 host_oreo_extension_path: string
@@ -42,6 +43,7 @@ Host_Session :: struct {
 	request_id: string,
 	shot_id:    string,
 	pane_id:    string,
+	exited:     bool, // agent_exited was reported; the Station may still run its Taste
 }
 host_sessions: [dynamic]Host_Session
 
@@ -236,6 +238,9 @@ host_relay_pending :: proc(listener: ^Activity_Listener) {
 		case .Unavailable:
 			// Check for stale and needs_input after processing all available messages.
 			_ = progress_supervision_check_and_emit()
+			if host_any_session_exited() {
+				_ = host_reap_gone_sessions(default_process_commands())
+			}
 			return
 		case .Malformed:
 		case .Failed:
@@ -282,50 +287,15 @@ host_relay_message :: proc(message: Activity_Message) {
 		}
 
 	case "process_gone":
-		// Process unexpectedly exited. Reclaim pane immediately.
-		pane_id := ""
+		host_release_session(message.brew_id, message.shot_id, message.kind)
+
+	case "agent_exited":
+		// Not terminal: a Taste may still report. host_reap_gone_sessions releases the
+		// pane if the Station then exits without a terminal report.
 		for i in 0..<len(host_sessions) {
 			if host_sessions[i].request_id == message.brew_id && host_sessions[i].shot_id == message.shot_id {
-				delete(host_sessions[i].request_id)
-				delete(host_sessions[i].shot_id)
-				pane_id = strings.clone(host_sessions[i].pane_id, context.temp_allocator)
-				delete(host_sessions[i].pane_id)
-				unordered_remove(&host_sessions, i)
+				host_sessions[i].exited = true
 				break
-			}
-		}
-
-		if pane_id != "" {
-			// Mark reclaimable and make report durable.
-			host_pane_mark_terminal(pane_id)
-			state_root, _ := default_state_root(context.temp_allocator)
-			_, _ = host_report_make_durable(state_root, message.brew_id, message.shot_id, message.kind)
-
-			// Clear pane (ANSI reset sequences).
-			if !pane_prepare_for_reuse("herdr", host_pane_pool.workspace_id, pane_id) {
-				when ODIN_DEBUG {
-					log.warnf("host_relay_message: pane clear failed for %s", pane_id)
-				}
-			}
-
-			// Reclaim pane (mark FREE).
-			if !host_pane_reclaim(pane_id) {
-				when ODIN_DEBUG {
-					log.warnf("host_relay_message: pane reclaim failed for %s", pane_id)
-				}
-			}
-
-			// Dequeue and auto-retry waiting Shots.
-			dequeued := host_dispatch_dequeue()
-			defer delete(dequeued)
-			if len(dequeued) > 0 {
-				state_root_inner, _ := default_state_root(context.temp_allocator)
-				host_retry_dequeued_shots(dequeued, state_root_inner)
-			}
-			for pair in dequeued {
-				req_id := pair[0]
-				shot := pair[1]
-				host_emit(Host_Event{type = "dispatch_dequeued", request_id = req_id, shot_id = shot})
 			}
 		}
 
@@ -360,55 +330,91 @@ host_relay_message :: proc(message: Activity_Message) {
 		}
 
 	case "pulled", "taste_failed", "incomplete", "session_failed":
-		// Terminal report: reclaim pane, clear it, dequeue waiting Shots.
-		pane_id := ""
-		for i in 0..<len(host_sessions) {
-			if host_sessions[i].request_id == message.brew_id && host_sessions[i].shot_id == message.shot_id {
-				// Remove session record.
-				delete(host_sessions[i].request_id)
-				delete(host_sessions[i].shot_id)
-				pane_id = strings.clone(host_sessions[i].pane_id, context.temp_allocator)
-				delete(host_sessions[i].pane_id)
-				unordered_remove(&host_sessions, i)
-				break
-			}
-		}
+		host_release_session(message.brew_id, message.shot_id, message.kind)
+	}
+}
 
-		if pane_id != "" {
-			// Mark reclaimable and make report durable.
-			host_pane_mark_terminal(pane_id)
-			state_root, _ := default_state_root(context.temp_allocator)
-			_, _ = host_report_make_durable(state_root, message.brew_id, message.shot_id, message.kind)
-
-			// Clear pane (ANSI reset sequences).
-			if !pane_prepare_for_reuse("herdr", host_pane_pool.workspace_id, pane_id) {
-				when ODIN_DEBUG {
-					log.warnf("host_relay_message: pane clear failed for %s", pane_id)
-				}
-			}
-
-			// Reclaim pane (mark FREE).
-			if !host_pane_reclaim(pane_id) {
-				when ODIN_DEBUG {
-					log.warnf("host_relay_message: pane reclaim failed for %s", pane_id)
-				}
-			}
-
-			// Dequeue and auto-retry waiting Shots.
-			dequeued := host_dispatch_dequeue()
-			defer delete(dequeued)
-			if len(dequeued) > 0 {
-				// Auto-retry dequeued Shots (they have acquired panes from pool).
-				state_root, _ := default_state_root(context.temp_allocator)
-				host_retry_dequeued_shots(dequeued, state_root)
-			}
-			for pair in dequeued {
-				req_id := pair[0]
-				shot := pair[1]
-				host_emit(Host_Event{type = "dispatch_dequeued", request_id = req_id, shot_id = shot})
-			}
+// Ends a Shot's session: frees its pane and machine slot, then starts queued Shots.
+// Used by a terminal report, process_gone, and a Station found gone with no report.
+host_release_session :: proc(request_id, shot_id, kind: string) {
+	pane_id := ""
+	for i in 0..<len(host_sessions) {
+		if host_sessions[i].request_id == request_id && host_sessions[i].shot_id == shot_id {
+			delete(host_sessions[i].request_id)
+			delete(host_sessions[i].shot_id)
+			pane_id = strings.clone(host_sessions[i].pane_id, context.temp_allocator)
+			delete(host_sessions[i].pane_id)
+			unordered_remove(&host_sessions, i)
+			break
 		}
 	}
+	if pane_id == "" {
+		return
+	}
+	progress_supervision_finish(request_id, shot_id)
+	host_pane_mark_terminal(pane_id)
+	state_root, _ := default_state_root(context.temp_allocator)
+	_, _ = host_report_make_durable(state_root, request_id, shot_id, kind)
+	if !pane_prepare_for_reuse(host_herdr_exe, host_pane_pool.workspace_id, pane_id) {
+		when ODIN_DEBUG {
+			log.warnf("host_release_session: pane clear failed for %s", pane_id)
+		}
+	}
+	if !host_pane_reclaim(pane_id) {
+		when ODIN_DEBUG {
+			log.warnf("host_release_session: pane reclaim failed for %s", pane_id)
+		}
+	}
+	dequeued := host_dispatch_dequeue_shots()
+	defer delete(dequeued)
+	host_retry_dequeued_shots(dequeued[:], state_root)
+	for shot in dequeued {
+		host_dispatch_queued_shot_destroy(shot)
+	}
+}
+
+// A Station that reported agent_exited and whose process is gone, with no terminal
+// report, will never report again: release it. A pinned (needs_input) pane is never
+// released here; only a reply or cancel unpins it.
+host_reap_gone_sessions :: proc(commands: []Process_Command) -> int {
+	gone := make([dynamic][2]string, 0, 4, context.temp_allocator)
+	for session in host_sessions {
+		if !session.exited || host_pane_is_pinned(session.pane_id) {
+			continue
+		}
+		if host_station_is_live(commands, session.request_id, session.shot_id) {
+			continue
+		}
+		append(&gone, [2]string{strings.clone(session.request_id, context.temp_allocator), strings.clone(session.shot_id, context.temp_allocator)})
+	}
+	for pair in gone {
+		host_release_session(pair[0], pair[1], "agent_exited")
+	}
+	return len(gone)
+}
+
+// Process liveness comes from pr.odin's process enumeration (--brew/--station argv).
+host_station_is_live :: proc(commands: []Process_Command, request_id, shot_id: string) -> bool {
+	for station in live_stations(commands, request_id) {
+		if station.shot_id == shot_id {
+			return true
+		}
+	}
+	return false
+}
+
+host_pane_is_pinned :: proc(pane_id: string) -> bool {
+	idx, found := pane_pool_find(&host_pane_pool, pane_id)
+	return found && host_pane_pool.panes[idx].state == .WAITING_FOR_HUMAN
+}
+
+host_any_session_exited :: proc() -> bool {
+	for session in host_sessions {
+		if session.exited {
+			return true
+		}
+	}
+	return false
 }
 
 // Relays every report a Station spooled that no host relayed, oldest first. It runs
@@ -1372,42 +1378,13 @@ is_terminal_report :: proc(kind: string) -> bool {
 
 // Auto-retry queued Shots when a pane is reclaimed.
 // Called from host_relay_message after dequeue, before emit.
-host_retry_dequeued_shots :: proc(dequeued: [dynamic][2]string, state_root: string) {
-	if len(dequeued) == 0 {
-		return
-	}
-
-	herdr := "herdr"
-	for pair in dequeued {
-		req_id := pair[0]
-		shot_id := pair[1]
-
-		// Find queued Shot metadata.
-		queued_shot: Queued_Shot
-		found := false
-		for i in 0..<len(host_dispatch_queue) {
-			if host_dispatch_queue[i].request_id == req_id && host_dispatch_queue[i].shot_id == shot_id {
-				queued_shot = host_dispatch_queue[i]
-				found = true
-				break
-			}
-		}
-		if !found {
-			when ODIN_DEBUG {
-				log.warnf("host_retry_dequeued_shots: no metadata for %s/%s", req_id, shot_id)
-			}
-			continue
-		}
-
-		// Re-launch the queued Shot (pane already acquired during dequeue).
-		pane_id, pool_ok := host_pane_acquire(req_id, shot_id)
-		if !pool_ok {
-			// Should not happen; dequeue already acquired.
-			when ODIN_DEBUG {
-				log.warnf("host_retry_dequeued_shots: re-acquire failed for %s", shot_id)
-			}
-			continue
-		}
+host_retry_dequeued_shots :: proc(dequeued: []Queued_Shot, state_root: string) {
+	herdr := host_herdr_exe
+	for queued_shot in dequeued {
+		req_id := queued_shot.request_id
+		shot_id := queued_shot.shot_id
+		pane_id := queued_shot.pane_id
+		host_emit(Host_Event{type = "dispatch_dequeued", request_id = req_id, shot_id = shot_id})
 
 		// Open pane (workspace tab).
 		pane_from_herdr, pane_err := host_open_shot_pane(herdr, state_root, queued_shot.repo, req_id, shot_id, queued_shot.station_path)
@@ -1459,7 +1436,7 @@ host_retry_dequeued_shots :: proc(dequeued: [dynamic][2]string, state_root: stri
 
 		// Record session with pool pane.
 		append(&host_sessions, Host_Session{request_id = strings.clone(req_id), shot_id = strings.clone(shot_id), pane_id = strings.clone(pane_id)})
-		host_emit(Host_Event{type = "session_started", request_id = req_id, shot_id = shot_id, pane_id = pane_id})
+		host_emit(Host_Event{type = "session_started", request_id = req_id, shot_id = shot_id, pane_id = pane_from_herdr})
 
 		when ODIN_DEBUG {
 			log.infof("host_retry_dequeued_shots: relaunched %s/%s from queue", req_id, shot_id)

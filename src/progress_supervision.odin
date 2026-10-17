@@ -105,6 +105,13 @@ progress_supervision_record_report :: proc(request_id, shot_id, report_kind: str
 	progress_ledger_report(&progress_ledger_global, request_id, shot_id, report_kind)
 }
 
+// Mark a Station done once the host has released its pane.
+progress_supervision_finish :: proc(request_id, shot_id: string) {
+	sync.mutex_lock(&progress_ledger_mutex)
+	defer sync.mutex_unlock(&progress_ledger_mutex)
+	progress_ledger_finish(&progress_ledger_global, request_id, shot_id)
+}
+
 // Check all active Stations for staleness and needs_input, emitting Host_Events
 // for any new conditions. Called from the relay thread on each iteration.
 // Returns the number of events emitted (for testing).

@@ -116,6 +116,16 @@ progress_ledger_report :: proc(
 	}
 }
 
+// Mark a Station done: its pane was released, so it can no longer go stale.
+progress_ledger_finish :: proc(ledger: ^Progress_Ledger, request_id, shot_id: string) {
+	key := progress_station_key(request_id, shot_id)
+	if station, ok := ledger.stations[key]; ok {
+		station.terminal = true
+		station.phase = "done"
+		ledger.stations[key] = station
+	}
+}
+
 // Check if a Station is stale (no progress for STALE_THRESHOLD) and has not
 // yet had a stale warning emitted. Returns true if this is the first time the
 // Station crossed the stale threshold.
