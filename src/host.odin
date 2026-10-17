@@ -11,6 +11,7 @@ import "core:path/filepath"
 import "core:slice"
 import "core:strings"
 import "core:sys/posix"
+import "core:time"
 
 HOST_PROTOCOL :: 1
 
@@ -201,6 +202,7 @@ host_loop :: proc(listener: ^Activity_Listener) {
 		// Reports arrive on accepted clients, which poll on the listener cannot
 		// signal, so drain every turn instead of only on a new connection.
 		host_relay_pending(listener)
+		host_sample_sessions_throttled()
 
 		if fds[0].revents == {} {
 			continue
@@ -334,10 +336,45 @@ host_relay_message :: proc(message: Activity_Message) {
 	}
 }
 
+HOST_SAMPLE_INTERVAL :: 2 * time.Second
+host_last_sample: time.Tick
+
+// Instrumentation only: samples every live session at most once per interval, so
+// the recorded value is a peak over the Station's life.
+host_sample_sessions_throttled :: proc() {
+	if len(host_sessions) == 0 || time.tick_since(host_last_sample) < HOST_SAMPLE_INTERVAL {
+		return
+	}
+	host_last_sample = time.tick_now()
+	for session in host_sessions {
+		host_sample_session(session)
+	}
+}
+
+// Finds the Station's pid from its pane and folds one reading into
+// <state>/host/<request>/workers/<shot>.resource. An unidentified Station adds nothing.
+host_sample_session :: proc(session: Host_Session) {
+	identity := host_pane_identity(host_herdr_exe, session.pane_id)
+	if identity.pid <= 0 {
+		return
+	}
+	state_root, err := default_state_root(context.temp_allocator)
+	if err != "" {
+		return
+	}
+	record_host_resource_use(state_root, session.request_id, session.shot_id, identity.pid)
+}
+
 // Ends a Shot's session: frees its pane and machine slot, then starts queued Shots.
 // Used by a terminal report, process_gone, and a Station found gone with no report.
 host_release_session :: proc(request_id, shot_id, kind: string) {
 	pane_id := ""
+	for session in host_sessions {
+		if session.request_id == request_id && session.shot_id == shot_id {
+			host_sample_session(session) // last look before the pane is reclaimed
+			break
+		}
+	}
 	for i in 0..<len(host_sessions) {
 		if host_sessions[i].request_id == request_id && host_sessions[i].shot_id == shot_id {
 			delete(host_sessions[i].request_id)
@@ -998,6 +1035,7 @@ host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models
 		host_emit(Host_Event{type = "session_started", request_id = request_id, shot_id = id, pane_id = pane_id})
 		// Track in progress ledger.
 		progress_supervision_add_station(request_id, id, pane_id)
+		host_sample_session(host_sessions[len(host_sessions) - 1])
 	}
 }
 
