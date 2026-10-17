@@ -5,11 +5,13 @@ import "core:crypto/hash"
 import "core:encoding/hex"
 import "core:encoding/json"
 import "core:fmt"
+import "core:log"
 import "core:os"
 import "core:path/filepath"
 import "core:slice"
 import "core:strings"
 import "core:sys/posix"
+import "core:time"
 
 HOST_PROTOCOL :: 1
 
@@ -27,6 +29,7 @@ HOST_LOOP_POLL_MS :: 20
 
 // Set once by run_host and read by dispatch when it launches Station panes.
 host_report_socket: string
+host_herdr_exe := "herdr" // tests point this at a fake
 host_station_executable: string
 host_extension_path: string
 host_oreo_extension_path: string
@@ -41,6 +44,7 @@ Host_Session :: struct {
 	request_id: string,
 	shot_id:    string,
 	pane_id:    string,
+	exited:     bool, // agent_exited was reported; the Station may still run its Taste
 }
 host_sessions: [dynamic]Host_Session
 
@@ -198,6 +202,7 @@ host_loop :: proc(listener: ^Activity_Listener) {
 		// Reports arrive on accepted clients, which poll on the listener cannot
 		// signal, so drain every turn instead of only on a new connection.
 		host_relay_pending(listener)
+		host_sample_sessions_throttled()
 
 		if fds[0].revents == {} {
 			continue
@@ -235,6 +240,9 @@ host_relay_pending :: proc(listener: ^Activity_Listener) {
 		case .Unavailable:
 			// Check for stale and needs_input after processing all available messages.
 			_ = progress_supervision_check_and_emit()
+			if host_any_session_exited() {
+				_ = host_reap_gone_sessions(default_process_commands())
+			}
 			return
 		case .Malformed:
 		case .Failed:
@@ -281,50 +289,15 @@ host_relay_message :: proc(message: Activity_Message) {
 		}
 
 	case "process_gone":
-		// Process unexpectedly exited. Reclaim pane immediately.
-		pane_id := ""
+		host_release_session(message.brew_id, message.shot_id, message.kind)
+
+	case "agent_exited":
+		// Not terminal: a Taste may still report. host_reap_gone_sessions releases the
+		// pane if the Station then exits without a terminal report.
 		for i in 0..<len(host_sessions) {
 			if host_sessions[i].request_id == message.brew_id && host_sessions[i].shot_id == message.shot_id {
-				delete(host_sessions[i].request_id)
-				delete(host_sessions[i].shot_id)
-				pane_id = strings.clone(host_sessions[i].pane_id, context.temp_allocator)
-				delete(host_sessions[i].pane_id)
-				unordered_remove(&host_sessions, i)
+				host_sessions[i].exited = true
 				break
-			}
-		}
-
-		if pane_id != "" {
-			// Mark reclaimable and make report durable.
-			host_pane_mark_terminal(pane_id)
-			state_root, _ := default_state_root(context.temp_allocator)
-			_, _ = host_report_make_durable(state_root, message.brew_id, message.shot_id, message.kind)
-
-			// Clear pane (ANSI reset sequences).
-			if !pane_prepare_for_reuse("herdr", host_pane_pool.workspace_id, pane_id) {
-				when ODIN_DEBUG {
-					log.warnf("host_relay_message: pane clear failed for %s", pane_id)
-				}
-			}
-
-			// Reclaim pane (mark FREE).
-			if !host_pane_reclaim(pane_id) {
-				when ODIN_DEBUG {
-					log.warnf("host_relay_message: pane reclaim failed for %s", pane_id)
-				}
-			}
-
-			// Dequeue and auto-retry waiting Shots.
-			dequeued := host_dispatch_dequeue()
-			defer delete(dequeued)
-			if len(dequeued) > 0 {
-				state_root_inner, _ := default_state_root(context.temp_allocator)
-				host_retry_dequeued_shots(dequeued, state_root_inner)
-			}
-			for pair in dequeued {
-				req_id := pair[0]
-				shot := pair[1]
-				host_emit(Host_Event{type = "dispatch_dequeued", request_id = req_id, shot_id = shot})
 			}
 		}
 
@@ -359,55 +332,126 @@ host_relay_message :: proc(message: Activity_Message) {
 		}
 
 	case "pulled", "taste_failed", "incomplete", "session_failed":
-		// Terminal report: reclaim pane, clear it, dequeue waiting Shots.
-		pane_id := ""
-		for i in 0..<len(host_sessions) {
-			if host_sessions[i].request_id == message.brew_id && host_sessions[i].shot_id == message.shot_id {
-				// Remove session record.
-				delete(host_sessions[i].request_id)
-				delete(host_sessions[i].shot_id)
-				pane_id = strings.clone(host_sessions[i].pane_id, context.temp_allocator)
-				delete(host_sessions[i].pane_id)
-				unordered_remove(&host_sessions, i)
-				break
-			}
-		}
+		host_release_session(message.brew_id, message.shot_id, message.kind)
+	}
+}
 
-		if pane_id != "" {
-			// Mark reclaimable and make report durable.
-			host_pane_mark_terminal(pane_id)
-			state_root, _ := default_state_root(context.temp_allocator)
-			_, _ = host_report_make_durable(state_root, message.brew_id, message.shot_id, message.kind)
+HOST_SAMPLE_INTERVAL :: 2 * time.Second
+host_last_sample: time.Tick
 
-			// Clear pane (ANSI reset sequences).
-			if !pane_prepare_for_reuse("herdr", host_pane_pool.workspace_id, pane_id) {
-				when ODIN_DEBUG {
-					log.warnf("host_relay_message: pane clear failed for %s", pane_id)
-				}
-			}
+// Instrumentation only: samples every live session at most once per interval, so
+// the recorded value is a peak over the Station's life.
+host_sample_sessions_throttled :: proc() {
+	if len(host_sessions) == 0 || time.tick_since(host_last_sample) < HOST_SAMPLE_INTERVAL {
+		return
+	}
+	host_last_sample = time.tick_now()
+	for session in host_sessions {
+		host_sample_session(session)
+	}
+}
 
-			// Reclaim pane (mark FREE).
-			if !host_pane_reclaim(pane_id) {
-				when ODIN_DEBUG {
-					log.warnf("host_relay_message: pane reclaim failed for %s", pane_id)
-				}
-			}
+// Finds the Station's pid from its pane and folds one reading into
+// <state>/host/<request>/workers/<shot>.resource. An unidentified Station adds nothing.
+host_sample_session :: proc(session: Host_Session) {
+	identity := host_pane_identity(host_herdr_exe, session.pane_id)
+	if identity.pid <= 0 {
+		return
+	}
+	state_root, err := default_state_root(context.temp_allocator)
+	if err != "" {
+		return
+	}
+	record_host_resource_use(state_root, session.request_id, session.shot_id, identity.pid)
+}
 
-			// Dequeue and auto-retry waiting Shots.
-			dequeued := host_dispatch_dequeue()
-			defer delete(dequeued)
-			if len(dequeued) > 0 {
-				// Auto-retry dequeued Shots (they have acquired panes from pool).
-				state_root, _ := default_state_root(context.temp_allocator)
-				host_retry_dequeued_shots(dequeued, state_root)
-			}
-			for pair in dequeued {
-				req_id := pair[0]
-				shot := pair[1]
-				host_emit(Host_Event{type = "dispatch_dequeued", request_id = req_id, shot_id = shot})
-			}
+// Ends a Shot's session: frees its pane and machine slot, then starts queued Shots.
+// Used by a terminal report, process_gone, and a Station found gone with no report.
+host_release_session :: proc(request_id, shot_id, kind: string) {
+	pane_id := ""
+	for session in host_sessions {
+		if session.request_id == request_id && session.shot_id == shot_id {
+			host_sample_session(session) // last look before the pane is reclaimed
+			break
 		}
 	}
+	for i in 0..<len(host_sessions) {
+		if host_sessions[i].request_id == request_id && host_sessions[i].shot_id == shot_id {
+			delete(host_sessions[i].request_id)
+			delete(host_sessions[i].shot_id)
+			pane_id = strings.clone(host_sessions[i].pane_id, context.temp_allocator)
+			delete(host_sessions[i].pane_id)
+			unordered_remove(&host_sessions, i)
+			break
+		}
+	}
+	if pane_id == "" {
+		return
+	}
+	progress_supervision_finish(request_id, shot_id)
+	host_pane_mark_terminal(pane_id)
+	state_root, _ := default_state_root(context.temp_allocator)
+	_, _ = host_report_make_durable(state_root, request_id, shot_id, kind)
+	if !pane_prepare_for_reuse(host_herdr_exe, host_pane_pool.workspace_id, pane_id) {
+		when ODIN_DEBUG {
+			log.warnf("host_release_session: pane clear failed for %s", pane_id)
+		}
+	}
+	if !host_pane_reclaim(pane_id) {
+		when ODIN_DEBUG {
+			log.warnf("host_release_session: pane reclaim failed for %s", pane_id)
+		}
+	}
+	dequeued := host_dispatch_dequeue_shots()
+	defer delete(dequeued)
+	host_retry_dequeued_shots(dequeued[:], state_root)
+	for shot in dequeued {
+		host_dispatch_queued_shot_destroy(shot)
+	}
+}
+
+// A Station that reported agent_exited and whose process is gone, with no terminal
+// report, will never report again: release it. A pinned (needs_input) pane is never
+// released here; only a reply or cancel unpins it.
+host_reap_gone_sessions :: proc(commands: []Process_Command) -> int {
+	gone := make([dynamic][2]string, 0, 4, context.temp_allocator)
+	for session in host_sessions {
+		if !session.exited || host_pane_is_pinned(session.pane_id) {
+			continue
+		}
+		if host_station_is_live(commands, session.request_id, session.shot_id) {
+			continue
+		}
+		append(&gone, [2]string{strings.clone(session.request_id, context.temp_allocator), strings.clone(session.shot_id, context.temp_allocator)})
+	}
+	for pair in gone {
+		host_release_session(pair[0], pair[1], "agent_exited")
+	}
+	return len(gone)
+}
+
+// Process liveness comes from pr.odin's process enumeration (--brew/--station argv).
+host_station_is_live :: proc(commands: []Process_Command, request_id, shot_id: string) -> bool {
+	for station in live_stations(commands, request_id) {
+		if station.shot_id == shot_id {
+			return true
+		}
+	}
+	return false
+}
+
+host_pane_is_pinned :: proc(pane_id: string) -> bool {
+	idx, found := pane_pool_find(&host_pane_pool, pane_id)
+	return found && host_pane_pool.panes[idx].state == .WAITING_FOR_HUMAN
+}
+
+host_any_session_exited :: proc() -> bool {
+	for session in host_sessions {
+		if session.exited {
+			return true
+		}
+	}
+	return false
 }
 
 // Relays every report a Station spooled that no host relayed, oldest first. It runs
@@ -654,6 +698,7 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 	runtimes := make([dynamic]string, context.temp_allocator)
 	tastes := make([dynamic]string, context.temp_allocator)
 	messages := make([dynamic]string, context.temp_allocator)
+	options := make([dynamic]Shot_Options, context.temp_allocator)
 	for shot_value in shots {
 		shot, is_shot := shot_value.(json.Object)
 		id, id_ok := host_string(shot, "id")
@@ -728,6 +773,13 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 			return
 		}
 
+		shot_options, options_reason := host_shot_options(shot)
+		if options_reason != "" {
+			host_emit(Host_Event{type = "error", request_id = request_id, shot_id = id, reason = options_reason})
+			return
+		}
+
+		append(&options, shot_options)
 		append(&ids, id)
 		append(&prompts, prompt)
 		append(&models, model)
@@ -763,7 +815,51 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 	defer host_delete_string_slice(owned_messages)
 
 	host_emit(Host_Event{type = "dispatch_accepted", request_id = owned_request_id})
-	host_start_sessions_owned(owned_repo, owned_request_id, owned_ids, owned_prompts, owned_models, owned_providers, owned_thinkings, owned_kinds, owned_runtimes, owned_tastes, owned_messages)
+	host_start_sessions_owned(owned_repo, owned_request_id, owned_ids, owned_prompts, owned_models, owned_providers, owned_thinkings, owned_kinds, owned_runtimes, owned_tastes, owned_messages, options[:])
+}
+
+// Per-Shot dispatch options. Absent fields keep today's behaviour: not interactive,
+// codemode on. Construct with codemode = true unless the Shot turned it off.
+Shot_Options :: struct {
+	interactive: bool,
+	codemode:    bool,
+}
+
+// Queued Shots live in host_dispatch_queue, which has no options field, so a queued
+// Shot's options wait here until it launches.
+host_queued_options: map[string]Shot_Options
+
+host_queued_options_remember :: proc(request_id, shot_id: string, options: Shot_Options) {
+	host_queued_options[fmt.aprintf("%s/%s", request_id, shot_id)] = options
+}
+
+host_queued_options_take :: proc(request_id, shot_id: string) -> Shot_Options {
+	key := fmt.tprintf("%s/%s", request_id, shot_id)
+	stored_key, options := delete_key(&host_queued_options, key)
+	if stored_key == "" {
+		return Shot_Options{codemode = true}
+	}
+	delete(stored_key)
+	return options
+}
+
+host_shot_options :: proc(shot: json.Object) -> (options: Shot_Options, reason: string) {
+	options.codemode = true
+	if value, found := shot["interactive"]; found {
+		ok := false
+		options.interactive, ok = value.(json.Boolean)
+		if !ok {
+			return {}, "shot interactive must be true or false"
+		}
+	}
+	if value, found := shot["codemode"]; found {
+		ok := false
+		options.codemode, ok = value.(json.Boolean)
+		if !ok {
+			return {}, "shot codemode must be true or false"
+		}
+	}
+	return options, ""
 }
 
 // A Shot with a taste is a Pull: it needs a commit message, and only an execute Shot
@@ -825,7 +921,7 @@ host_delete_string_slice :: proc(values: []string) {
 	delete(values)
 }
 
-host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models, providers, thinkings, kinds, runtimes, tastes, messages: []string) {
+host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models, providers, thinkings, kinds, runtimes, tastes, messages: []string, options: []Shot_Options) {
 	if _, launch_err := child_launch_argv(host_station_executable); launch_err != "" {
 		for id in ids {
 			host_session_failed(request_id, id, launch_err)
@@ -888,6 +984,7 @@ host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models
 			// Pane not available; Shot is queued for retry when pane reclaims.
 			// Store full metadata now for auto-retry.
 			host_dispatch_queue_store_metadata(request_id, id, repo, prompts[i], models[i], providers[i], thinkings[i], kinds[i], runtimes[i], tastes[i], messages[i], station)
+			host_queued_options_remember(request_id, id, options[i])
 			host_emit(Host_Event{type = "dispatch_queued", request_id = request_id, shot_id = id})
 			continue
 		}
@@ -917,7 +1014,7 @@ host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models
 			extension = host_oreo_extension_path
 		}
 		launcher := child_shell_prefix(launch)
-		command := host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, id, request_id, prompt_path, models[i], providers[i], thinkings[i], kinds[i], runtimes[i], tastes[i], messages[i])
+		command := host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, id, request_id, prompt_path, models[i], providers[i], thinkings[i], kinds[i], runtimes[i], tastes[i], messages[i], options[i])
 		if !host_station_command_is_ascii(command) {
 			delete(command)
 			host_pane_mark_terminal(pool_pane_id)
@@ -938,6 +1035,7 @@ host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models
 		host_emit(Host_Event{type = "session_started", request_id = request_id, shot_id = id, pane_id = pane_id})
 		// Track in progress ledger.
 		progress_supervision_add_station(request_id, id, pane_id)
+		host_sample_session(host_sessions[len(host_sessions) - 1])
 	}
 }
 
@@ -1128,7 +1226,7 @@ host_station_command_is_ascii :: proc(command: string) -> bool {
 // to safe characters.
 // A research Shot gets scratch-write tools; the Station then checks that it left the source as it found it.
 // A Pull passes its taste and message to the Station, which commits only if the taste passes.
-host_station_command :: proc(launcher, report, extension, oreo_host, shot_id, request_id, prompt_file, model, provider, thinking, kind, runtime, taste, message: string) -> string {
+host_station_command :: proc(launcher, report, extension, oreo_host, shot_id, request_id, prompt_file, model, provider, thinking, kind, runtime, taste, message: string, options := Shot_Options{codemode = true}) -> string {
 	quoted_report := shell_quote(report)
 	defer delete(quoted_report)
 	quoted_extension := shell_quote(extension)
@@ -1150,9 +1248,15 @@ host_station_command :: proc(launcher, report, extension, oreo_host, shot_id, re
 	tools_argument := ""
 	if kind == SHOT_KIND_RESEARCH {
 		tools_argument = " --tools read,grep,find,ls,write,codemode"
-	} else {
-		// Every execute Shot runs codemode; there is no switch to turn it off.
+	} else if options.codemode {
 		tools_argument = " --tools +codemode"
+	}
+	options_argument := ""
+	if options.interactive {
+		options_argument = " --interactive"
+	}
+	if !options.codemode {
+		options_argument = fmt.tprintf("%s --codemode false", options_argument)
 	}
 	taste_argument := ""
 	if taste != "" {
@@ -1172,9 +1276,9 @@ host_station_command :: proc(launcher, report, extension, oreo_host, shot_id, re
 		defer delete(quoted_model)
 		quoted_thinking := shell_quote(thinking)
 		defer delete(quoted_thinking)
-		command = fmt.aprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- env OREO_HOST=%s OREO_PROVIDER=%s OREO_MODEL=%s OREO_THINKING=%s OREO_SESSION_ID=%s pi --mode rpc --no-tools --no-mcp --no-extensions --model '%s/%s' --thinking %s -e %s", launcher, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, quoted_oreo_host, quoted_provider, quoted_model, quoted_thinking, shot_id, provider, model, thinking, quoted_extension)
+		command = fmt.aprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s%s -- env OREO_HOST=%s OREO_PROVIDER=%s OREO_MODEL=%s OREO_THINKING=%s OREO_SESSION_ID=%s pi --mode rpc --no-tools --no-mcp --no-extensions --model '%s/%s' --thinking %s -e %s", launcher, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, options_argument, quoted_oreo_host, quoted_provider, quoted_model, quoted_thinking, shot_id, provider, model, thinking, quoted_extension)
 	} else {
-		command = fmt.aprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s -- pi --mode rpc%s%s%s -e %s", launcher, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, tools_argument, model_argument, thinking_argument, quoted_extension)
+		command = fmt.aprintf("%s station --kind %s --report %s --station %s --brew %s --prompt-file %s%s%s -- pi --mode rpc%s%s%s -e %s", launcher, kind, quoted_report, shot_id, request_id, quoted_prompt_file, taste_argument, options_argument, tools_argument, model_argument, thinking_argument, quoted_extension)
 	}
 	if model_argument != "" {
 		delete(model_argument)
@@ -1312,42 +1416,13 @@ is_terminal_report :: proc(kind: string) -> bool {
 
 // Auto-retry queued Shots when a pane is reclaimed.
 // Called from host_relay_message after dequeue, before emit.
-host_retry_dequeued_shots :: proc(dequeued: [dynamic][2]string, state_root: string) {
-	if len(dequeued) == 0 {
-		return
-	}
-
-	herdr := "herdr"
-	for pair in dequeued {
-		req_id := pair[0]
-		shot_id := pair[1]
-
-		// Find queued Shot metadata.
-		queued_shot: Queued_Shot
-		found := false
-		for i in 0..<len(host_dispatch_queue) {
-			if host_dispatch_queue[i].request_id == req_id && host_dispatch_queue[i].shot_id == shot_id {
-				queued_shot = host_dispatch_queue[i]
-				found = true
-				break
-			}
-		}
-		if !found {
-			when ODIN_DEBUG {
-				log.warnf("host_retry_dequeued_shots: no metadata for %s/%s", req_id, shot_id)
-			}
-			continue
-		}
-
-		// Re-launch the queued Shot (pane already acquired during dequeue).
-		pane_id, pool_ok := host_pane_acquire(req_id, shot_id)
-		if !pool_ok {
-			// Should not happen; dequeue already acquired.
-			when ODIN_DEBUG {
-				log.warnf("host_retry_dequeued_shots: re-acquire failed for %s", shot_id)
-			}
-			continue
-		}
+host_retry_dequeued_shots :: proc(dequeued: []Queued_Shot, state_root: string) {
+	herdr := host_herdr_exe
+	for queued_shot in dequeued {
+		req_id := queued_shot.request_id
+		shot_id := queued_shot.shot_id
+		pane_id := queued_shot.pane_id
+		host_emit(Host_Event{type = "dispatch_dequeued", request_id = req_id, shot_id = shot_id})
 
 		// Open pane (workspace tab).
 		pane_from_herdr, pane_err := host_open_shot_pane(herdr, state_root, queued_shot.repo, req_id, shot_id, queued_shot.station_path)
@@ -1379,7 +1454,7 @@ host_retry_dequeued_shots :: proc(dequeued: [dynamic][2]string, state_root: stri
 		prompts_dir, _ := filepath.join({state_root, "host", req_id, "prompts"}, context.temp_allocator)
 		prompt_path, _ := filepath.join({prompts_dir, prompt_name}, context.temp_allocator)
 
-		command := host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, shot_id, req_id, prompt_path, queued_shot.model, queued_shot.provider, queued_shot.thinking, queued_shot.kind, queued_shot.runtime, queued_shot.taste, queued_shot.message)
+		command := host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, shot_id, req_id, prompt_path, queued_shot.model, queued_shot.provider, queued_shot.thinking, queued_shot.kind, queued_shot.runtime, queued_shot.taste, queued_shot.message, host_queued_options_take(req_id, shot_id))
 		if !host_station_command_is_ascii(command) {
 			delete(command)
 			host_pane_mark_terminal(pane_id)
@@ -1399,7 +1474,7 @@ host_retry_dequeued_shots :: proc(dequeued: [dynamic][2]string, state_root: stri
 
 		// Record session with pool pane.
 		append(&host_sessions, Host_Session{request_id = strings.clone(req_id), shot_id = strings.clone(shot_id), pane_id = strings.clone(pane_id)})
-		host_emit(Host_Event{type = "session_started", request_id = req_id, shot_id = shot_id, pane_id = pane_id})
+		host_emit(Host_Event{type = "session_started", request_id = req_id, shot_id = shot_id, pane_id = pane_from_herdr})
 
 		when ODIN_DEBUG {
 			log.infof("host_retry_dequeued_shots: relaunched %s/%s from queue", req_id, shot_id)

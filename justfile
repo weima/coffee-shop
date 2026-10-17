@@ -13,3 +13,13 @@ check:
 test:
     sh tests/test-suite-lock.sh
     sh scripts/test-suite.sh
+
+# Five-Station gates 5.8-5.10: see scripts/five-station-gates.md.
+gates-selftest:
+    odin run tools/gates -- selftest
+
+gates-request repo out:
+    odin run tools/gates -- request --repo {{repo}} --out {{out}}
+
+gates-report request events state trace out:
+    odin run tools/gates -- report --request {{request}} --events {{events}} --state-dir {{state}} --trace {{trace}} --out {{out}}

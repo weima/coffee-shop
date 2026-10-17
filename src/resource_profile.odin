@@ -138,6 +138,16 @@ record_resource_use :: proc(directory, shot_id: string, pid: int) {
 	}
 }
 
+// The host's equivalent of a Brew directory: workers/ lives under host/<request>,
+// where tools/gates finds <state>/**/workers/<shot>.resource.
+record_host_resource_use :: proc(state_root, request_id, shot_id: string, pid: int) {
+	directory := state_file_path(state_root, "host", context.temp_allocator)
+	directory = state_file_path(directory, request_id, context.temp_allocator)
+	workers := state_file_path(directory, "workers", context.temp_allocator)
+	_ = os.make_directory_all(workers)
+	record_resource_use(directory, shot_id, pid)
+}
+
 read_resource_record :: proc(path: string) -> (record: Resource_Record, ok: bool) {
 	data, err := os.read_entire_file(path, context.temp_allocator)
 	if err != nil {

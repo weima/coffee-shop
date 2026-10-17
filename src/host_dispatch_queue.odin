@@ -23,6 +23,7 @@ Queued_Shot :: struct {
 	taste:        string,
 	message:      string,
 	station_path: string,  // Worktree path (already created when queued)
+	pane_id:      string,  // Set by dequeue: the pool pane this Shot now holds
 }
 
 // Global dispatch queue.
@@ -43,6 +44,7 @@ host_dispatch_queued_shot_destroy :: proc(shot: Queued_Shot) {
 	delete(shot.taste)
 	delete(shot.message)
 	delete(shot.station_path)
+	delete(shot.pane_id)
 }
 
 host_dispatch_init :: proc(workspace_id: string) {
@@ -50,7 +52,13 @@ host_dispatch_init :: proc(workspace_id: string) {
 	if root_err != "" {
 		root = "" // no state root: fall back to the per-host limit only
 	}
-	host_pane_pool_init(workspace_id, 5, root) // Capacity = concurrency limit
+	host_dispatch_init_at(workspace_id, root)
+}
+
+// Same as host_dispatch_init with an explicit machine-limit root. Production uses the
+// real state root (one limit for the whole machine); tests pass a private one.
+host_dispatch_init_at :: proc(workspace_id, machine_root: string) {
+	host_pane_pool_init(workspace_id, 5, machine_root) // Capacity = concurrency limit
 	host_dispatch_queue = make([dynamic]Queued_Shot, 0, 100, context.allocator)
 }
 
@@ -118,36 +126,38 @@ host_dispatch_queue_store_metadata :: proc(request_id, shot_id, repo, prompt, mo
 	}
 }
 
-// After a pane is reclaimed, try to launch queued Shots.
-// This is called whenever a terminal report arrives or a process exits.
-// Returns a list of (request_id, shot_id) pairs that were dequeued and can launch.
-host_dispatch_dequeue :: proc() -> [dynamic][2]string {
-	result := make([dynamic][2]string, 0, 5, context.temp_allocator)
-
-	for i := 0; i < len(host_dispatch_queue); {
-		queued := host_dispatch_queue[i]
-
-		// Try to acquire a pane for this queued Shot.
+// After a pane is reclaimed, take every queued Shot that now fits. Ownership of each
+// returned Queued_Shot (its metadata and held pane_id) passes to the caller.
+host_dispatch_dequeue_shots :: proc() -> [dynamic]Queued_Shot {
+	result := make([dynamic]Queued_Shot, 0, 5, context.allocator)
+	for len(host_dispatch_queue) > 0 {
+		queued := host_dispatch_queue[0]
 		pane_id, ok := host_pane_acquire(queued.request_id, queued.shot_id)
 		if !ok {
-			// Still no pane available. Leave it queued and stop.
-			break
+			break // still no pane (or machine slot): leave it queued
 		}
-
-		// Acquired! Return allocator-owned identifiers before releasing the queue entry.
-		append(&result, [2]string{
-			strings.clone(queued.request_id, context.temp_allocator),
-			strings.clone(queued.shot_id, context.temp_allocator),
-		})
-		delete(pane_id)
-		host_dispatch_queued_shot_destroy(queued)
-		unordered_remove(&host_dispatch_queue, i)
-
+		queued.pane_id = pane_id
+		append(&result, queued)
+		ordered_remove(&host_dispatch_queue, 0)
 		when ODIN_DEBUG {
 			log.debugf("dequeued shot %s (request %s) for pane %s, queue depth %d", queued.shot_id, queued.request_id, pane_id, len(host_dispatch_queue))
 		}
 	}
+	return result
+}
 
+// Same, returning only (request_id, shot_id) pairs; the Shots are released.
+host_dispatch_dequeue :: proc() -> [dynamic][2]string {
+	result := make([dynamic][2]string, 0, 5, context.temp_allocator)
+	shots := host_dispatch_dequeue_shots()
+	defer delete(shots)
+	for shot in shots {
+		append(&result, [2]string{
+			strings.clone(shot.request_id, context.temp_allocator),
+			strings.clone(shot.shot_id, context.temp_allocator),
+		})
+		host_dispatch_queued_shot_destroy(shot)
+	}
 	return result
 }
 

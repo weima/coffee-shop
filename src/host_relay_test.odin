@@ -609,7 +609,7 @@ test_host_terminal_report_frees_only_owned_strings :: proc(t: ^testing.T) {
 		host_history_root = ""
 	}
 
-	host_dispatch_init("ws-terminal")
+	host_dispatch_init_at("ws-terminal", root)
 	defer host_dispatch_cleanup(fake)
 	defer {
 		for s in host_sessions {

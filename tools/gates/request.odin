@@ -1,0 +1,62 @@
+package main
+
+import "core:encoding/json"
+import "core:fmt"
+import "core:os"
+import "core:strings"
+
+DEFAULT_PROMPT :: "Read README.md, then run `sleep 90`, then report done."
+
+Shot :: struct {
+	id:     string,
+	prompt: string,
+	kind:   string,
+}
+
+Recipe :: struct {
+	shots: []Shot,
+}
+
+Request :: struct {
+	type:       string,
+	request_id: string,
+	repo:       string,
+	recipe:     Recipe,
+}
+
+RequestArgs :: struct {
+	repo, out, request_id, prompt: string,
+	shots: int,
+}
+
+shot_ids :: proc(n: int) -> []string {
+	ids := make([]string, n)
+	for i in 0 ..< n {
+		ids[i] = fmt.aprintf("gate-s%d", i + 1)
+	}
+	return ids
+}
+
+write_request :: proc(a: RequestArgs) -> string {
+	abs, aerr := os.get_absolute_path(a.repo, context.allocator)
+	if aerr != nil {
+		return tprint("bad --repo `%s`: %v", a.repo, aerr)
+	}
+	ids := shot_ids(a.shots)
+	shots := make([]Shot, len(ids))
+	for id, i in ids {
+		shots[i] = {id, a.prompt, "research"}
+	}
+	req := Request{"dispatch", a.request_id, abs, {shots}}
+	data, merr := json.marshal(req)
+	if merr != nil {
+		return tprint("cannot encode request: %v", merr)
+	}
+	// One JSON request per line (host.odin:73).
+	line := strings.concatenate({string(data), "\n"})
+	if werr := os.write_entire_file(a.out, line); werr != nil {
+		return tprint("cannot write `%s`: %v", a.out, werr)
+	}
+	fmt.printfln("wrote %s: %d shots %s..%s", a.out, a.shots, ids[0], ids[len(ids) - 1])
+	return ""
+}

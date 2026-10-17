@@ -50,3 +50,36 @@ resource_record_keeps_start_and_peak :: proc(t: ^testing.T) {
 		testing.expect_value(t, record.samples, i + 1)
 	}
 }
+
+@(test)
+host_station_record_lands_where_gates_look :: proc(t: ^testing.T) {
+	root, _ := os.make_directory_temp("", "cs-hostres", context.temp_allocator)
+	defer os.remove_all(root)
+	record_host_resource_use(root, "req-1", "shot-1", int(os.get_pid()))
+	path := resource_path(state_file_path(root, "host/req-1", context.temp_allocator), "shot-1")
+	defer delete(path)
+	record, ok := read_resource_record(path)
+	testing.expect(t, ok, "record must exist under <state>/host/<request>/workers/<shot>.resource")
+	testing.expect(t, record.station_peak.rss.known && record.station_peak.rss.value > 0, "resident size must be non-zero")
+	testing.expect(t, record.station_peak.fds.known && record.station_peak.fds.value >= 3 && record.station_peak.fds.value < 1_000_000, "descriptor count must be plausible")
+	testing.expect(t, record.station_peak.children.known, "child count must be recorded")
+	when ODIN_OS == .Darwin {
+		testing.expect(t, !record.station_peak.cpu_ms.known, "cpu is unobtainable on macOS: unknown, never zero")
+	}
+	before := record.station_peak.rss.value
+	record_host_resource_use(root, "req-1", "shot-1", int(os.get_pid()))
+	again, _ := read_resource_record(path)
+	testing.expect_value(t, again.samples, 2)
+	testing.expect(t, again.station_peak.rss.value >= before, "peak must not decrease")
+}
+
+@(test)
+host_unreadable_station_records_nothing :: proc(t: ^testing.T) {
+	root, _ := os.make_directory_temp("", "cs-hostres", context.temp_allocator)
+	defer os.remove_all(root)
+	record_host_resource_use(root, "req-1", "shot-1", DEAD_IDENTITY.pid)
+	path := resource_path(state_file_path(root, "host/req-1", context.temp_allocator), "shot-1")
+	defer delete(path)
+	_, ok := read_resource_record(path)
+	testing.expect(t, !ok, "an unreadable Station must not leave a zero record")
+}

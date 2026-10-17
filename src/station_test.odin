@@ -129,7 +129,7 @@ test_station_reports_each_turn_and_relays_replies :: proc(t: ^testing.T) {
 	defer activity_listener_close(&listener)
 
 	// The reply reaches the Station on stdin; closing stdin then ends the session.
-	run := run_station_with_stdin(t, root, {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt", "first question", "--", "sh", agent, received}, {{0, "second question"}})
+	run := run_station_with_stdin(t, root, {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt", "first question", "--interactive", "--", "sh", agent, received}, {{0, "second question"}})
 	defer delete(run.stderr)
 	testing.expect(t, !run.wait_failed, "the Station should exit on end of stdin")
 	testing.expect(t, run.exit_code == 0, run.stderr)
@@ -205,12 +205,12 @@ test_station_reads_prompt_file_and_sends_exact_text :: proc(t: ^testing.T) {
 	listener, listener_ok := activity_listener_open(socket)
 	testing.expect(t, listener_ok)
 	defer activity_listener_close(&listener)
-	parsed, parse_err := parse_args([]string{"station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt-file", prompt_path, "--", "sh", agent, received})
+	parsed, parse_err := parse_args([]string{"station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt-file", prompt_path, "--interactive", "--", "sh", agent, received})
 	testing.expect_value(t, parse_err, "")
 	testing.expect_value(t, parsed.prompt, "")
 	testing.expect_value(t, parsed.prompt_file, prompt_path)
 
-	run := run_station_with_stdin(t, root, {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt-file", prompt_path, "--", "sh", agent, received}, {{0, "second question"}})
+	run := run_station_with_stdin(t, root, {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt-file", prompt_path, "--interactive", "--", "sh", agent, received}, {{0, "second question"}})
 	defer delete(run.stderr)
 	testing.expect(t, !run.wait_failed, "the Station should exit on end of stdin")
 	testing.expect(t, run.exit_code == 0, run.stderr)
@@ -264,7 +264,7 @@ test_station_forwards_dialog_and_applies_reply :: proc(t: ^testing.T) {
 	defer activity_listener_close(&listener)
 
 	// The answer is typed one second after start, once the dialog is pending.
-	run := run_station_with_stdin(t, root, {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt", "first question", "--", "sh", agent, received}, {{time.Second, "Allow"}, {time.Second, ""}})
+	run := run_station_with_stdin(t, root, {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt", "first question", "--interactive", "--", "sh", agent, received}, {{time.Second, "Allow"}, {time.Second, ""}})
 	defer delete(run.stderr)
 	testing.expect(t, !run.wait_failed, "the Station should exit on end of stdin")
 	testing.expect(t, run.exit_code == 0, run.stderr)
@@ -437,7 +437,7 @@ test_station_writes_long_report_to_file :: proc(t: ^testing.T) {
 	testing.expect(t, listener_ok)
 	defer activity_listener_close(&listener)
 
-	run := run_station_with_stdin(t, root, {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt", "hi", "--", "sh", agent}, {{time.Second, ""}})
+	run := run_station_with_stdin(t, root, {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt", "hi", "--interactive", "--", "sh", agent}, {{time.Second, ""}})
 	defer delete(run.stderr)
 	testing.expect(t, !run.wait_failed, "the Station should exit on end of stdin")
 	testing.expect(t, run.exit_code == 0, run.stderr)
@@ -1195,7 +1195,7 @@ test_interactive_shot_keeps_input_open_after_its_first_turn :: proc(t: ^testing.
 	testing.expect(t, listener_ok)
 	defer activity_listener_close(&listener)
 
-	run := run_station_with_stdin(t, root, {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt", "first question", "--", "sh", agent, received}, {{time.Second, "second question"}})
+	run := run_station_with_stdin(t, root, {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt", "first question", "--interactive", "--", "sh", agent, received}, {{time.Second, "second question"}})
 	defer delete(run.stderr)
 	testing.expect(t, !run.wait_failed, "the Station should exit on end of stdin")
 	testing.expect(t, run.exit_code == 0, run.stderr)
@@ -1564,4 +1564,54 @@ test_station_nonblocking_write_cancels_on_full_pipe :: proc(t: ^testing.T) {
 	testing.expect_value(t, exit_code, STATION_CANCELLED_EXIT_CODE)
 
 	fmt.printf("[PIPE-FULL-TEST] PASS: Non-blocking write cancelled properly\n")
+}
+
+@(test)
+test_bare_execute_shot_ends_after_its_first_turn :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-one-turn-bare-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	run := run_station_held_open(t, root, FAKE_ONE_TURN_AGENT, "--kind", "execute")
+	defer held_station_destroy(&run)
+	testing.expect(t, !run.timed_out, "a bare execute Station must end after its first turn")
+	testing.expect_value(t, run.exit_code, 0)
+	testing.expect(t, slice_contains(run.kinds[:], "turn_done"), "the first turn must be reported")
+	testing.expect(t, slice_contains(run.kinds[:], "agent_exited"), "the agent exit is the terminal report")
+}
+
+@(test)
+test_interactive_shot_stays_open_for_a_reply :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-interactive-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	// Stdin is held open and never written, so only an interactive Shot is still alive at the timeout.
+	run := run_station_held_open(t, root, FAKE_ONE_TURN_AGENT, "--kind", "execute", "--interactive")
+	defer held_station_destroy(&run)
+	testing.expect(t, run.timed_out, "an interactive Station must wait for a reply after its first turn")
+	testing.expect(t, slice_contains(run.kinds[:], "turn_done"), "the first turn must be reported")
+	testing.expect(t, !slice_contains(run.kinds[:], "agent_exited"), "an interactive Station must not end by itself")
+}
+
+@(test)
+test_station_parse_validates_interactive_and_codemode :: proc(t: ^testing.T) {
+	absent, absent_err := parse_args({"station", "--report", "/tmp/r.sock", "--station", "a", "--brew", "b", "--prompt", "hi", "--", "pi"})
+	testing.expect_value(t, absent_err, "")
+	testing.expect(t, !absent.interactive && absent.codemode, "absent options mean not interactive, codemode on")
+
+	set, set_err := parse_args({"station", "--report", "/tmp/r.sock", "--station", "a", "--brew", "b", "--prompt", "hi", "--interactive", "--codemode", "false", "--", "pi"})
+	testing.expect_value(t, set_err, "")
+	testing.expect(t, set.interactive && !set.codemode, "both options must reach the Command")
+
+	_, bad_err := parse_args({"station", "--report", "/tmp/r.sock", "--station", "a", "--brew", "b", "--prompt", "hi", "--codemode", "maybe", "--", "pi"})
+	testing.expect(t, strings.contains(bad_err, "codemode"), bad_err)
 }

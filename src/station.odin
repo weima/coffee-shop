@@ -206,7 +206,7 @@ station_orderly_shutdown :: proc(relay_ptr: ^^Station_Relay, reader: ^thread.Thr
 	return 0
 }
 
-run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_kind, taste, message: string, agent: []string) -> int {
+run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_kind, taste, message: string, options: Shot_Options, agent: []string) -> int {
 	_ = spans_init(station_id)
 	defer spans_close()
 	span_begin("station start")
@@ -279,7 +279,7 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 	relay.input = input
 	relay.agent = agent_in_write
 	relay.display = display
-	relay.one_turn = shot_kind == SHOT_KIND_RESEARCH || taste != ""
+	relay.one_turn = !options.interactive
 	// Set agent's stdin to non-blocking for cancellable write
 	if posix.fcntl(posix.FD(os.fd(agent_in_write)), .SETFL, c.int(posix.O_Flags{.NONBLOCK})) != 0 {
 		write_error("could not set non-blocking mode on agent stdin")
