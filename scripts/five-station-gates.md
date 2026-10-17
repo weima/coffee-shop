@@ -1,6 +1,6 @@
 # Five-Station gates (5.8, 5.9, 5.10)
 
-The script writes the request and reads the results. It never starts a host or touches Herdr; the orchestrator dispatches.
+The Odin tool `tools/gates` (run as `odin run tools/gates -- <args>`, never a built binary) writes the request and reads the results. It never starts a host or touches Herdr; the orchestrator dispatches.
 
 ## Run once
 
@@ -14,7 +14,7 @@ just gates-report $W/request.jsonl $W/events.jsonl $W/state $W/trace $W/report.m
 ```
 
 Trace files are `$W/trace.host` and `$W/trace.<station>` (src/profiling.odin:44-52); the report reads `$W/trace*`.
-Shots are `research` kind with a `sleep 90` prompt so Stations overlap; use `--prompt`/`--prompt-file` (call the script directly) for another load.
+Shots are `research` kind with a `sleep 90` prompt so Stations overlap; use `--prompt`/`--prompt-file` (call `odin run tools/gates -- request ...` directly; flags `--shots`, `--request-id` too) for another load.
 
 ## Report
 
@@ -26,8 +26,8 @@ Anything unreadable prints `not measured` with the reason. On macOS CPU is alway
 
 ## Known gap
 
-`record_resource_use` is called only from the Brew settle path (src/settle.odin:147), not the foreground host. Until the host calls it, 5.9 reads `not measured: no .resource file`. This script does not fake it.
+`record_resource_use` is called only from the Brew settle path (src/settle.odin:147), not the foreground host. Until the host calls it, 5.9 reads `not measured: no .resource file`. The tool does not fake it.
 
 ## Test without Herdr
 
-`just gates-selftest` builds a fixture (Spall trace, events, resource files) and checks the report, for the waited and not-waited cases.
+`just gates-selftest` (needs no Herdr server or host) builds a fixture (Spall trace, events, resource files) and checks the report, for the waited and not-waited cases.
