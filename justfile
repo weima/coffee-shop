@@ -13,3 +13,13 @@ check:
 test:
     sh tests/test-suite-lock.sh
     sh scripts/test-suite.sh
+
+# Five-Station gates 5.8-5.10: see scripts/five-station-gates.md.
+gates-selftest:
+    python3 scripts/five-station-gates.py selftest
+
+gates-request repo out:
+    python3 scripts/five-station-gates.py request --repo {{repo}} --out {{out}}
+
+gates-report request events state trace out:
+    python3 scripts/five-station-gates.py report --request {{request}} --events {{events}} --state-dir {{state}} --trace {{trace}} --out {{out}}

@@ -1,0 +1,33 @@
+# Five-Station gates (5.8, 5.9, 5.10)
+
+The script writes the request and reads the results. It never starts a host or touches Herdr; the orchestrator dispatches.
+
+## Run once
+
+```sh
+W=/tmp/gates && mkdir -p $W
+just gates-request /abs/path/to/repo $W/request.jsonl        # six Shots, ids gate-s1..gate-s6
+# Orchestrator: start the foreground host with these, feed it request.jsonl on stdin,
+# keep stdin open until all six Shots finish, and capture stdout:
+#   CS_SPALL_FILE=$W/trace  CS_STATE_DIR=$W/state  <host command> < $W/request.jsonl > $W/events.jsonl
+just gates-report $W/request.jsonl $W/events.jsonl $W/state $W/trace $W/report.md
+```
+
+Trace files are `$W/trace.host` and `$W/trace.<station>` (src/profiling.odin:44-52); the report reads `$W/trace*`.
+Shots are `research` kind with a `sleep 90` prompt so Stations overlap; use `--prompt`/`--prompt-file` (call the script directly) for another load.
+
+## Report
+
+- **5.10**: whether the sixth Shot got `dispatch_queued` → `dispatch_dequeued` → `session_started` (src/host.odin:891, :327, :938), Stations started before it queued, and any failure events.
+- **5.9**: per-Shot Station and Pi-tree peaks (cpu, rss, fds, children) from `<state>/workers/<shot>.resource` (src/resource_profile.odin:26, :126).
+- **5.8**: top spans by inclusive total time across all trace files.
+
+Anything unreadable prints `not measured` with the reason. On macOS CPU is always unknown (src/resource_profile_darwin.odin:6).
+
+## Known gap
+
+`record_resource_use` is called only from the Brew settle path (src/settle.odin:147), not the foreground host. Until the host calls it, 5.9 reads `not measured: no .resource file`. This script does not fake it.
+
+## Test without Herdr
+
+`just gates-selftest` builds a fixture (Spall trace, events, resource files) and checks the report, for the waited and not-waited cases.
