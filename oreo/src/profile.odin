@@ -12,20 +12,20 @@ Resolved_Profile :: struct {
 }
 
 // profile_resolve resolves the effective provider, model, and thinking level for
-// a work item. Provider and model are one unit: the caller may supply both, or
-// neither and take both from the config, but a lone provider or model is
-// rejected. Thinking is resolved per field: the caller's value, then the
-// config, then the built-in default. Every resolved value passes the same
-// validation the configuration applies. The returned error owns its message;
-// call config_error_destroy on every value.
+// a work item. Provider and model come from the caller, together; a missing one
+// is an error naming it, and no config file supplies either. Thinking is
+// resolved: the caller's value, then the config, then the built-in default.
+// Every resolved value passes the same validation the configuration applies.
+// The returned error owns its message; call config_error_destroy on every value.
 profile_resolve :: proc(provider, model, thinking: string, allocator := context.allocator) -> (Resolved_Profile, Config_Error) {
-	caller_provider := len(provider) > 0
-	caller_model := len(model) > 0
-	if caller_provider != caller_model {
-		if caller_provider {
-			return {}, config_errorf(.Invalid_Argument, allocator, "model is missing; provider %q was supplied without one", provider)
+	if len(provider) == 0 || len(model) == 0 {
+		missing := "provider and model"
+		if len(provider) > 0 {
+			missing = "model"
+		} else if len(model) > 0 {
+			missing = "provider"
 		}
-		return {}, config_errorf(.Invalid_Argument, allocator, "provider is missing; model %q was supplied without one", model)
+		return {}, config_errorf(.Invalid_Argument, allocator, "%s is missing; the caller must supply both provider and model", missing)
 	}
 
 	config, config_err := config_load("", allocator)
@@ -33,23 +33,13 @@ profile_resolve :: proc(provider, model, thinking: string, allocator := context.
 	if !have_config && config_err.kind != .Not_Found {
 		return {}, config_err
 	}
-	if !have_config && !caller_provider {
-		// Neither the caller nor a config file supplies provider and model.
-		return {}, config_err
-	}
 	if !have_config {
 		config_error_destroy(&config_err, allocator)
 	}
-	// The defer is at procedure scope: an Odin defer runs when its block exits,
-	// so one inside the branch above would free the config before it is read.
 	defer config_destroy(&config, allocator)
 
 	chosen_provider := provider
 	chosen_model := model
-	if !caller_provider {
-		chosen_provider = config.provider
-		chosen_model = config.model
-	}
 	chosen_thinking := thinking
 	if len(chosen_thinking) == 0 {
 		if have_config {
