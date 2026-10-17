@@ -51,16 +51,16 @@ profile_test_teardown :: proc "contextless" () {
 }
 
 @(test)
-test_profile_resolve_without_config_or_input_fails :: proc(t: ^testing.T) {
+test_profile_resolve_without_input_fails_even_with_config :: proc(t: ^testing.T) {
 	sync.mutex_lock(&profile_test_lock)
 	defer sync.mutex_unlock(&profile_test_lock)
-	profile_test_clear_config(t)
+	profile_test_write_config(t, `{"provider": "anthropic", "model": "claude-haiku-5.5"}`)
 
 	profile, profile_err := profile_resolve("", "", "")
 	defer profile_resolved_destroy(&profile)
 	defer config_error_destroy(&profile_err)
 
-	testing.expect_value(t, profile_err.kind, Config_Error_Kind.Not_Found)
+	testing.expect_value(t, profile_err.kind, Config_Error_Kind.Invalid_Argument)
 	testing.expect(t, strings.contains(profile_err.message, "provider"))
 	testing.expect(t, strings.contains(profile_err.message, "model"))
 }
@@ -103,14 +103,22 @@ test_profile_resolve_provider_without_model_fails :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_profile_resolve_uses_config_provider_and_model :: proc(t: ^testing.T) {
+test_profile_resolve_config_does_not_decide_provider_or_model :: proc(t: ^testing.T) {
 	sync.mutex_lock(&profile_test_lock)
 	defer sync.mutex_unlock(&profile_test_lock)
 	profile_test_write_config(t, `{"provider": "anthropic", "model": "claude-haiku-5.5", "thinking": "xhigh"}`)
 
-	profile_test_expect(t, "", "", "", "anthropic", "claude-haiku-5.5", "xhigh")
-	profile_test_expect(t, "", "", "medium", "anthropic", "claude-haiku-5.5", "medium")
-	profile_test_expect(t, "openai", "gpt-5", "high", "openai", "gpt-5", "high")
+	profile_test_expect(t, "openai", "gpt-5", "", "openai", "gpt-5", "xhigh")
+	profile_test_expect(t, "openai", "gpt-5", "medium", "openai", "gpt-5", "medium")
+}
+
+@(test)
+test_profile_resolve_thinking_falls_back_to_default :: proc(t: ^testing.T) {
+	sync.mutex_lock(&profile_test_lock)
+	defer sync.mutex_unlock(&profile_test_lock)
+	profile_test_clear_config(t)
+
+	profile_test_expect(t, "openai", "gpt-5", "", "openai", "gpt-5", DEFAULT_THINKING)
 }
 
 @(test)

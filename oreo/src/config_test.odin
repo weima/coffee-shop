@@ -17,74 +17,27 @@ test_config_missing_file_fails_loudly :: proc(t: ^testing.T) {
 	defer config_error_destroy(&config_err)
 
 	testing.expect_value(t, config_err.kind, Config_Error_Kind.Not_Found)
-	testing.expect(t, strings.contains(config_err.message, "provider"))
-	testing.expect(t, strings.contains(config_err.message, "model"))
 }
 
 @(test)
-test_config_provider_and_model_are_used :: proc(t: ^testing.T) {
+test_config_provider_and_model_keys_are_ignored :: proc(t: ^testing.T) {
 	directory, path := config_test_directory(t)
 	defer config_test_cleanup(directory, path)
-	testing.expect(t, os.write_entire_file(path, `{"provider": "anthropic", "model": "claude-haiku-5.5"}`) == nil)
+	testing.expect(t, os.write_entire_file(path, `{"provider": "anthropic", "model": "bad model;"}`) == nil)
 
 	config, config_err := config_load(path)
 	defer config_destroy(&config)
 	defer config_error_destroy(&config_err)
 
 	testing.expect_value(t, config_err.kind, Config_Error_Kind.None)
-	testing.expect_value(t, config.provider, "anthropic")
-	testing.expect_value(t, config.model, "claude-haiku-5.5")
 	testing.expect_value(t, config.thinking, DEFAULT_THINKING)
-}
-
-@(test)
-test_config_model_without_provider_fails :: proc(t: ^testing.T) {
-	directory, path := config_test_directory(t)
-	defer config_test_cleanup(directory, path)
-	testing.expect(t, os.write_entire_file(path, `{"model": "gpt-4.1"}`) == nil)
-
-	config, config_err := config_load(path)
-	defer config_destroy(&config)
-	defer config_error_destroy(&config_err)
-
-	testing.expect_value(t, config_err.kind, Config_Error_Kind.Invalid_Argument)
-	testing.expect(t, strings.contains(config_err.message, "provider"))
-}
-
-@(test)
-test_config_provider_without_model_fails :: proc(t: ^testing.T) {
-	directory, path := config_test_directory(t)
-	defer config_test_cleanup(directory, path)
-	testing.expect(t, os.write_entire_file(path, `{"provider": "anthropic"}`) == nil)
-
-	config, config_err := config_load(path)
-	defer config_destroy(&config)
-	defer config_error_destroy(&config_err)
-
-	testing.expect_value(t, config_err.kind, Config_Error_Kind.Invalid_Argument)
-	testing.expect(t, strings.contains(config_err.message, "model"))
-}
-
-@(test)
-test_config_neither_provider_nor_model_fails :: proc(t: ^testing.T) {
-	directory, path := config_test_directory(t)
-	defer config_test_cleanup(directory, path)
-	testing.expect(t, os.write_entire_file(path, `{"thinking": "max"}`) == nil)
-
-	config, config_err := config_load(path)
-	defer config_destroy(&config)
-	defer config_error_destroy(&config_err)
-
-	testing.expect_value(t, config_err.kind, Config_Error_Kind.Invalid_Argument)
-	testing.expect(t, strings.contains(config_err.message, "provider"))
-	testing.expect(t, strings.contains(config_err.message, "model"))
 }
 
 @(test)
 test_config_file_overrides_every_field :: proc(t: ^testing.T) {
 	directory, path := config_test_directory(t)
 	defer config_test_cleanup(directory, path)
-	content := `{"provider": "anthropic", "model": "claude-haiku-5.5", "thinking": "xhigh", "extra": "ignored"}`
+	content := `{"thinking": "xhigh", "extra": "ignored"}`
 	testing.expect(t, os.write_entire_file(path, content) == nil)
 
 	config, config_err := config_load(path)
@@ -92,25 +45,7 @@ test_config_file_overrides_every_field :: proc(t: ^testing.T) {
 	defer config_error_destroy(&config_err)
 
 	testing.expect_value(t, config_err.kind, Config_Error_Kind.None)
-	testing.expect_value(t, config.provider, "anthropic")
-	testing.expect_value(t, config.model, "claude-haiku-5.5")
 	testing.expect_value(t, config.thinking, "xhigh")
-}
-
-@(test)
-test_config_partial_file_keeps_thinking_default :: proc(t: ^testing.T) {
-	directory, path := config_test_directory(t)
-	defer config_test_cleanup(directory, path)
-	testing.expect(t, os.write_entire_file(path, `{"provider": "anthropic", "model": "gpt-4.1"}`) == nil)
-
-	config, config_err := config_load(path)
-	defer config_destroy(&config)
-	defer config_error_destroy(&config_err)
-
-	testing.expect_value(t, config_err.kind, Config_Error_Kind.None)
-	testing.expect_value(t, config.provider, "anthropic")
-	testing.expect_value(t, config.model, "gpt-4.1")
-	testing.expect_value(t, config.thinking, DEFAULT_THINKING)
 }
 
 @(test)
@@ -121,8 +56,8 @@ test_config_rejects_malformed_files :: proc(t: ^testing.T) {
 		`{"provider": `,
 		`not json`,
 		`[1, 2, 3]`,
-		`{"provider": ""}`,
-		`{"model": 7}`,
+		`{"thinking": ""}`,
+		`{"thinking": 7}`,
 		`{"thinking": null}`,
 	}
 	for content in cases {
@@ -139,10 +74,10 @@ test_config_rejects_malformed_files :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_config_rejects_invalid_provider :: proc(t: ^testing.T) {
+test_config_rejects_invalid_thinking :: proc(t: ^testing.T) {
 	directory, path := config_test_directory(t)
 	defer config_test_cleanup(directory, path)
-	testing.expect(t, os.write_entire_file(path, `{"provider": "bad model;", "model": "gpt-4.1"}`) == nil)
+	testing.expect(t, os.write_entire_file(path, `{"thinking": "loud"}`) == nil)
 
 	_, config_err := config_load(path)
 	defer config_error_destroy(&config_err)
@@ -183,15 +118,12 @@ test_config_default_path_resolves_home_then_override :: proc(t: ^testing.T) {
 	delete(override_path)
 
 	// An empty path loads the override, so the resolved path is the one the
-	// caller would get from default_config_path. Provider and model are both
-	// required, so the config file must name them.
-	testing.expect(t, os.write_entire_file(path, `{"provider": "anthropic", "model": "claude-haiku-5.5", "thinking": "max"}`) == nil)
+	// caller would get from default_config_path.
+	testing.expect(t, os.write_entire_file(path, `{"thinking": "max"}`) == nil)
 	config, config_err := config_load("")
 	defer config_destroy(&config)
 	defer config_error_destroy(&config_err)
 	testing.expect_value(t, config_err.kind, Config_Error_Kind.None)
-	testing.expect_value(t, config.provider, "anthropic")
-	testing.expect_value(t, config.model, "claude-haiku-5.5")
 	testing.expect_value(t, config.thinking, "max")
 }
 

@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sys/posix"
@@ -139,6 +140,18 @@ settle_shot :: proc(directory: string, register: ^Register, index: int, herdr: s
 	has_result := os.exists(result_path)
 	has_started := os.exists(started_path)
 
+	identity, has_identity := read_identity_file(started_path)
+	// Sample while the Station can still be read: once it is reaped there is nothing to read.
+	// A Gone identity is skipped: its pid may already belong to another process.
+	if has_identity && liveness(identity) != .Gone {
+		record_resource_use(directory, shot.id, identity.pid)
+	}
+	defer if is_terminal(shot.status) {
+		if line, found := resource_line(directory, shot.id); found {
+			fmt.eprintln(line)
+		}
+	}
+
 	if shot.status == SHOT_QUEUED {
 		if !has_result && !has_started {
 			if mode != .Cancel {
@@ -158,7 +171,6 @@ settle_shot :: proc(directory: string, register: ^Register, index: int, herdr: s
 		return
 	}
 
-	identity, has_identity := read_identity_file(started_path)
 	// Record an exit only on evidence of one. A Worker whose liveness is unknown is
 	// left running, never marked interrupted on a guess.
 	if has_identity && liveness(identity) == .Gone {

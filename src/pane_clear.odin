@@ -30,8 +30,8 @@ pane_clear_herdr :: proc(herdr_exe, workspace_id, pane_id: string) -> (ok: bool,
 	}
 
 	result, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{command = cmd}, context.temp_allocator)
-	defer delete(stdout)
-	defer delete(stderr)
+	// stdout and stderr belong to the temp allocator; freeing them here would be an
+	// invalid free, which aborts the process inside libmalloc. The arena reclaims them.
 
 	if exec_err != nil || !result.success {
 		when ODIN_DEBUG {

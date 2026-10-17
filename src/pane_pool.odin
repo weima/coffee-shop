@@ -31,6 +31,7 @@ Pane :: struct {
 	state:      Pane_State,
 	request_id: string, // Current occupant (cleared on FREE)
 	shot_id:    string, // Current occupant (cleared on FREE)
+	slot:       Machine_Slot, // Machine-wide slot held while ALLOCATED or WAITING_FOR_HUMAN
 }
 
 Pane_Pool :: struct {
@@ -38,6 +39,8 @@ Pane_Pool :: struct {
 	capacity:             int,
 	workspace_id:         string,
 	host_owned_pane_ids:  [dynamic]string,
+	machine_root:         string, // State root for the machine-wide limit; "" means no machine limit
+	last_refusal:         string, // Why the last acquire was refused by the machine limit
 }
 
 // Initialize the pool with a given capacity.
@@ -56,7 +59,8 @@ pane_pool_init :: proc(capacity: int, workspace_id: string, allocator := context
 
 // Destroy the pool and release all resources.
 pane_pool_destroy :: proc(pool: ^Pane_Pool) {
-	for pane in pool.panes {
+	for &pane in pool.panes {
+		machine_limit_release(&pane.slot)
 		delete(pane.pane_id)
 		delete(pane.request_id)
 		delete(pane.shot_id)
@@ -66,6 +70,8 @@ pane_pool_destroy :: proc(pool: ^Pane_Pool) {
 		delete(id)
 	}
 	delete(pool.host_owned_pane_ids)
+	delete(pool.last_refusal)
+	delete(pool.machine_root)
 	pool^ = {}
 }
 
@@ -112,9 +118,25 @@ pane_pool_acquire :: proc(
 		assert(shot_id != "", "shot_id must not be empty")
 	}
 
+	// Pane available locally? Then the machine-wide slot decides before anything starts.
+	local_ok := len(pool.panes) < pool.capacity
+	for i in 0..<len(pool.panes) {
+		local_ok ||= pool.panes[i].state == .FREE
+	}
+	if !local_ok {
+		delete(pool.last_refusal)
+		pool.last_refusal = ""
+		return "", false, false
+	}
+	slot, slot_ok := pane_pool_take_slot(pool)
+	if !slot_ok {
+		return "", false, false
+	}
+
 	// Try to find a FREE pane to reuse.
 	for i in 0..<len(pool.panes) {
 		if pool.panes[i].state == .FREE {
+			pool.panes[i].slot = slot
 			pane_id = strings.clone(pool.panes[i].pane_id, context.allocator)
 			pool.panes[i].state = .ALLOCATED
 			pool.panes[i].request_id = strings.clone(request_id, context.allocator)
@@ -131,14 +153,27 @@ pane_pool_acquire :: proc(
 			state = .ALLOCATED,
 			request_id = strings.clone(request_id, context.allocator),
 			shot_id = strings.clone(shot_id, context.allocator),
+			slot = slot,
 		}
 		append(&pool.panes, pane)
 		append(&pool.host_owned_pane_ids, strings.clone(new_pane_id, context.allocator))
 		return strings.clone(new_pane_id, context.allocator), true, true
 	}
 
-	// Pool is at capacity, no pane available.
 	return "", false, false
+}
+
+// Takes a machine-wide slot without waiting (the dispatch queue is the wait). A refusal is
+// recorded in pool.last_refusal so the caller can say why.
+pane_pool_take_slot :: proc(pool: ^Pane_Pool) -> (slot: Machine_Slot, ok: bool) {
+	if pool.machine_root == "" {
+		return {}, true
+	}
+	reason: string
+	slot, reason, ok = machine_limit_try_acquire(pool.machine_root, pool.capacity)
+	delete(pool.last_refusal)
+	pool.last_refusal = reason
+	return slot, ok
 }
 
 // Mark a pane as WAITING_FOR_HUMAN (pinned until reply or cancel).
@@ -164,6 +199,7 @@ pane_pool_unpin :: proc(pool: ^Pane_Pool, pane_id: string) -> bool {
 		return false
 	}
 	pool.panes[idx].state = .RECLAIMABLE
+	machine_limit_release(&pool.panes[idx].slot)
 	return true
 }
 
@@ -180,6 +216,7 @@ pane_pool_mark_reclaimable :: proc(pool: ^Pane_Pool, pane_id: string) -> bool {
 		return false // Invalid transition.
 	}
 	pool.panes[idx].state = .RECLAIMABLE
+	machine_limit_release(&pool.panes[idx].slot)
 	return true
 }
 

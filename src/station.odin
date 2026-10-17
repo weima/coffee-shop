@@ -144,6 +144,10 @@ station_turn_started :: proc(relay: ^Station_Relay) {
 // it at the point it decides the exit status.
 station_cancel_requested: bool
 
+// Counts the times a cancellable write found the pipe full and went to wait for it.
+// Tests wait on it to know a writer is blocked, instead of sleeping.
+station_write_blocked_count: int
+
 STATION_CANCELLED_EXIT_CODE :: 130
 STATION_RELAY_POLL_MS :: 100
 
@@ -203,6 +207,11 @@ station_orderly_shutdown :: proc(relay_ptr: ^^Station_Relay, reader: ^thread.Thr
 }
 
 run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_kind, taste, message: string, agent: []string) -> int {
+	_ = spans_init(station_id)
+	defer spans_close()
+	span_begin("station start")
+	span_started := true
+	defer if span_started {span_end()}
 	first_prompt := prompt
 	prompt_data: []byte
 	if prompt_file != "" {
@@ -289,6 +298,8 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 		return 1
 	}
 	station_display_line(display, station_style(ansi.FAINT, fmt.tprintf("sent the first prompt to the agent")))
+	span_end() // station start ends once the agent has its first prompt
+	span_started = false
 	reader_thread := thread.create_and_start_with_data(relay, station_relay_replies, self_cleanup = false)
 	if reader_thread == nil {
 		_ = station_orderly_shutdown(&relay, nil)
@@ -589,8 +600,10 @@ station_relay_close_agent :: proc(relay: ^Station_Relay) {
 	if sync.atomic_load(&relay.agent_closed) {
 		return
 	}
-	// Skip stats request if cancelled; closed FD would cause EPIPE anyway
-	if !sync.atomic_load(&station_cancel_requested) {
+	// Skip stats request if cancelled; closed FD would cause EPIPE anyway. The relay's
+	// own flag counts too: shutdown sets it before it closes the agent, and a reader
+	// that wakes in between must not write a stray request into a pipe being torn down.
+	if !sync.atomic_load(&station_cancel_requested) && !sync.atomic_load(&relay.cancelled) {
 		station_write_stats_request(relay.agent)
 	}
 	sync.atomic_store(&relay.agent_closed, true)
@@ -874,6 +887,7 @@ station_write_line_cancellable :: proc(file: ^os.File, line: string) -> bool {
 		errno := posix.get_errno()
 		if errno == .EAGAIN || errno == .EWOULDBLOCK {
 			// Pipe full, wait for writable with cancel check
+			sync.atomic_add(&station_write_blocked_count, 1)
 			fds := [1]posix.pollfd{{fd = fd, events = {.OUT}}}
 			poll_result := posix.poll(&fds[0], 1, 100)  // STATION_RELAY_POLL_MS
 			if poll_result < 0 {

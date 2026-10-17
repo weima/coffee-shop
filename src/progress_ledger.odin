@@ -2,7 +2,7 @@ package main
 
 import "core:encoding/json"
 import "core:fmt"
-import "core:runtime"
+import "base:runtime"
 import "core:strings"
 import "core:time"
 

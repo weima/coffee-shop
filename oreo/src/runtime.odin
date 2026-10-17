@@ -102,7 +102,7 @@ runtime_work :: proc(input: Work_Item_Input) -> Work_Item_Result {
 	allocator := context.allocator
 	handle := runtime_handle()
 
-	// Step 1: the explicit settings win; empty ones come from the config. The
+	// Step 1: the caller supplies provider and model together; thinking falls back to config. The
 	// resolved profile is the validated effective provider, model, and thinking
 	// level for this run.
 	profile, profile_err := profile_resolve(input.provider, input.model, input.thinking, allocator)

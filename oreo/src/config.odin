@@ -10,9 +10,8 @@ import "core:strings"
 // The default configuration file lives under the user's home directory.
 DEFAULT_CONFIG_RELATIVE_PATH :: ".oreo/config.json"
 
-// The thinking level is the only built-in default. Provider and model are
-// always supplied together, by the caller or by the config file; a lone model
-// name is ambiguous, so neither has a fallback literal.
+// The thinking level is the only built-in default. Provider and model come from
+// the caller together; the config never decides them.
 DEFAULT_THINKING :: "low"
 
 @(private)
@@ -27,7 +26,7 @@ HOME_ENV :: "HOME"
 MAX_PROVIDER_MODEL_LENGTH :: 80
 
 @(private)
-CONFIG_FIELD_NAMES :: [3]string{"provider", "model", "thinking"}
+CONFIG_FIELD_NAMES :: [1]string{"thinking"}
 
 // Config_Error_Kind is the configuration failure surface. Not_Found means no
 // config file was present; Invalid_Argument means a present file was incomplete
@@ -48,11 +47,10 @@ Config_Error :: struct {
 	message: string,
 }
 
-// Oreo_Config is the default provider, model, and thinking level for a session.
-// The caller owns the three strings; call config_destroy to release them.
+// Oreo_Config is the default thinking level for a session. Provider and model
+// are not config fields: a "provider" or "model" key in the file is ignored.
+// The caller owns the string; call config_destroy to release it.
 Oreo_Config :: struct {
-	provider: string,
-	model: string,
 	thinking: string,
 }
 
@@ -76,8 +74,7 @@ default_config_path :: proc(allocator := context.allocator) -> (string, Config_E
 }
 
 // config_load reads a configuration file. An empty path means the resolved
-// default path. Provider and model must both be present, from the caller or
-// from the file, so a missing or incomplete file is an error.
+// default path. A missing file is Not_Found.
 config_load :: proc(path: string, allocator := context.allocator) -> (Oreo_Config, Config_Error) {
 	resolved := path
 	owns_path := len(path) == 0
@@ -103,7 +100,7 @@ config_load :: proc(path: string, allocator := context.allocator) -> (Oreo_Confi
 		return {}, config_errorf(
 			.Not_Found,
 			allocator,
-			"no config file at %s; set provider and model in that file or pass them explicitly",
+			"no config file at %s",
 			resolved,
 		)
 	}
@@ -130,30 +127,6 @@ config_load :: proc(path: string, allocator := context.allocator) -> (Oreo_Confi
 		config_destroy(&config)
 		return {}, override_err
 	}
-	if len(config.provider) == 0 || len(config.model) == 0 {
-		missing := "provider and model"
-		if len(config.provider) > 0 {
-			missing = "model"
-		} else if len(config.model) > 0 {
-			missing = "provider"
-		}
-		config_destroy(&config)
-		return {}, config_errorf(
-			.Invalid_Argument,
-			allocator,
-			"config file %s is missing %s; both provider and model must be named together",
-			resolved,
-			missing,
-		)
-	}
-	if !valid_provider_model(config.provider) || !valid_provider_model(config.model) {
-		config_destroy(&config)
-		return {}, config_error(
-			.Invalid_Argument,
-			"config provider and model must be 1-80 characters of letters, digits, /, ., -, _, or :",
-			allocator,
-		)
-	}
 	if !valid_thinking(config.thinking) {
 		config_destroy(&config)
 		return {}, config_error(
@@ -166,8 +139,6 @@ config_load :: proc(path: string, allocator := context.allocator) -> (Oreo_Confi
 }
 
 config_destroy :: proc(config: ^Oreo_Config, allocator := context.allocator) {
-	delete(config.provider, allocator)
-	delete(config.model, allocator)
 	delete(config.thinking, allocator)
 	config^ = Oreo_Config{}
 }
@@ -193,7 +164,7 @@ built_in_config :: proc(allocator: runtime.Allocator) -> (Oreo_Config, Config_Er
 // ignored.
 @(private)
 apply_config_overrides :: proc(config: ^Oreo_Config, object: json.Object, allocator: runtime.Allocator) -> Config_Error {
-	destinations := [3]^string{&config.provider, &config.model, &config.thinking}
+	destinations := [1]^string{&config.thinking}
 	for name, index in CONFIG_FIELD_NAMES {
 		field, present := object[name]
 		if !present {

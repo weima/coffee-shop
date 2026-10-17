@@ -1040,8 +1040,14 @@ test_station_sigterm_closes_the_agent_input_and_the_agent_exits_on_its_own :: pr
 	}
 }
 
+// station_cancel_requested is process-wide and tests run in parallel, so every test
+// that sets or relies on it holds this lock for its whole body.
+station_cancel_flag_lock: sync.Mutex
+
 @(test)
 test_station_orderly_shutdown_releases_cancelled_relay :: proc(t: ^testing.T) {
+	sync.mutex_lock(&station_cancel_flag_lock)
+	defer sync.mutex_unlock(&station_cancel_flag_lock)
 	input_read, input_write, input_err := os.pipe()
 	agent_read, agent_write, agent_err := os.pipe()
 	testing.expect_value(t, input_err, os.Error(nil))
@@ -1096,6 +1102,8 @@ test_station_orderly_shutdown_releases_cancelled_relay :: proc(t: ^testing.T) {
 // return 0 because the status came from the earlier snapshot.
 @(test)
 test_station_orderly_shutdown_reports_a_late_cancel :: proc(t: ^testing.T) {
+	sync.mutex_lock(&station_cancel_flag_lock)
+	defer sync.mutex_unlock(&station_cancel_flag_lock)
 	input_read, input_write, input_err := os.pipe()
 	agent_read, agent_write, agent_err := os.pipe()
 	testing.expect_value(t, input_err, os.Error(nil))
@@ -1123,6 +1131,8 @@ test_station_orderly_shutdown_reports_a_late_cancel :: proc(t: ^testing.T) {
 // second must be a no-op rather than a second close of a handle the first freed.
 @(test)
 test_station_shutdown_does_not_close_an_already_closed_agent :: proc(t: ^testing.T) {
+	sync.mutex_lock(&station_cancel_flag_lock)
+	defer sync.mutex_unlock(&station_cancel_flag_lock)
 	input_read, input_write, input_err := os.pipe()
 	agent_read, agent_write, agent_err := os.pipe()
 	testing.expect_value(t, input_err, os.Error(nil))
@@ -1436,6 +1446,8 @@ test_station_fails_and_reaps_agent_when_a_turn_gets_no_reply :: proc(t: ^testing
 
 @(test)
 test_station_nonblocking_write_cancels_on_full_pipe :: proc(t: ^testing.T) {
+	sync.mutex_lock(&station_cancel_flag_lock)
+	defer sync.mutex_unlock(&station_cancel_flag_lock)
 	// Create pipe for agent stdin
 	read_fd, write_fd, pipe_err := os.pipe()
 	testing.expect_value(t, pipe_err, os.Error(nil))
@@ -1484,6 +1496,8 @@ test_station_nonblocking_write_cancels_on_full_pipe :: proc(t: ^testing.T) {
 
 	// Now spawn reader that will attempt to write to full pipe
 	reader_attempted_write := false
+	relay.reader_done = &reader_attempted_write
+	blocked_before := sync.atomic_load(&station_write_blocked_count)
 
 	reader := thread.create_and_start_with_data(relay, proc(data: rawptr) {
 		relay := (^Station_Relay)(data)
@@ -1507,10 +1521,16 @@ test_station_nonblocking_write_cancels_on_full_pipe :: proc(t: ^testing.T) {
 		_ = station_write_line_cancellable(relay.agent, large_msg)
 	}, self_cleanup = false)
 
-	relay.reader_done = &reader_attempted_write
-
-	// Give reader time to reach poll (blocked on full pipe)
-	time.sleep(50 * time.Millisecond)
+	// Wait for the observable event: the writer found the pipe full and is waiting.
+	wait_start := time.now()
+	for sync.atomic_load(&station_write_blocked_count) == blocked_before {
+		if time.since(wait_start) > 5 * time.Second {
+			break
+		}
+		thread.yield()
+	}
+	testing.expect(t, sync.atomic_load(&station_write_blocked_count) > blocked_before,
+		"writer must block on the full pipe before cancel")
 
 	// PROOF 2: Reader attempted write and is likely polling
 	fmt.printf("[PIPE-FULL-TEST] Reader is attempting write to full pipe\n")
@@ -1538,11 +1558,9 @@ test_station_nonblocking_write_cancels_on_full_pipe :: proc(t: ^testing.T) {
 
 	// ASSERTIONS
 	// Latency should be ~100ms (one poll timeout), not instant and not hanging
-	testing.expect(t, elapsed > 50 * time.Millisecond,
-		fmt.tprintf("Shutdown too fast (%v): reader may not have polled", elapsed))
 	testing.expect(t, elapsed < 500 * time.Millisecond,
 		fmt.tprintf("Shutdown too slow (%v): likely hung on poll or close", elapsed))
-	testing.expect(t, reader_attempted_write, "Reader must have started")
+	testing.expect(t, reader_attempted_write, "Reader must have exited after the cancel")
 	testing.expect_value(t, exit_code, STATION_CANCELLED_EXIT_CODE)
 
 	fmt.printf("[PIPE-FULL-TEST] PASS: Non-blocking write cancelled properly\n")

@@ -46,7 +46,11 @@ host_dispatch_queued_shot_destroy :: proc(shot: Queued_Shot) {
 }
 
 host_dispatch_init :: proc(workspace_id: string) {
-	host_pane_pool_init(workspace_id, 5) // Capacity = concurrency limit
+	root, root_err := default_state_root(context.temp_allocator)
+	if root_err != "" {
+		root = "" // no state root: fall back to the per-host limit only
+	}
+	host_pane_pool_init(workspace_id, 5, root) // Capacity = concurrency limit
 	host_dispatch_queue = make([dynamic]Queued_Shot, 0, 100, context.allocator)
 }
 
@@ -78,7 +82,10 @@ host_dispatch_acquire :: proc(request_id, shot_id: string) -> (pane_id: string, 
 		return acquired_pane_id, false, true
 	}
 
-	// Pool at capacity. Queue the Shot (minimal metadata for now).
+	// Pool at capacity. Say why, then queue the Shot (minimal metadata for now).
+	if host_pane_pool.last_refusal != "" {
+		fmt.eprintfln("shot %s waiting: %s", shot_id, host_pane_pool.last_refusal)
+	}
 	// Full metadata is stored at call site when queued=true.
 	queued_shot := Queued_Shot{
 		request_id = strings.clone(request_id, context.allocator),

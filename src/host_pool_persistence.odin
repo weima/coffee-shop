@@ -96,8 +96,7 @@ host_pool_recover :: proc(state_root, herdr_exe: string) -> (ok: bool, err: stri
 		pane_id := state.owned_pane_ids[j]
 		cmd := []string{herdr_exe, "pane", "close", state.workspace_id, pane_id}
 		result, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{command = cmd}, context.temp_allocator)
-		defer delete(stdout)
-		defer delete(stderr)
+		// Temp-allocator slices must not be freed individually; the arena owns them.
 
 		if exec_err == nil && result.success {
 			closed_count += 1
