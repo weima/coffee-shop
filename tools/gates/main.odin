@@ -9,6 +9,7 @@ import "core:mem/virtual"
 import "core:os"
 import "core:strconv"
 import "core:strings"
+import "core:time"
 
 USAGE :: `usage:
   gates request --repo R --out FILE [--shots N] [--request-id ID] [--prompt TEXT | --prompt-file F]
@@ -49,11 +50,20 @@ int_flag :: proc(flags: map[string]string, key: string, def: int) -> (n: int, er
 	return v, ""
 }
 
+// gate-five-YYYYMMDD-HHMMSS-mmm (UTC): readable, sorts by time, unique per run.
+default_request_id :: proc() -> string {
+	now := time.now()
+	y, mo, d := time.date(now)
+	h, mi, sec := time.clock(now)
+	ms := (time.to_unix_nanoseconds(now) / 1_000_000) % 1000
+	return tprint("gate-five-%04d%02d%02d-%02d%02d%02d-%03d", y, int(mo), d, h, mi, sec, ms)
+}
+
 cmd_request :: proc(args: []string) -> string {
 	flags, err := parse_flags(args, {"repo", "out", "shots", "request-id", "prompt", "prompt-file"})
 	if err != "" {return err}
 	if m := need(flags, "repo", "out"); m != "" {return m}
-	a := RequestArgs{repo = flags["repo"], out = flags["out"], request_id = "gate-five", prompt = DEFAULT_PROMPT}
+	a := RequestArgs{repo = flags["repo"], out = flags["out"], request_id = default_request_id(), prompt = DEFAULT_PROMPT}
 	if v, ok := flags["request-id"]; ok {a.request_id = v}
 	if v, ok := flags["prompt"]; ok {a.prompt = v}
 	if v, ok := flags["prompt-file"]; ok {

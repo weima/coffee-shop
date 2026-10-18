@@ -57,6 +57,6 @@ write_request :: proc(a: RequestArgs) -> string {
 	if werr := os.write_entire_file(a.out, line); werr != nil {
 		return tprint("cannot write `%s`: %v", a.out, werr)
 	}
-	fmt.printfln("wrote %s: %d shots %s..%s", a.out, a.shots, ids[0], ids[len(ids) - 1])
+	fmt.printfln("wrote %s: request id %s, %d shots %s..%s", a.out, a.request_id, a.shots, ids[0], ids[len(ids) - 1])
 	return ""
 }
