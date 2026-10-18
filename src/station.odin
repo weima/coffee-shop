@@ -284,7 +284,7 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 	if posix.fcntl(posix.FD(os.fd(agent_in_write)), .SETFL, c.int(posix.O_Flags{.NONBLOCK})) != 0 {
 		write_error("could not set non-blocking mode on agent stdin")
 		_ = station_orderly_shutdown(&relay, nil)
-		_, _ = os.process_wait(process)
+		_, _ = process_reap(process)
 		station_close_file(&agent_out_read)
 		return 1
 	}
@@ -293,7 +293,7 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 	if !station_write_prompt(agent_in_write, first_prompt, "") {
 		write_error("could not send the first prompt to the agent")
 		_ = station_orderly_shutdown(&relay, nil)
-		_, _ = os.process_wait(process)
+		_, _ = process_reap(process)
 		station_close_file(&agent_out_read)
 		return 1
 	}
@@ -303,7 +303,7 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 	reader_thread := thread.create_and_start_with_data(relay, station_relay_replies, self_cleanup = false)
 	if reader_thread == nil {
 		_ = station_orderly_shutdown(&relay, nil)
-		_, _ = os.process_wait(process)
+		_, _ = process_reap(process)
 		station_close_file(&agent_out_read)
 		return 1
 	}
@@ -331,7 +331,7 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 		thread.destroy(watchdog_thread)
 	}
 	deadline_expired := sync.atomic_load(&relay.deadline_expired)
-	state, wait_err := os.process_wait(process)
+	state, wait_err := process_reap(process)
 	shutdown_status := station_orderly_shutdown(&relay, reader_thread)
 	station_close_file(&agent_out_read)
 	fmt.println("Agent exited.")
@@ -391,7 +391,7 @@ station_run_taste :: proc(taste: string) -> (exit_code: int, ran: bool) {
 	if start_err != nil {
 		return 0, false
 	}
-	state, wait_err := os.process_wait(process)
+	state, wait_err := process_reap(process)
 	if wait_err != nil {
 		return 0, false
 	}

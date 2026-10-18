@@ -151,9 +151,7 @@ process_commands_proc :: proc() -> []Process_Command {
 
 process_commands_ps :: proc() -> []Process_Command {
 	commands := make([dynamic]Process_Command, 0, 64, context.temp_allocator)
-	_, stdout, _, _ := os.process_exec(os.Process_Desc{command = {"ps", "-axo", "pid=,command="}}, context.temp_allocator)
-	// os.process_exec can report a spurious error on macOS while still returning
-	// ps's complete output, so parse whenever there is output.
+	stdout, _ := exec_reaped({"ps", "-axo", "pid=,command="}, context.temp_allocator)
 	if len(stdout) == 0 {
 		return commands[:]
 	}

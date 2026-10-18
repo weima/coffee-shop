@@ -597,7 +597,7 @@ run_pi_json_with_activity :: proc(
 		result.error = strings.clone("could not read Pi JSON event stream")
 		_ = os.process_kill(process)
 	}
-	result.process_state, start_err = os.process_wait(process)
+	result.process_state, start_err = process_reap(process)
 	if start_err != nil && result.error == "" {
 		result.error = fmt.aprintf("could not wait for Pi: %v", start_err)
 	}
