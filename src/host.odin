@@ -1011,7 +1011,7 @@ host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models
 			extension = host_oreo_extension_path
 		}
 		launcher := child_shell_prefix(launch)
-		command := host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, id, request_id, prompt_path, models[i], providers[i], thinkings[i], kinds[i], runtimes[i], tastes[i], messages[i], options[i])
+		command := host_spall_env_prefix(os.get_env(SPANS_ENV, context.temp_allocator), host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, id, request_id, prompt_path, models[i], providers[i], thinkings[i], kinds[i], runtimes[i], tastes[i], messages[i], options[i]))
 		if !host_station_command_is_ascii(command) {
 			delete(command)
 			host_pane_mark_terminal(pool_pane_id)
@@ -1223,6 +1223,18 @@ host_station_command_is_ascii :: proc(command: string) -> bool {
 // to safe characters.
 // A research Shot gets scratch-write tools; the Station then checks that it left the source as it found it.
 // A Pull passes its taste and message to the Station, which commits only if the taste passes.
+// Herdr panes do not inherit the host's environment, so pass the trace base on the
+// command line; each Station then writes "<base>.<station id>.<pid>".
+host_spall_env_prefix :: proc(base, command: string) -> string {
+	if base == "" {
+		return command
+	}
+	defer delete(command)
+	quoted := shell_quote(base)
+	defer delete(quoted)
+	return fmt.aprintf("%s=%s %s", SPANS_ENV, quoted, command)
+}
+
 host_station_command :: proc(launcher, report, extension, oreo_host, shot_id, request_id, prompt_file, model, provider, thinking, kind, runtime, taste, message: string, options := Shot_Options{codemode = true}) -> string {
 	quoted_report := shell_quote(report)
 	defer delete(quoted_report)
@@ -1451,7 +1463,7 @@ host_retry_dequeued_shots :: proc(dequeued: []Queued_Shot, state_root: string) {
 		prompts_dir, _ := filepath.join({state_root, "host", req_id, "prompts"}, context.temp_allocator)
 		prompt_path, _ := filepath.join({prompts_dir, prompt_name}, context.temp_allocator)
 
-		command := host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, shot_id, req_id, prompt_path, queued_shot.model, queued_shot.provider, queued_shot.thinking, queued_shot.kind, queued_shot.runtime, queued_shot.taste, queued_shot.message, host_queued_options_take(req_id, shot_id))
+		command := host_spall_env_prefix(os.get_env(SPANS_ENV, context.temp_allocator), host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, shot_id, req_id, prompt_path, queued_shot.model, queued_shot.provider, queued_shot.thinking, queued_shot.kind, queued_shot.runtime, queued_shot.taste, queued_shot.message, host_queued_options_take(req_id, shot_id)))
 		if !host_station_command_is_ascii(command) {
 			delete(command)
 			host_pane_mark_terminal(pane_id)
