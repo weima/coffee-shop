@@ -150,5 +150,49 @@ dev_cancel_escalate :: proc(wrapper, seconds: int) {
 	if spawn_err != nil {
 		return
 	}
-	_, _ = os.process_wait(process)
+	_, _ = process_reap(process)
+}
+
+// Waits for a child we started and reaps it. os.process_wait cannot be used for this on
+// macOS: it first checks the handle with proc_pid_rusage, which fails for a child that has
+// already exited, so it returns an error and leaves the zombie behind until this process dies.
+// A short-lived child (a shell that backgrounds and exits) is exactly that case.
+process_reap :: proc(process: os.Process) -> (state: os.Process_State, err: os.Error) {
+	state.pid = process.pid
+	status: i32
+	for {
+		if posix.waitpid(posix.pid_t(process.pid), &status, {}) != -1 {
+			break
+		}
+		if errno := posix.errno(); errno != .EINTR {
+			return state, errno
+		}
+	}
+	state.exited = true
+	if posix.WIFEXITED(status) {
+		state.exit_code = int(posix.WEXITSTATUS(status))
+	} else if posix.WIFSIGNALED(status) {
+		state.exit_code = int(posix.WTERMSIG(status))
+	}
+	state.success = posix.WIFEXITED(status) && state.exit_code == 0
+	return
+}
+
+// Runs a short-lived command and returns its stdout, always reaping the child. os.process_exec
+// cannot be used for a setuid binary such as ps on macOS: its wait fails with Permission_Denied
+// (proc_pid_rusage is refused) and the child is never reaped, so each call left one zombie.
+exec_reaped :: proc(command: []string, allocator := context.allocator) -> (stdout: []byte, ok: bool) {
+	read_end, write_end, pipe_err := os.pipe()
+	if pipe_err != nil {
+		return nil, false
+	}
+	defer os.close(read_end)
+	process, start_err := os.process_start(os.Process_Desc{command = command, stdout = write_end})
+	_ = os.close(write_end)
+	if start_err != nil {
+		return nil, false
+	}
+	data, read_err := os.read_entire_file(read_end, allocator)
+	state, wait_err := process_reap(process)
+	return data, read_err == nil && wait_err == nil && state.success
 }

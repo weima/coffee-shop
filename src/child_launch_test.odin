@@ -90,3 +90,29 @@ test_odin_run_child_is_zero_for_a_process_that_is_not_odin_run :: proc(t: ^testi
 	// The test runner is not an odin run wrapper, so no child may be signalled on its behalf.
 	testing.expect_value(t, odin_run_child(os.get_pid()), 0)
 }
+
+// Counts this process's children that have exited but were never waited on.
+defunct_children :: proc() -> int {
+	out, _ := exec_reaped({"ps", "-axo", "ppid=,stat="}, context.temp_allocator)
+	me := fmt.tprintf("%d", os.get_pid())
+	count := 0
+	for line in strings.split_lines(string(out), context.temp_allocator) {
+		fields := strings.fields(line, context.temp_allocator)
+		if len(fields) == 2 && fields[0] == me && strings.has_prefix(fields[1], "Z") {
+			count += 1
+		}
+	}
+	return count
+}
+
+@(test)
+test_short_lived_children_are_reaped :: proc(t: ^testing.T) {
+	before := defunct_children()
+	for _ in 0 ..< 20 {
+		_ = process_commands_ps()
+		dev_cancel_escalate(2147483000, 1)
+		_ = server_spawn({"/usr/bin/true"}, "/tmp/cs-no-state", "/tmp/cs-no-repo")
+	}
+	time.sleep(300 * time.Millisecond)
+	testing.expect_value(t, defunct_children() - before, 0)
+}

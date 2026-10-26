@@ -228,7 +228,7 @@ server_spawn :: proc(launch: []string, state_root, repository: string) -> bool {
 	if spawn_err != nil {
 		return false
 	}
-	_, wait_err := os.process_wait(process)
+	_, wait_err := process_reap(process)
 	return wait_err == nil
 }
 
