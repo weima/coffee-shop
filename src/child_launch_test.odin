@@ -87,6 +87,41 @@ test_dev_cancel_escalate_kills_the_group_after_the_timeout :: proc(t: ^testing.T
 	testing.expect(t, wait_err == nil, "the escalation must kill the wrapper's process group after the timeout")
 }
 
+// Runs in a forked copy that leads its own group, so a refused group kill cannot reach the runner.
+// Exits 0 when the target stayed alive for the whole timeout, 1 when it was killed.
+escalation_refused_in_own_group :: proc(as_group: bool) -> int {
+	pid := posix.fork()
+	if pid == 0 {
+		_ = posix.setpgid(0, 0)
+		sleeper, _ := os.process_start(os.Process_Desc{command = {"sleep", "300"}})
+		dev_cancel_escalate(os.get_pid() if as_group else sleeper.pid, 1)
+		time.sleep(3 * time.Second)
+		alive := posix.kill(posix.pid_t(sleeper.pid), posix.Signal(0)) == .OK
+		_ = posix.kill(posix.pid_t(sleeper.pid), .SIGKILL)
+		posix._exit(0 if alive else 1)
+	}
+	status: i32
+	for posix.waitpid(pid, &status, {}) == -1 {
+		if posix.errno() != .EINTR {
+			return -1
+		}
+	}
+	if !posix.WIFEXITED(status) {
+		return 2 // the forked caller itself was killed: the bug
+	}
+	return int(posix.WEXITSTATUS(status))
+}
+
+@(test)
+test_dev_cancel_escalate_refuses_the_callers_own_group :: proc(t: ^testing.T) {
+	testing.expect_value(t, escalation_refused_in_own_group(true), 0)
+}
+
+@(test)
+test_dev_cancel_escalate_refuses_a_pid_in_the_callers_group :: proc(t: ^testing.T) {
+	testing.expect_value(t, escalation_refused_in_own_group(false), 0)
+}
+
 @(test)
 test_odin_run_child_is_zero_for_a_process_that_is_not_odin_run :: proc(t: ^testing.T) {
 	// The test runner is not an odin run wrapper, so no child may be signalled on its behalf.
