@@ -2,9 +2,45 @@
 set -eu
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/coffee-shop-suite-lock.XXXXXX")
-trap 'rm -rf "$tmp"' 0
+
+# Guard: one lock test at a time. It is a separate mkdir lock outside any Git
+# repository and never touches the suite lock, so it does not depend on the
+# mechanism under test. A guard whose pid is gone, or reused by a process with a
+# different start time, is stale and reclaimed by rename (as scripts/test-suite.sh does).
+guard="${TMPDIR:-/tmp}/coffee-shop-lock-test.guard.$(id -u)"
+guard_start() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' ' ' | sed 's/^ //;s/ $//'; }
+guard_dead() {
+    g_pid=$(cat "$guard/pid" 2>/dev/null || :)
+    if [ -z "$g_pid" ]; then
+        g_nopid=$((g_nopid + 1)); [ "$g_nopid" -ge 20 ]; return
+    fi
+    g_nopid=0
+    g_now=$(guard_start "$g_pid")
+    [ -z "$g_now" ] && return 0
+    [ "$g_now" != "$(cat "$guard/start" 2>/dev/null || :)" ]
+}
+g_nopid=0
+g_waited=0
+while ! mkdir "$guard" 2>/dev/null; do
+    if guard_dead; then
+        echo "Reclaiming the lock-test guard from dead PID $(cat "$guard/pid" 2>/dev/null || echo unknown)." >&2
+        mv "$guard" "$guard.stale.$$" 2>/dev/null && rm -rf "$guard.stale.$$"
+        g_nopid=0; continue
+    fi
+    [ "$g_waited" -eq 0 ] && echo "Another lock test holds $guard (PID $(cat "$guard/pid" 2>/dev/null || echo unknown)); waiting." >&2
+    [ "$g_waited" -ge "${LOCK_TEST_GUARD_TIMEOUT:-300}" ] && { echo "Timed out waiting for the lock-test guard $guard." >&2; exit 1; }
+    g_waited=$((g_waited + 1)); sleep 1
+done
+guard_start "$$" >"$guard/start"
+printf '%s\n' "$$" >"$guard/pid"
+tmp=
+cleanup() {
+    [ -z "$tmp" ] || rm -rf "$tmp"
+    if [ "$(cat "$guard/pid" 2>/dev/null || :)" = "$$" ]; then rm -rf "$guard"; fi
+}
+trap cleanup 0
 trap 'exit 1' HUP INT TERM
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/coffee-shop-suite-lock.XXXXXX")
 
 mkdir "$tmp/bin"
 cat >"$tmp/bin/odin" <<'ODIN'
@@ -42,6 +78,10 @@ case "$common" in
 esac
 common=$(CDPATH= cd -- "$common" && pwd -P)
 lock="$common/.coffee-shop-test.lock"
+# Sandbox proof: the lock under test must not be the real suite's lock.
+real=$(CDPATH= cd -- "$(git -C "$repo" rev-parse --git-common-dir)" && pwd -P)
+ptmp=$(CDPATH= cd -- "$tmp" && pwd -P)
+[ "$common" != "$real" ] && [ "${lock#"$ptmp"/}" != "$lock" ] || { echo "lock test is not sandboxed" >&2; exit 1; }
 export PATH="$tmp/bin:$PATH"
 export ODIN_STARTED="$tmp/started" ODIN_RELEASE="$tmp/release" ODIN_STATUS=0
 export ODIN_PID_FILE="$tmp/runner.pid" ODIN_FINISHED="$tmp/runner.finished" ODIN_SIGNAL="$tmp/runner.signal"
@@ -119,7 +159,8 @@ for signal in HUP INT TERM; do
         : >"$ODIN_RELEASE"
     ) &
     signaler=$!
-    if (cd "$tmp/repo" && exec sh scripts/test-suite.sh) >"$tmp/$signal.out" 2>&1; then
+    # perl restores SIGINT: a lock test started with & inherits it ignored, and sh cannot trap an ignored signal.
+    if (cd "$tmp/repo" && exec perl -e '$SIG{INT} = "DEFAULT"; exec @ARGV' sh scripts/test-suite.sh) >"$tmp/$signal.out" 2>&1; then
         echo "$signal-interrupted suite unexpectedly succeeded" >&2
         exit 1
     fi
