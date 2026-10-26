@@ -151,4 +151,52 @@ rm -f "$ODIN_STARTED"
 (cd "$tmp/other" && COFFEE_SHOP_TEST_LOCK_TIMEOUT=5 sh scripts/test-suite.sh) >/dev/null 2>&1 \
     || { echo "new acquirer failed after the holder died" >&2; exit 1; }
 
-echo "cross-worktree suite lock exclusion, bounded wait, timeout, failure, and interruption release passed"
+# Killed holder (SIGKILL: no trap runs) leaves its lock; the next run reclaims it fast.
+rm -f "$ODIN_STARTED" "$ODIN_RELEASE" "$ODIN_PID_FILE"
+(cd "$tmp/repo" && exec sh scripts/test-suite.sh) >/dev/null 2>&1 &
+killed=$!
+tries=0
+while [ ! -e "$ODIN_STARTED" ] && [ "$tries" -lt 100 ]; do tries=$((tries + 1)); sleep 0.02; done
+kill -KILL "$killed"
+wait "$killed" 2>/dev/null || :
+kill -KILL "$(cat "$ODIN_PID_FILE")" 2>/dev/null || :
+[ -d "$lock" ] || { echo "SIGKILLed holder did not leave a lock to reclaim" >&2; exit 1; }
+rm -f "$ODIN_STARTED"
+: >"$ODIN_RELEASE"
+start=$(date +%s)
+(cd "$tmp/other" && COFFEE_SHOP_TEST_LOCK_TIMEOUT=60 sh scripts/test-suite.sh) >"$tmp/reclaim.out" 2>&1 \
+    || { cat "$tmp/reclaim.out" >&2; echo "run after SIGKILLed holder failed" >&2; exit 1; }
+[ $(($(date +%s) - start)) -lt 10 ] || { echo "reclaiming a dead holder waited too long" >&2; exit 1; }
+grep -qF "dead PID $killed" "$tmp/reclaim.out" || { cat "$tmp/reclaim.out" >&2; echo "reclaim not reported" >&2; exit 1; }
+[ -e "$ODIN_STARTED" ] || { echo "suite did not run after reclaim" >&2; exit 1; }
+[ ! -e "$lock" ] || { echo "reclaiming suite left its lock" >&2; exit 1; }
+
+# Reused pid: a live pid whose start time differs from the recorded one is not the holder.
+mkdir "$lock"
+sleep 30 &
+reused=$!
+printf '%s\n' "$reused" >"$lock/pid"
+echo "Thu Jan  1 00:00:00 1970" >"$lock/start"
+rm -f "$ODIN_STARTED"
+(cd "$tmp/other" && COFFEE_SHOP_TEST_LOCK_TIMEOUT=60 sh scripts/test-suite.sh) >"$tmp/reuse.out" 2>&1 \
+    || { cat "$tmp/reuse.out" >&2; echo "reused pid blocked the suite" >&2; exit 1; }
+kill "$reused" 2>/dev/null || :
+[ -e "$ODIN_STARTED" ] || { echo "suite did not run past a reused pid" >&2; exit 1; }
+
+# Live holder with a matching start time is refused and reported, never stolen.
+sleep 30 &
+live=$!
+mkdir "$lock"
+LC_ALL=C ps -o lstart= -p "$live" | tr -s ' ' ' ' | sed 's/^ //;s/ $//' >"$lock/start"
+printf '%s\n' "$live" >"$lock/pid"
+rm -f "$ODIN_STARTED"
+if (cd "$tmp/other" && COFFEE_SHOP_TEST_LOCK_TIMEOUT=1 sh scripts/test-suite.sh) >"$tmp/live.out" 2>&1; then
+    echo "suite stole a live holder's lock" >&2; exit 1
+fi
+grep -qF "PID $live" "$tmp/live.out" && grep -qiF 'timed out' "$tmp/live.out" \
+    || { cat "$tmp/live.out" >&2; echo "live holder not reported" >&2; exit 1; }
+[ -d "$lock" ] && [ ! -e "$ODIN_STARTED" ] || { echo "live holder's lock was disturbed" >&2; exit 1; }
+kill "$live" 2>/dev/null || :
+rm -rf "$lock"
+
+echo "cross-worktree suite lock exclusion, bounded wait, timeout, failure, interruption release, dead-holder and reused-pid reclaim passed"
