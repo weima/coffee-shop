@@ -67,3 +67,36 @@ test_rejects_worker_without_a_state_root :: proc(t: ^testing.T) {
 
 	testing.expect(t, err != "")
 }
+
+@(test)
+test_parse_status_stations_flag :: proc(t: ^testing.T) {
+	parsed, err := parse_args([]string{"status", "--stations"})
+	testing.expect_value(t, err, "")
+	testing.expect_value(t, parsed.kind, Command_Kind.Status)
+	testing.expect(t, parsed.stations)
+}
+
+@(test)
+test_parse_log_arguments :: proc(t: ^testing.T) {
+	parsed, err := parse_args([]string{"log", "req-1", "shot-a", "--tail", "20"})
+	testing.expect_value(t, err, "")
+	testing.expect_value(t, parsed.kind, Command_Kind.Log)
+	testing.expect_value(t, parsed.brew_id, "req-1")
+	testing.expect_value(t, parsed.shot_id, "shot-a")
+	testing.expect_value(t, parsed.tail, 20)
+	_, both := parse_args([]string{"log", "r", "s", "--cat", "--tail", "3"})
+	testing.expect(t, both != "")
+	_, missing := parse_args([]string{"log", "r"})
+	testing.expect(t, missing != "")
+}
+
+@(test)
+test_parse_reply_arguments :: proc(t: ^testing.T) {
+	parsed, err := parse_args([]string{"reply", "req-1", "shot-a", "yes, go ahead", "--print"})
+	testing.expect_value(t, err, "")
+	testing.expect_value(t, parsed.kind, Command_Kind.Reply)
+	testing.expect_value(t, parsed.message, "yes, go ahead")
+	testing.expect(t, parsed.print_only)
+	_, missing := parse_args([]string{"reply", "req-1", "shot-a"})
+	testing.expect(t, missing != "")
+}
