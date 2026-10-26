@@ -65,7 +65,7 @@ host_dispatch_init_at :: proc(workspace_id, machine_root: string) {
 // Cleanup on host exit.
 host_dispatch_cleanup :: proc(herdr_exe: string) -> int {
 	// Close all host-owned panes.
-	exit_code := host_pane_pool_close(herdr_exe)
+	exit_code := host_pane_pool_close(herdr_exe) // 0, and nothing closed, when headless
 
 	// Clear queue (in case of early exit).
 	for shot in host_dispatch_queue {
@@ -73,7 +73,11 @@ host_dispatch_cleanup :: proc(herdr_exe: string) -> int {
 	}
 	delete(host_dispatch_queue)
 	host_dispatch_queue = nil
-	pane_pool_destroy(&host_pane_pool)
+	if pane_backend_is_headless() {
+		headless_slots_destroy()
+	} else {
+		pane_pool_destroy(&host_pane_pool)
+	}
 
 	return exit_code
 }
@@ -91,8 +95,9 @@ host_dispatch_acquire :: proc(request_id, shot_id: string) -> (pane_id: string, 
 	}
 
 	// Pool at capacity. Say why, then queue the Shot (minimal metadata for now).
-	if host_pane_pool.last_refusal != "" {
-		fmt.eprintfln("shot %s waiting: %s", shot_id, host_pane_pool.last_refusal)
+	refusal := headless_slots.last_refusal if pane_backend_is_headless() else host_pane_pool.last_refusal
+	if refusal != "" {
+		fmt.eprintfln("shot %s waiting: %s", shot_id, refusal)
 	}
 	// Full metadata is stored at call site when queued=true.
 	queued_shot := Queued_Shot{

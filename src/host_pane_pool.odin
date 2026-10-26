@@ -13,18 +13,28 @@ host_pane_pool: Pane_Pool
 // Initialize the pool for a workspace. Called once per host startup.
 // A non-empty machine_root joins the machine-wide limit under that state root.
 host_pane_pool_init :: proc(workspace_id: string, capacity: int = 5, machine_root: string = "") {
+	if pane_backend_is_headless() {
+		headless_slots_init(machine_root, capacity) // no pool: only the concurrency limit
+		return
+	}
 	host_pane_pool = pane_pool_init(capacity, workspace_id, context.allocator)
 	host_pane_pool.machine_root = strings.clone(machine_root, context.allocator)
 }
 
 // Destroy the pool and close all host-owned panes. Called on host exit.
 host_pane_pool_close :: proc(herdr_exe: string) -> int {
+	if pane_backend_is_headless() {
+		return 0
+	}
 	return pane_pool_close_all(&host_pane_pool, session_surface_open(herdr_exe))
 }
 
 // Acquire a pane for a dispatch. If no FREE pane exists and pool is at capacity,
 // returns empty pane_id and ok=false. Otherwise returns a pane (new or reused).
 host_pane_acquire :: proc(request_id, shot_id: string) -> (pane_id: string, ok: bool) {
+	if pane_backend_is_headless() {
+		return headless_slot_acquire(request_id, shot_id)
+	}
 	pane_id, _, ok = pane_pool_acquire(&host_pane_pool, request_id, shot_id)
 	if ok && pane_id != "" {
 		when ODIN_DEBUG {
@@ -36,6 +46,9 @@ host_pane_acquire :: proc(request_id, shot_id: string) -> (pane_id: string, ok: 
 
 // Mark a pane as needing human input (pinned).
 host_pane_pin :: proc(pane_id: string) -> bool {
+	if pane_backend_is_headless() {
+		return false
+	}
 	ok := pane_pool_pin(&host_pane_pool, pane_id)
 	when ODIN_DEBUG {
 		if ok {
@@ -47,6 +60,9 @@ host_pane_pin :: proc(pane_id: string) -> bool {
 
 // Unpin a pane after human input (reply or cancel).
 host_pane_unpin :: proc(pane_id: string) -> bool {
+	if pane_backend_is_headless() {
+		return false
+	}
 	ok := pane_pool_unpin(&host_pane_pool, pane_id)
 	when ODIN_DEBUG {
 		if ok {
@@ -60,6 +76,9 @@ host_pane_unpin :: proc(pane_id: string) -> bool {
 // Called when a station_report with kind in {pulled, taste_failed, incomplete, session_failed}
 // arrives, or when the process is confirmed gone.
 host_pane_mark_terminal :: proc(pane_id: string) -> bool {
+	if pane_backend_is_headless() {
+		return headless_slot_release(pane_id) // frees the concurrency slot
+	}
 	ok := pane_pool_mark_reclaimable(&host_pane_pool, pane_id)
 	when ODIN_DEBUG {
 		if ok {
@@ -73,6 +92,9 @@ host_pane_mark_terminal :: proc(pane_id: string) -> bool {
 // The pane must be RECLAIMABLE. This should be called before the next dispatch
 // that will reuse this pane.
 host_pane_reclaim :: proc(pane_id: string) -> bool {
+	if pane_backend_is_headless() {
+		return true // nothing to clear or reuse
+	}
 	ok := pane_pool_reclaim(&host_pane_pool, pane_id)
 	when ODIN_DEBUG {
 		if ok {
@@ -84,6 +106,9 @@ host_pane_reclaim :: proc(pane_id: string) -> bool {
 
 // Returns how many panes are currently in use (ALLOCATED or WAITING_FOR_HUMAN).
 host_pane_in_use_count :: proc() -> int {
+	if pane_backend_is_headless() {
+		return len(headless_slots.held)
+	}
 	return pane_pool_in_use(&host_pane_pool)
 }
 
