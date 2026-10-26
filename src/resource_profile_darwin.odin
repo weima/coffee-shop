@@ -1,6 +1,7 @@
 #+build darwin
 package main
 
+import "core:c"
 import "core:sys/darwin"
 import "core:sys/posix"
 
@@ -42,4 +43,20 @@ platform_process_table :: proc(allocator := context.allocator) -> []Process_Edge
 		}
 	}
 	return edges[:]
+}
+
+// KERN_PROCARGS2 (CTL_KERN=1, 49): argc, exec path, then NUL-separated arguments.
+// False for a process this user may not read.
+platform_process_args :: proc(pid: int, buffer: ^[dynamic]u8) -> bool {
+	mib := [3]c.int{1, 49, c.int(pid)}
+	size: c.size_t
+	if darwin.syscall_sysctl(&mib[0], 3, nil, &size, nil, 0) != 0 || size == 0 {
+		return false
+	}
+	resize(buffer, int(size))
+	if darwin.syscall_sysctl(&mib[0], 3, raw_data(buffer[:]), &size, nil, 0) != 0 {
+		return false
+	}
+	resize(buffer, int(size))
+	return true
 }

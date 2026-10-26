@@ -1,7 +1,9 @@
 package main
 
 import "core:os"
+import "core:strings"
 import "core:testing"
+import "core:time"
 
 @(test)
 resource_sample_of_self_is_plausible :: proc(t: ^testing.T) {
@@ -82,4 +84,44 @@ host_unreadable_station_records_nothing :: proc(t: ^testing.T) {
 	defer delete(path)
 	_, ok := read_resource_record(path)
 	testing.expect(t, !ok, "an unreadable Station must not leave a zero record")
+}
+
+SAMPLE_BOUND :: 2 * time.Second
+
+@(test)
+station_sampling_returns_promptly_and_records :: proc(t: ^testing.T) {
+	root, _ := os.make_directory_temp("", "cs-hostres", context.temp_allocator)
+	defer os.remove_all(root)
+	took := sample_station(root, "req-2", "shot-2", int(os.get_pid()))
+	testing.expectf(t, took < SAMPLE_BOUND, "sampling took %v, bound %v", took, SAMPLE_BOUND)
+	path := resource_path(state_file_path(root, "host/req-2", context.temp_allocator), "shot-2")
+	defer delete(path)
+	record, ok := read_resource_record(path)
+	testing.expect(t, ok, "record must exist at <state>/host/<request>/workers/<shot>.resource")
+	testing.expect(t, record.station_peak.rss.known && record.station_peak.rss.value > 0, "resident size must be real")
+	testing.expect(t, record.station_peak.fds.known && record.station_peak.fds.value >= 3 && record.station_peak.fds.value < 1_000_000, "descriptor count must be plausible")
+}
+
+@(test)
+station_lookup_by_arguments_needs_no_child :: proc(t: ^testing.T) {
+	started := time.tick_now()
+	// Another process may hold this exact text, but never this one: it is excluded as the host.
+	testing.expect_value(t, find_pid_by_args(station_needle("no-such-shot", "no-such-brew")), 0)
+	buffer: [dynamic]u8
+	defer delete(buffer)
+	testing.expect(t, platform_process_args(int(os.get_pid()), &buffer) && len(buffer) > 0, "own arguments must be readable")
+	testing.expect(t, strings.contains(string(buffer[:]), os.args[0]), "arguments must hold argv[0]")
+	testing.expect(t, time.tick_since(started) < SAMPLE_BOUND, "lookup must return within the bound")
+}
+
+@(test)
+unfindable_station_records_nothing_and_returns_promptly :: proc(t: ^testing.T) {
+	root, _ := os.make_directory_temp("", "cs-hostres", context.temp_allocator)
+	defer os.remove_all(root)
+	took := sample_station(root, "req-3", "shot-3", 0)
+	testing.expect(t, took < SAMPLE_BOUND, "must return within the bound")
+	path := resource_path(state_file_path(root, "host/req-3", context.temp_allocator), "shot-3")
+	defer delete(path)
+	_, ok := read_resource_record(path)
+	testing.expect(t, !ok, "an unfound Station must leave no record")
 }

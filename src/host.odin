@@ -351,18 +351,15 @@ host_sample_sessions_throttled :: proc() {
 	}
 }
 
-// Finds the Station's pid from its pane and folds one reading into
-// <state>/host/<request>/workers/<shot>.resource. An unidentified Station adds nothing.
+// Finds the Station's pid from its own arguments (no herdr call, no child process) and folds
+// one reading into <state>/host/<request>/workers/<shot>.resource. Never waits on anything.
+// A Station that cannot be found adds nothing: unknown stays unknown.
 host_sample_session :: proc(session: Host_Session) {
-	identity := host_pane_identity(host_herdr_exe, session.pane_id)
-	if identity.pid <= 0 {
-		return
-	}
 	state_root, err := default_state_root(context.temp_allocator)
 	if err != "" {
 		return
 	}
-	record_host_resource_use(state_root, session.request_id, session.shot_id, identity.pid)
+	_ = sample_station(state_root, session.request_id, session.shot_id, 0)
 }
 
 // Ends a Shot's session: frees its pane and machine slot, then starts queued Shots.
