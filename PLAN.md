@@ -531,6 +531,28 @@ The developer's own experience is the decisive evidence here: three days on Wind
 
 **Open questions this section does not answer.** Whether anything replaces a pane at all — the guardrails exclude tmux and zmx, so dropping Herdr means either no multiplexer or a deliberately amended guardrail. Whether the developer still follows a Shot live, or only reads its report afterwards. And whether the reported WSL2 cost is Herdr at all, which the measurement above settles.
 
+### The work, in waves
+
+Each wave is chosen so that the Shots in it own disjoint files. A Pull that needs a file another Pull in the same wave owns is held to the next wave, because a merge conflict costs more than the wait.
+
+**Wave 1.**
+
+1. **The pane-backend seam.** Today all twelve Herdr operations are called from `src/dispatch.odin`, and the pane lifecycle is spread across `src/pane_pool.odin`, `src/host_pane_pool.odin`, `src/pane_clear.odin`, `src/host_pool_persistence.odin`, `src/host_dispatch_queue.odin` and `src/host.odin`. This Pull defines the interface, routes every call site through it, and **changes no behaviour**: the suite must stay green with the same test count. It also states what a headless implementation must provide, so wave 2 needs no call-site changes.
+2. **An Oreo turn must end.** A two-line edit under the Oreo runtime hung for twelve minutes at 0.0% CPU with no reports; the reply deadline did not bound it and a routed cancel did not interrupt it. A turn must complete, fail with a reason, or report `incomplete` on a deadline, and cancel must reach it. The Pi path must not change.
+3. **The test-isolation rule, written down.** Three separate flaky fixes in one day had one cause: process-global and machine-global state is shared between tests under a ten-thread runner. The rule belongs in `standards.md`, with the remedies this codebase already uses.
+
+**Wave 2.**
+
+4. **The headless backend.** Station stdio to a per-Shot log, replies through the host's existing `reply` request, no pane pool at all, and the pane-clearing and reuse paths skipped when the backend is headless. Gates: the five-Station run completes headless with five Shots and a sixth waiting; a `needs_input` reply still reaches the Station; a reused backend shows no row from its predecessor.
+5. **The human channel.** `status` must name what is running without a pane; a log tail and a `reply` command must exist; the progress ledger's alerts must still fire. Gate: a developer can follow a run and answer a question with no pane and no Herdr server installed.
+
+**Wave 3.**
+
+6. **Delete the pane paths** once nothing uses them, retire `docs/tab-lifecycle.md`, and amend the guardrail line that names Herdr as in scope — deliberately, in its own commit, saying which guarantee is being traded.
+7. **Measure the removal.** The same five-Shot run on WSL2 and on macOS, wall-clock per Shot and host CPU, so the before and after is a number rather than a claim.
+
+**Deliberately out of scope for v0.5:** reintroducing a multiplexer. If live multi-pane watching turns out to be essential, that is a new requirement with its own decision, not a fallback built into this one.
+
 ## v0.4 completion record (2026-10-26)
 
 **Shipped on Pi.** Every gate below was run and its evidence recorded; none is asserted from a summary.
