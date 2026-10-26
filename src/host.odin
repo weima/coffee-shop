@@ -90,6 +90,10 @@ run_host :: proc() -> int {
 		host_write_line(fmt.tprintf(`{{"type":"error","reason":"%s"}}`, state_err))
 		return 1
 	}
+	if _, backend_err := pane_backend_from_env(); backend_err != "" {
+		host_emit(Host_Event{type = "error", reason = backend_err})
+		return 1
+	}
 	host_dir, _ := filepath.join({state_root, "host"}, context.temp_allocator)
 	if !os.is_directory(host_dir) && os.make_directory_all(host_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
 		host_write_line(`{"type":"error","reason":"could not create the host directory"}`)
@@ -422,7 +426,11 @@ host_release_session :: proc(request_id, shot_id, kind: string) {
 	host_pane_mark_terminal(pane_id)
 	state_root, _ := default_state_root(context.temp_allocator)
 	_, _ = host_report_make_durable(state_root, request_id, shot_id, kind)
-	if !pane_prepare_for_reuse(session_surface_open(host_herdr_exe), host_pane_pool.workspace_id, pane_id) {
+	if pane_backend_is_headless() {
+		// The Station is done: reap it and free its session. No clearing, no reuse.
+		surface := session_surface_open(host_herdr_exe)
+		_ = surface.ops.tab_close(surface, pane_id)
+	} else if !pane_prepare_for_reuse(session_surface_open(host_herdr_exe), host_pane_pool.workspace_id, pane_id) {
 		when ODIN_DEBUG {
 			log.warnf("host_release_session: pane clear failed for %s", pane_id)
 		}
@@ -1074,6 +1082,12 @@ host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models
 // If none is saved or Herdr rejects it, a new workspace is created and saved; its
 // default tab then serves this Shot. A save that fails only warns: the Shot still runs.
 host_open_shot_pane :: proc(herdr, state_root, repo, request_id, shot_id, station: string) -> (pane_id, err: string) {
+	if pane_backend_is_headless() {
+		// No workspace or tab: the Shot gets a session whose log is under this request.
+		surface := session_surface_open(herdr)
+		opened, open_err := surface.ops.tab_create(surface, request_id, shot_id, station, context.temp_allocator)
+		return opened.pane_id, open_err
+	}
 	name := repository_name(repo)
 	defer delete(name)
 	workspaces_dir, _ := filepath.join({state_root, "host", "workspaces"}, context.temp_allocator)

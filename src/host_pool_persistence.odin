@@ -23,6 +23,9 @@ Pool_State :: struct {
 // Save pool state to disk before starting.
 // This preserves which panes the host owns so recovery can close exactly those.
 host_pool_persist :: proc(state_root: string) -> (ok: bool, err: string) {
+	if pane_backend_is_headless() {
+		return true, "" // no pool, no owned panes
+	}
 	host_dir, _ := filepath.join({state_root, "host"}, context.temp_allocator)
 	pool_state_path, _ := filepath.join({host_dir, POOL_STATE_FILE}, context.temp_allocator)
 
@@ -63,6 +66,9 @@ host_pool_persist :: proc(state_root: string) -> (ok: bool, err: string) {
 // Load persisted pool state and close owned panes that are still alive.
 // Called at host startup to clean up from a previous crash.
 host_pool_recover :: proc(state_root, herdr_exe: string) -> (ok: bool, err: string) {
+	if pane_backend_is_headless() {
+		return true, "" // no panes to recover
+	}
 	host_dir, _ := filepath.join({state_root, "host"}, context.temp_allocator)
 	pool_state_path, _ := filepath.join({host_dir, POOL_STATE_FILE}, context.temp_allocator)
 
