@@ -1,8 +1,10 @@
 package main
 
+import "core:c"
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:sys/posix"
 import "core:testing"
 import "core:time"
 
@@ -105,14 +107,37 @@ defunct_children :: proc() -> int {
 	return count
 }
 
+// Runs in a forked copy of the test process. The copy has one thread and no children but
+// its own, so defunct_children() there counts only what this test spawned; the runner's other
+// threads (and their children) are not in it. Exits with the number left unreaped, capped.
+short_lived_children_unreaped :: proc() -> int {
+	pid := posix.fork()
+	if pid == 0 {
+		before := defunct_children()
+		for _ in 0 ..< 20 {
+			_ = process_commands_ps()
+			dev_cancel_escalate(2147483000, 1)
+			_ = server_spawn({"/usr/bin/true"}, "/tmp/cs-no-state", "/tmp/cs-no-repo")
+		}
+		time.sleep(300 * time.Millisecond)
+		posix._exit(c.int(min(defunct_children() - before, 100)))
+	}
+	if pid < 0 {
+		return -1
+	}
+	status: i32
+	for posix.waitpid(pid, &status, {}) == -1 {
+		if posix.errno() != .EINTR {
+			return -1
+		}
+	}
+	if !posix.WIFEXITED(status) {
+		return -1
+	}
+	return int(posix.WEXITSTATUS(status))
+}
+
 @(test)
 test_short_lived_children_are_reaped :: proc(t: ^testing.T) {
-	before := defunct_children()
-	for _ in 0 ..< 20 {
-		_ = process_commands_ps()
-		dev_cancel_escalate(2147483000, 1)
-		_ = server_spawn({"/usr/bin/true"}, "/tmp/cs-no-state", "/tmp/cs-no-repo")
-	}
-	time.sleep(300 * time.Millisecond)
-	testing.expect_value(t, defunct_children() - before, 0)
+	testing.expect_value(t, short_lived_children_unreaped(), 0)
 }
