@@ -39,7 +39,13 @@ run_cli :: proc(args: []string) -> int {
 		return 0
 	}
 	if command.kind == .Status {
-		return run_status(command.brew_id)
+		return run_status(command.brew_id, command.stations)
+	}
+	if command.kind == .Log {
+		return run_log(command.brew_id, command.shot_id, command.tail, command.dump)
+	}
+	if command.kind == .Reply {
+		return run_reply(command.brew_id, command.shot_id, command.message, command.print_only)
 	}
 	if command.kind == .Cancel {
 		return run_cancel(command.brew_id)

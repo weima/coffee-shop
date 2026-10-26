@@ -14,6 +14,8 @@ Command_Kind :: enum {
 	Station,
 	Pr,
 	Cleanup,
+	Log,
+	Reply,
 }
 
 Command :: struct {
@@ -38,6 +40,10 @@ Command :: struct {
 	remote: string,
 	workspace: string,
 	blend: bool,
+	stations: bool,
+	tail: int,
+	dump: bool,
+	print_only: bool,
 }
 
 Brew_Arguments :: struct {
@@ -61,6 +67,20 @@ Pr_Arguments :: struct {
 	remote:  string `usage:"Git remote to push to (default origin)."`,
 	blend:   bool `usage:"Combine the run's 2 to 20 Pull commits into one commit before opening the PR."`,
 	message: string `usage:"Commit message for --blend."`,
+}
+
+Log_Arguments :: struct {
+	request_id: string `args:"pos=0,required" usage:"Request identifier."`,
+	shot_id:    string `args:"pos=1,required" usage:"Shot identifier."`,
+	tail:       int `usage:"Print the last N lines of the log."`,
+	cat:        bool `usage:"Print the whole log."`,
+}
+
+Reply_Arguments :: struct {
+	request_id: string `args:"pos=0,required" usage:"Request identifier."`,
+	shot_id:    string `args:"pos=1,required" usage:"Shot identifier."`,
+	message:    string `args:"pos=2,required" usage:"One line of text for the Station's agent."`,
+	print:      bool `usage:"Only print the request line; send nothing."`,
 }
 
 Cleanup_Arguments :: struct {
@@ -94,6 +114,9 @@ USAGE :: `Coffee Shop - local Pi Workers for isolated repository changes
 Usage:
   coffee-shop brew --repo <path> --recipe <recipe.json>
   coffee-shop status <brew-id>
+  coffee-shop status --stations
+  coffee-shop log <request-id> <shot-id> [--tail <n> | --cat]
+  coffee-shop reply <request-id> <shot-id> <text> [--print]
   coffee-shop cancel <brew-id>
   coffee-shop collect <brew-id>
   coffee-shop pr <run-id> <shot-id> [--branch <name>] [--blend --message <text>]
@@ -147,7 +170,22 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 			return Command{kind = .Help}, "invalid cleanup arguments"
 		}
 		return Command{kind = .Cleanup, run_id = options.run_id, branch = options.branch, workspace = options.workspace}, ""
+	case "log":
+		options: Log_Arguments
+		if flags.parse(&options, args[1:], .Unix) != nil || options.tail < 0 || options.cat && options.tail > 0 {
+			return Command{kind = .Help}, "invalid log arguments"
+		}
+		return Command{kind = .Log, brew_id = options.request_id, shot_id = options.shot_id, tail = options.tail, dump = options.cat}, ""
+	case "reply":
+		options: Reply_Arguments
+		if flags.parse(&options, args[1:], .Unix) != nil {
+			return Command{kind = .Help}, "invalid reply arguments"
+		}
+		return Command{kind = .Reply, brew_id = options.request_id, shot_id = options.shot_id, message = options.message, print_only = options.print}, ""
 	case "status", "cancel", "collect":
+		if name == "status" && len(args) == 2 && args[1] == "--stations" {
+			return Command{kind = .Status, stations = true}, ""
+		}
 		options: Brew_ID_Arguments
 		if flags.parse(&options, args[1:], .Unix) != nil {
 			return Command{kind = .Help}, "expected exactly one Brew ID"
