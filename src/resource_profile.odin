@@ -4,6 +4,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:time"
 
 // One reading. known is false when the platform cannot expose the value or the
 // process cannot be read; an unknown value is never zero and never guessed.
@@ -181,4 +182,50 @@ describe_sample :: proc(s: Sample) -> string {
 
 metric_text :: proc(m: Metric) -> string {
 	return fmt.tprintf("%d", m.value) if m.known else "to be verified"
+}
+
+// Finds a Station by its own argument vector, with no child process: the host starts it as
+// "... station ... --station <shot> --brew <request> ...". Arguments are NUL-separated on both
+// platforms, so the needle cannot match the shell that holds the same text as one string.
+// Of the matches, the one with no matching child is the Station itself (a dev launch also
+// matches its `odin run` parent). Returns 0 when nothing matches.
+station_needle :: proc(shot_id, request_id: string) -> string {
+	return fmt.tprintf("--station\x00%s\x00--brew\x00%s\x00", shot_id, request_id)
+}
+
+find_pid_by_args :: proc(needle: string) -> int {
+	table := platform_process_table(context.temp_allocator)
+	matches := make([dynamic]Process_Edge, 0, 4, context.temp_allocator)
+	buffer: [dynamic]u8
+	defer delete(buffer)
+	self := int(os.get_pid())
+	for edge in table {
+		if edge.pid != self && platform_process_args(edge.pid, &buffer) && strings.contains(string(buffer[:]), needle) {
+			append(&matches, edge)
+		}
+	}
+	for candidate in matches {
+		leaf := true
+		for other in matches {
+			leaf &&= other.ppid != candidate.pid
+		}
+		if leaf {
+			return candidate.pid
+		}
+	}
+	return 0
+}
+
+// Samples the Station of one Shot without waiting on anything: reads kernel tables only.
+// Returns how long it took, so callers and tests can hold it to a bound.
+sample_station :: proc(state_root, request_id, shot_id: string, pid: int) -> time.Duration {
+	started := time.tick_now()
+	station := pid
+	if station <= 0 {
+		station = find_pid_by_args(station_needle(shot_id, request_id))
+	}
+	if station > 0 {
+		record_host_resource_use(state_root, request_id, shot_id, station)
+	}
+	return time.tick_since(started)
 }

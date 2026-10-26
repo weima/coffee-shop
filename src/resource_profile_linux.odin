@@ -87,3 +87,13 @@ platform_process_table :: proc(allocator := context.allocator) -> []Process_Edge
 	}
 	return edges[:]
 }
+
+platform_process_args :: proc(pid: int, buffer: ^[dynamic]u8) -> bool {
+	data, err := os.read_entire_file(fmt.tprintf("/proc/%d/cmdline", pid), context.temp_allocator)
+	if err != nil {
+		return false
+	}
+	clear(buffer)
+	append(buffer, ..data)
+	return true
+}

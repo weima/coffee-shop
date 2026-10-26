@@ -136,3 +136,66 @@ test_stale_lock_is_not_current_after_its_directory_is_recreated :: proc(t: ^test
 	file_lock_release(old_lock)
 	file_lock_release(new_lock)
 }
+
+// A Brew on `repository` with a Shot that has not finished.
+idle_fixture_brew :: proc(t: ^testing.T, root, repository: string, supervised: bool) {
+	register := make_test_register(t)
+	defer destroy_struct(&register)
+	delete(register.beans_path)
+	register.beans_path = strings.clone(repository)
+	brew_dir := fmt.tprintf("%s/brew-test", root)
+	testing.expect_value(t, create_state(brew_dir, &register).kind, State_Error_Kind.None)
+	if supervised {
+		testing.expect(t, write_supervisor(brew_dir))
+	}
+}
+
+// Runs the server loop with a short idle limit and reports how long it took.
+idle_run :: proc(root, repository: string) -> (code: int, elapsed: time.Duration) {
+	started := time.tick_now()
+	code = run_server_idle(root, repository, 1_500_000_000)
+	return code, time.tick_since(started)
+}
+
+@(test)
+test_server_with_no_brew_exits_within_the_timeout :: proc(t: ^testing.T) {
+	root := make_test_state_directory(t)
+	defer remove_test_state_directory(root)
+	code, elapsed := idle_run(root, root)
+	testing.expect_value(t, code, 0)
+	testing.expect(t, elapsed < 6 * time.Second, "an idle server must exit")
+}
+
+@(test)
+test_server_exits_when_the_only_brew_lost_its_supervisor :: proc(t: ^testing.T) {
+	root := make_test_state_directory(t)
+	defer remove_test_state_directory(root)
+	idle_fixture_brew(t, root, root, false)
+	testing.expect(t, !repository_has_active_brew(root, root), "a crashed Brew must not block")
+	code, elapsed := idle_run(root, root)
+	testing.expect_value(t, code, 0)
+	testing.expect(t, elapsed < 6 * time.Second, "a crashed Brew must not pin the server")
+}
+
+@(test)
+test_server_exits_when_its_repository_directory_is_gone :: proc(t: ^testing.T) {
+	root := make_test_state_directory(t)
+	defer remove_test_state_directory(root)
+	gone := fmt.tprintf("%s/deleted-repo", root)
+	idle_fixture_brew(t, root, gone, true)
+	testing.expect(t, !repository_has_active_brew(root, gone), "a deleted repository must not block")
+	code, elapsed := idle_run(root, gone)
+	testing.expect_value(t, code, 0)
+	testing.expect(t, elapsed < 6 * time.Second, "a missing repository must not pin the server")
+}
+
+@(test)
+test_live_brew_blocks_and_is_named :: proc(t: ^testing.T) {
+	root := make_test_state_directory(t)
+	defer remove_test_state_directory(root)
+	idle_fixture_brew(t, root, root, true)
+	brew_id, reason := blocking_brew(root, root)
+	defer delete(brew_id)
+	testing.expect_value(t, brew_id, "brew-test")
+	testing.expect(t, reason != "", "the blocker must carry a reason")
+}

@@ -207,7 +207,8 @@ station_orderly_shutdown :: proc(relay_ptr: ^^Station_Relay, reader: ^thread.Thr
 }
 
 run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_kind, taste, message: string, options: Shot_Options, agent: []string) -> int {
-	_ = spans_init(station_id)
+	// The pid keeps two Stations with the same id (across Brews) off the same file.
+	_ = spans_init(fmt.tprintf("%s.%d", station_id, posix.getpid()))
 	defer spans_close()
 	span_begin("station start")
 	span_started := true
