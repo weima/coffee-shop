@@ -21,8 +21,53 @@ case "$wait_secs" in
 esac
 ticks=$((wait_secs * 10))
 waited=0
+nopid=0
+
+# Start time of a pid, empty if it does not exist. A pid plus its start time
+# names one process: a reused pid starts at a different time.
+proc_start() {
+    LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' ' ' | sed 's/^ //;s/ $//'
+}
+
+# True when the recorded holder is gone: no such pid, or the pid now belongs to
+# a process with a different start time (pid reuse). A lock with no pid file is
+# a holder between mkdir and its first write; only 2s of it counts as dead.
+holder_is_dead() {
+    h_pid=$(cat "$lock_dir/pid" 2>/dev/null || :)
+    if [ -z "$h_pid" ]; then
+        nopid=$((nopid + 1))
+        [ "$nopid" -ge 20 ]
+        return
+    fi
+    nopid=0
+    h_start=$(cat "$lock_dir/start" 2>/dev/null || :)
+    now_start=$(proc_start "$h_pid")
+    [ -z "$now_start" ] && return 0
+    # No recorded start (lock from an older script): a live pid is trusted.
+    [ -n "$h_start" ] && [ "$now_start" != "$h_start" ]
+}
+
+# Move the dead holder's lock aside atomically (rename), so two reclaimers
+# cannot both delete it. If what we moved is not the holder we judged dead,
+# a live suite re-locked meanwhile: put it back instead of deleting it.
+reclaim() {
+    stale="$lock_dir.stale.$$"
+    mv "$lock_dir" "$stale" 2>/dev/null || return 0
+    if [ "$(cat "$stale/pid" 2>/dev/null || :)" = "$h_pid" ]; then
+        rm -rf "$stale"
+    else
+        mv "$stale" "$lock_dir" 2>/dev/null || rm -rf "$stale"
+    fi
+}
+
 while ! mkdir "$lock_dir" 2>/dev/null; do
     owner=$(cat "$lock_dir/pid" 2>/dev/null || printf unknown)
+    if holder_is_dead; then
+        printf 'Reclaiming the Coffee Shop test lock from dead PID %s.\n' "$owner" >&2
+        reclaim
+        nopid=0
+        continue
+    fi
     if [ "$waited" -ge "$ticks" ]; then
         printf 'Another Coffee Shop test suite is running (PID %s; lock: %s). Timed out after %ss waiting for it. If no suite is running, remove the stale lock directory.\n' "$owner" "$lock_dir" "$wait_secs" >&2
         exit 1
@@ -40,7 +85,7 @@ cleanup() {
     if [ -n "$build_dir" ]; then rm -rf "$build_dir"; fi
     owner=$(cat "$lock_dir/pid" 2>/dev/null || :)
     if [ "$owner" = "$$" ]; then
-        rm -f "$lock_dir/pid"
+        rm -f "$lock_dir/pid" "$lock_dir/start"
         rmdir "$lock_dir" 2>/dev/null || :
     fi
 }
@@ -58,6 +103,7 @@ handle_signal() {
 trap 'handle_signal HUP 129' HUP
 trap 'handle_signal INT 130' INT
 trap 'handle_signal TERM 143' TERM
+proc_start "$$" >"$lock_dir/start"
 printf '%s\n' "$$" >"$lock_dir/pid"
 
 cd "$repo"
