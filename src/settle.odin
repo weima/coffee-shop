@@ -289,7 +289,6 @@ close_shot_tab :: proc(herdr: string, shot: Register_Shot) {
 	if shot.herdr_tab_id == "" {
 		return
 	}
-	stdout, stderr, _ := run_herdr(herdr, []string{"tab", "close", shot.herdr_tab_id})
-	delete(stdout)
-	delete(stderr)
+	surface := session_surface_open(herdr)
+	_ = surface.ops.tab_close(surface, shot.herdr_tab_id)
 }

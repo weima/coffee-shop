@@ -31,6 +31,15 @@ This file defines the coding and test standards for the Coffee Shop repository. 
 - Run the repository's existing test and build commands without replacing or silently narrowing them. If a required command or test setup is unclear, report the gap instead of inventing project configuration.
 - For behavior changes, use Taste-Driven Development: write a focused failing test first, make the smallest change that passes, then refactor while tests stay green.
 
+## Test isolation
+
+- The runner uses ten threads by default. Under it, anything process-global or machine-global (a cancel flag, the machine-wide limit's slot files, the process-wide child set) is shared mutable state between tests.
+- A test that reads, waits on or reaps such state must either hold a shared lock for its whole body or be scoped to something it owns. Existing remedies:
+  - Lock: `host_pool_test_lock` in `src/host_wired_test.odin`, held for the whole test body (also used by `src/pool_e2e_test.odin`).
+  - Own the root: give the test a temporary state root instead of the real one, as the pool tests in `src/host_wired_test.odin` do, so a host holding slots cannot fail them.
+  - Own the children: assert only on children the test spawned, not on `defunct_children()` or a wait for a child another test may reap; see `src/child_launch_test.odin`.
+- Do not dismiss these as flakes. They pass on a re-run, so they look like noise rather than bugs, and a flake reported as real is worse than no check.
+
 ## Review
 
 - Check changes against this file, `docs/architecture.md`, and `PLAN.md`.

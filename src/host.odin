@@ -389,7 +389,7 @@ host_release_session :: proc(request_id, shot_id, kind: string) {
 	host_pane_mark_terminal(pane_id)
 	state_root, _ := default_state_root(context.temp_allocator)
 	_, _ = host_report_make_durable(state_root, request_id, shot_id, kind)
-	if !pane_prepare_for_reuse(host_herdr_exe, host_pane_pool.workspace_id, pane_id) {
+	if !pane_prepare_for_reuse(session_surface_open(host_herdr_exe), host_pane_pool.workspace_id, pane_id) {
 		when ODIN_DEBUG {
 			log.warnf("host_release_session: pane clear failed for %s", pane_id)
 		}
@@ -1019,7 +1019,8 @@ host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models
 			host_session_failed(request_id, id, "generated Station command contains non-ASCII bytes")
 			continue
 		}
-		run_err := herdr_run_worker(herdr, pane_id, command)
+		surface := session_surface_open(herdr)
+		run_err := surface.ops.pane_run(surface, pane_id, command)
 		delete(command)
 		if run_err != "" {
 			host_pane_mark_terminal(pool_pane_id)
@@ -1047,27 +1048,28 @@ host_open_shot_pane :: proc(herdr, state_root, repo, request_id, shot_id, statio
 		return "", "could not create the Herdr workspaces directory"
 	}
 	saved_path := state_file_path(workspaces_dir, host_workspace_file_name(repo), context.temp_allocator)
+	surface := session_surface_open(herdr)
 	if saved_id := host_saved_workspace_id(saved_path); saved_id != "" {
-		tab, tab_err := herdr_create_tab(herdr, saved_id, shot_id, station, context.temp_allocator)
+		tab, tab_err := surface.ops.tab_create(surface, saved_id, shot_id, station, context.temp_allocator)
 		if tab_err == "" {
-			return tab.result.root_pane.pane_id, ""
+			return tab.pane_id, ""
 		}
 	}
-	workspace, herdr_err := herdr_create_workspace(herdr, station, name, context.temp_allocator)
+	workspace, herdr_err := surface.ops.workspace_create(surface, station, name, context.temp_allocator)
 	if herdr_err != "" {
 		return "", fmt.tprintf("Herdr workspace launch failed: %s", herdr_err)
 	}
-	if write_err := os.write_entire_file(saved_path, workspace.result.workspace.workspace_id, private_file_permissions()); write_err != nil {
+	if write_err := os.write_entire_file(saved_path, workspace.workspace_id, private_file_permissions()); write_err != nil {
 		host_emit(Host_Event{type = "warning", request_id = request_id, shot_id = shot_id, reason = "could not save the workspace id; the next dispatch will create a new workspace"})
 	}
 	// Initialize pool with actual workspace ID on first workspace creation.
 	if host_pane_pool.workspace_id == "" || host_pane_pool.workspace_id == "ws-host-default" {
-		host_pane_pool.workspace_id = strings.clone(workspace.result.workspace.workspace_id, context.allocator)
+		host_pane_pool.workspace_id = strings.clone(workspace.workspace_id, context.allocator)
 	}
-	if rename_err := herdr_rename_tab(herdr, workspace.result.tab.tab_id, shot_id); rename_err != "" {
+	if rename_err := surface.ops.tab_rename(surface, workspace.tab_id, shot_id); rename_err != "" {
 		return "", fmt.tprintf("Herdr could not label the Shot tab: %s", rename_err)
 	}
-	return workspace.result.root_pane.pane_id, ""
+	return workspace.pane_id, ""
 }
 
 // Keyed by the full repository path, so two repositories with the same name never
@@ -1140,44 +1142,8 @@ host_cancel_session :: proc(request_id: string, session: Host_Session) {
 // shell itself, which is not the Station, and a missing or unreadable answer
 // leaves the identity unknown rather than guessing.
 host_pane_identity :: proc(herdr, pane_id: string) -> Process_Identity {
-	stdout, _, run_err := run_herdr(herdr, []string{"pane", "process-info", "--pane", pane_id}, context.temp_allocator)
-	if run_err != "" {
-		return {}
-	}
-	response: Herdr_Process_Info_Response
-	if json.unmarshal_string(string(stdout), &response, .JSON, context.temp_allocator) != nil {
-		return {}
-	}
-	info := response.result.process_info
-	if pid := info.foreground_process_group_id; pid > 0 && pid != info.shell_pid {
-		return Process_Identity{pid = pid}
-	}
-	for process in info.foreground_processes {
-		if process.pid > 0 && process.pid != info.shell_pid {
-			return Process_Identity{pid = process.pid}
-		}
-	}
-	return {}
-}
-
-Herdr_Process_Info_Response :: struct {
-	result: Herdr_Process_Info_Result,
-}
-
-Herdr_Process_Info_Result :: struct {
-	type:         string,
-	process_info: Herdr_Process_Info,
-}
-
-Herdr_Pane_Process :: struct {
-	pid: int `json:"pid"`,
-}
-
-Herdr_Process_Info :: struct {
-	pane_id:                     string `json:"pane_id"`,
-	shell_pid:                   int `json:"shell_pid"`,
-	foreground_process_group_id: int `json:"foreground_process_group_id"`,
-	foreground_processes:        [dynamic]Herdr_Pane_Process `json:"foreground_processes"`,
+	surface := session_surface_open(herdr)
+	return surface.ops.pane_process_info(surface, pane_id)
 }
 
 // Types a reply into a Station's pane. The Station reads it from stdin and either
@@ -1196,7 +1162,8 @@ host_reply :: proc(root: json.Object, request_id: string) {
 	}
 	for session in host_sessions {
 		if session.request_id == request_id && session.shot_id == shot_id {
-			if err := herdr_run_worker("herdr", session.pane_id, message); err != "" {
+			surface := session_surface_open("herdr")
+			if err := surface.ops.pane_run(surface, session.pane_id, message); err != "" {
 				host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = fmt.tprintf("could not send the reply: %s", err)})
 				return
 			}
@@ -1472,7 +1439,8 @@ host_retry_dequeued_shots :: proc(dequeued: []Queued_Shot, state_root: string) {
 			continue
 		}
 
-		run_err := herdr_run_worker(herdr, pane_from_herdr, command)
+		surface := session_surface_open(herdr)
+		run_err := surface.ops.pane_run(surface, pane_from_herdr, command)
 		delete(command)
 		if run_err != "" {
 			host_pane_mark_terminal(pane_id)

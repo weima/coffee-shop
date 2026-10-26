@@ -9,30 +9,6 @@ import "core:path/filepath"
 import "core:strings"
 import "core:time"
 
-Herdr_Response :: struct {
-	id: string,
-	result: Herdr_Result,
-}
-
-Herdr_Result :: struct {
-	type: string,
-	workspace: Herdr_Workspace,
-	tab: Herdr_Tab,
-	root_pane: Herdr_Pane,
-}
-
-Herdr_Workspace :: struct {
-	workspace_id: string,
-}
-
-Herdr_Tab :: struct {
-	tab_id: string,
-}
-
-Herdr_Pane :: struct {
-	pane_id: string,
-}
-
 Worker_Result :: struct {
 	brew_id: string,
 	shot_id: string,
@@ -185,7 +161,8 @@ run_brew_with :: proc(repo_path, recipe_path, state_root, executable, herdr: str
 
 	register.repository_name = repository_name(repo)
 	if name_err := save_register_metadata(brew_dir, register); name_err.kind != .None { return brew_id, state_error_message(name_err) }
-	workspace, herdr_err := herdr_create_workspace(herdr, register.shots[first_station].station_path, fmt.tprintf("%s · %s", register.repository_name, brew_id))
+	surface := session_surface_open(herdr)
+	workspace, herdr_err := surface.ops.workspace_create(surface, register.shots[first_station].station_path, fmt.tprintf("%s · %s", register.repository_name, brew_id))
 	if herdr_err != "" {
 		for shot in register.shots {
 			if shot.status == SHOT_QUEUED {
@@ -196,20 +173,14 @@ run_brew_with :: proc(repo_path, recipe_path, state_root, executable, herdr: str
 		}
 		return brew_id, ""
 	}
-	herdr_workspace_id, clone_err := strings.clone(workspace.result.workspace.workspace_id)
-	first_tab_id, tab_clone_err := strings.clone(workspace.result.tab.tab_id)
-	first_pane_id, pane_clone_err := strings.clone(workspace.result.root_pane.pane_id)
-	destroy_struct(&workspace)
-	if clone_err != nil || tab_clone_err != nil || pane_clone_err != nil {
-		return brew_id, "could not save Herdr workspace identity"
-	}
-	register.herdr_workspace_id = herdr_workspace_id
-	register.shots[first_station].herdr_tab_id = first_tab_id
-	register.shots[first_station].herdr_pane_id = first_pane_id
+	// The surface hands the ids over already owned by the default allocator.
+	register.herdr_workspace_id = workspace.workspace_id
+	register.shots[first_station].herdr_tab_id = workspace.tab_id
+	register.shots[first_station].herdr_pane_id = workspace.pane_id
 	if state_error = save_register_metadata(brew_dir, register); state_error.kind != .None {
 		return brew_id, state_error_message(state_error)
 	}
-	if rename_err := herdr_rename_tab(herdr, register.shots[first_station].herdr_tab_id, register.shots[first_station].id); rename_err != "" {
+	if rename_err := surface.ops.tab_rename(surface, register.shots[first_station].herdr_tab_id, register.shots[first_station].id); rename_err != "" {
 		if state_error = transition_shot(brew_dir, &register, register.shots[first_station].id, SHOT_FAILED, fmt.tprintf("Herdr could not label the initial Shot tab: %s", rename_err)); state_error.kind != .None {
 			return brew_id, state_error_message(state_error)
 		}
@@ -219,21 +190,16 @@ run_brew_with :: proc(repo_path, recipe_path, state_root, executable, herdr: str
 		if shot.status != SHOT_QUEUED || shot.station_path == "" || i == first_station {
 			continue
 		}
-		tab, tab_err := herdr_create_tab(herdr, register.herdr_workspace_id, shot.id, shot.station_path)
+		tab, tab_err := surface.ops.tab_create(surface, register.herdr_workspace_id, shot.id, shot.station_path)
 		if tab_err != "" {
 			if state_error := transition_shot(brew_dir, &register, shot.id, SHOT_FAILED, fmt.tprintf("Herdr tab launch failed: %s", tab_err)); state_error.kind != .None {
 				return brew_id, state_error_message(state_error)
 			}
 			continue
 		}
-		tab_copy, tab_clone_err := strings.clone(tab.result.tab.tab_id)
-		pane_copy, pane_clone_err := strings.clone(tab.result.root_pane.pane_id)
-		destroy_struct(&tab)
-		if tab_clone_err != nil || pane_clone_err != nil {
-			return brew_id, "could not save Herdr tab identity"
-		}
-		register.shots[i].herdr_tab_id = tab_copy
-		register.shots[i].herdr_pane_id = pane_copy
+		delete(tab.workspace_id) // the register already holds the workspace id
+		register.shots[i].herdr_tab_id = tab.tab_id
+		register.shots[i].herdr_pane_id = tab.pane_id
 		if state_error = save_register_metadata(brew_dir, register); state_error.kind != .None {
 			return brew_id, state_error_message(state_error)
 		}
@@ -334,86 +300,8 @@ create_git_worktree :: proc(repo, branch, path: string, allocator := context.all
 	return ""
 }
 
-herdr_create_workspace :: proc(herdr, cwd, label: string, allocator := context.allocator) -> (response: Herdr_Response, err: string) {
-	stdout, stderr, run_err := run_herdr(herdr, []string{"workspace", "create", "--cwd", cwd, "--label", label, "--no-focus"}, allocator)
-	defer delete(stdout, allocator)
-	defer delete(stderr, allocator)
-	if run_err != "" {
-		return Herdr_Response{}, run_err
-	}
-	if json.unmarshal_string(transmute(string)stdout, &response, .JSON, allocator) != nil || response.result.type != "workspace_created" || response.result.workspace.workspace_id == "" || response.result.tab.tab_id == "" || response.result.root_pane.pane_id == "" {
-		destroy_struct(&response, allocator)
-		return Herdr_Response{}, "Herdr returned an invalid workspace response"
-	}
-	return response, ""
-}
-
-herdr_create_tab :: proc(herdr, workspace_id, shot_id, cwd: string, allocator := context.allocator) -> (response: Herdr_Response, err: string) {
-	label := fmt.tprintf("Shot %s", shot_id)
-	stdout, stderr, run_err := run_herdr(herdr, []string{"tab", "create", "--workspace", workspace_id, "--cwd", cwd, "--label", label, "--no-focus"}, allocator)
-	defer delete(stdout, allocator)
-	defer delete(stderr, allocator)
-	if run_err != "" {
-		return Herdr_Response{}, run_err
-	}
-	if json.unmarshal_string(transmute(string)stdout, &response, .JSON, allocator) != nil || response.result.type != "tab_created" || response.result.tab.tab_id == "" || response.result.root_pane.pane_id == "" {
-		destroy_struct(&response, allocator)
-		return Herdr_Response{}, "Herdr returned an invalid tab response"
-	}
-	return response, ""
-}
-
-run_herdr :: proc(herdr: string, args: []string, allocator := context.allocator) -> (stdout, stderr: []byte, err: string) {
-	span_begin("herdr call")
-	defer span_end()
-	command := make([]string, 1+len(args), allocator)
-	command[0] = herdr
-	copy(command[1:], args)
-	defer delete(command, allocator)
-	process_state, child_stdout, child_stderr, process_err := os.process_exec(os.Process_Desc{command = command}, allocator)
-	stdout = child_stdout
-	stderr = child_stderr
-	if process_err != nil {
-		return stdout, stderr, "could not run Herdr"
-	}
-	if !process_state.success || process_state.exit_code != 0 {
-		detail := strings.trim_space(transmute(string)stderr)
-		if detail == "" {
-			detail = strings.trim_space(transmute(string)stdout)
-		}
-		if message := herdr_error_message(detail); message != "" {
-			detail = message
-		}
-		if detail == "" {
-			detail = "Herdr command failed"
-		}
-		owned_detail, clone_err := strings.clone(detail, context.temp_allocator)
-		if clone_err != nil {
-			return stdout, stderr, "Herdr command failed"
-		}
-		return stdout, stderr, owned_detail
-	}
-	return stdout, stderr, ""
-}
-
-Herdr_Error_Response :: struct {
-	error: struct {
-		message: string,
-	},
-}
-
-// Herdr reports failures as {"id":...,"error":{"code":...,"message":...}}. Return
-// the message so a Shot's failure reads as a sentence; "" if text is not that shape.
-// The result is allocated on the temp allocator.
-herdr_error_message :: proc(text: string) -> string {
-	response: Herdr_Error_Response
-	if json.unmarshal_string(text, &response, .JSON, context.temp_allocator) != nil {
-		return ""
-	}
-	return response.error.message
-}
-
 dispatch_workers :: proc(directory: string, register: ^Register, executable, state_root, herdr: string) -> State_Error {
+	surface := session_surface_open(herdr)
 	socket_path := activity_socket_path(directory)
 	defer delete(socket_path)
 	listener, listening := activity_listener_open(socket_path)
@@ -462,7 +350,7 @@ dispatch_workers :: proc(directory: string, register: ^Register, executable, sta
 				continue
 			}
 			command, _ := worker_command(child_shell_prefix(launch), state_root, register.brew_id, shot.id, register.brew_token)
-			launch_err := herdr_run_worker(herdr, shot.herdr_pane_id, command)
+			launch_err := surface.ops.pane_run(surface, shot.herdr_pane_id, command)
 			delete(command)
 			if launch_err != "" {
 				if err := transition_shot(directory, register, shot.id, SHOT_FAILED, fmt.tprintf("Worker launch failed: %s", launch_err)); err.kind != .None {
@@ -507,21 +395,6 @@ drain_worker_activity :: proc(directory: string, register: ^Register, listener: 
 			return
 		}
 	}
-}
-
-herdr_rename_tab :: proc(herdr, tab_id, shot_id: string) -> string {
-	label := fmt.tprintf("Shot %s", shot_id)
-	stdout, stderr, err := run_herdr(herdr, []string{"tab", "rename", tab_id, label})
-	defer delete(stdout)
-	defer delete(stderr)
-	return err
-}
-
-herdr_run_worker :: proc(herdr, pane_id, command: string) -> string {
-	stdout, stderr, err := run_herdr(herdr, []string{"pane", "run", pane_id, command})
-	defer delete(stdout)
-	defer delete(stderr)
-	return err
 }
 
 // The command text holds only Coffee Shop's own paths and validated IDs, never

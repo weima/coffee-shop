@@ -65,7 +65,7 @@ default_pr_backend :: proc() -> Pr_Backend {
 	return Pr_Backend{
 		git = real_git,
 		gh = real_gh,
-		herdr = real_herdr,
+		herdr = herdr_cli_call,
 		processes = default_process_commands,
 	}
 }
@@ -82,13 +82,6 @@ real_gh :: proc(directory: string, args: []string) -> (out, detail: string, ok: 
 	append(&command, "gh")
 	append(&command, ..args)
 	return run_tool(command[:], directory)
-}
-
-real_herdr :: proc(args: []string) -> (out, detail: string, ok: bool) {
-	command := make([]string, len(args)+1, context.temp_allocator)
-	command[0] = "herdr"
-	copy(command[1:], args)
-	return run_tool(command, "")
 }
 
 run_tool :: proc(command: []string, working_dir: string) -> (out, detail: string, ok: bool) {
@@ -327,79 +320,20 @@ remove_worktree :: proc(directory, path: string, backend: Pr_Backend) -> string 
 	return ""
 }
 
-// ---------------------------------------------------------------------------
-// Herdr helpers
-
-Herdr_Pane_Info :: struct {
-	tab_id:       string `json:"tab_id"`,
-	workspace_id: string `json:"workspace_id"`,
-}
-Herdr_Pane_Result :: struct {
-	pane: Herdr_Pane_Info `json:"pane"`,
-}
-Herdr_Pane_Response :: struct {
-	result: Herdr_Pane_Result `json:"result"`,
-}
-
-Herdr_Workspace_Info :: struct {
-	workspace_id: string `json:"workspace_id"`,
-	label:        string `json:"label"`,
-}
-Herdr_Workspace_Result :: struct {
-	workspace: Herdr_Workspace_Info `json:"workspace"`,
-}
-Herdr_Workspace_Response :: struct {
-	result: Herdr_Workspace_Result `json:"result"`,
-}
-
-Herdr_Tab_Info :: struct {
-	tab_id: string `json:"tab_id"`,
-}
-Herdr_Tab_Result :: struct {
-	tabs: [dynamic]Herdr_Tab_Info `json:"tabs"`,
-}
-Herdr_Tab_Response :: struct {
-	result: Herdr_Tab_Result `json:"result"`,
-}
-
-herdr_pane_ids :: proc(out: string) -> (tab_id, workspace_id: string) {
-	response: Herdr_Pane_Response
-	if json.unmarshal_string(out, &response, .JSON, context.temp_allocator) != nil {
-		return "", ""
-	}
-	return response.result.pane.tab_id, response.result.pane.workspace_id
-}
-
-herdr_workspace_label :: proc(out: string) -> string {
-	response: Herdr_Workspace_Response
-	if json.unmarshal_string(out, &response, .JSON, context.temp_allocator) != nil {
-		return ""
-	}
-	return response.result.workspace.label
-}
-
-herdr_tab_count :: proc(out: string) -> int {
-	response: Herdr_Tab_Response
-	if json.unmarshal_string(out, &response, .JSON, context.temp_allocator) != nil {
-		return -1
-	}
-	return len(response.result.tabs)
-}
-
 // Closes only the run's own tabs. A workspace is closed only when those tabs
 // were its last, so a workspace shared with the developer is never removed.
 close_run_herdr :: proc(events: []Run_Event, extra_workspace: string, backend: Pr_Backend) -> (tabs_closed, workspaces_closed: int) {
+	surface := session_surface_over("herdr", backend.herdr)
 	tabs := make([dynamic]string, 0, 4, context.temp_allocator)
 	workspaces := make([dynamic]string, 0, 2, context.temp_allocator)
 	for event in events {
 		if event.type != "session_started" || event.pane_id == "" {
 			continue
 		}
-		out, _, ok := backend.herdr({"pane", "get", event.pane_id})
+		tab_id, workspace_id, ok := surface.ops.pane_get(surface, event.pane_id)
 		if !ok {
 			continue
 		}
-		tab_id, workspace_id := herdr_pane_ids(out)
 		if tab_id != "" && !slice_contains(tabs[:], tab_id) {
 			append(&tabs, tab_id)
 		}
@@ -411,16 +345,16 @@ close_run_herdr :: proc(events: []Run_Event, extra_workspace: string, backend: P
 		append(&workspaces, extra_workspace)
 	}
 	for tab in tabs {
-		if _, _, ok := backend.herdr({"tab", "close", tab}); ok {
+		if surface.ops.tab_close(surface, tab) {
 			tabs_closed += 1
 		}
 	}
 	for workspace in workspaces {
-		out, _, ok := backend.herdr({"tab", "list", "--workspace", workspace})
-		if !ok || herdr_tab_count(out) != 0 {
+		count, ok := surface.ops.tab_count(surface, workspace)
+		if !ok || count != 0 {
 			continue
 		}
-		if _, _, closed := backend.herdr({"workspace", "close", workspace}); closed {
+		if surface.ops.workspace_close(surface, workspace) {
 			workspaces_closed += 1
 		}
 	}
@@ -639,11 +573,11 @@ discover_branch :: proc(events: []Run_Event, backend: Pr_Backend) -> (branch, er
 		if workspace == "" {
 			continue
 		}
-		out, detail, ok := backend.herdr({"workspace", "get", workspace})
+		surface := session_surface_over("herdr", backend.herdr)
+		label, detail, ok := surface.ops.workspace_label(surface, workspace)
 		if !ok {
 			return "", fmt.tprintf("could not read the run's workspace: %s", detail)
 		}
-		label := herdr_workspace_label(out)
 		if label == "" {
 			return "", "the run's workspace has no label to name the base branch; pass --branch"
 		}

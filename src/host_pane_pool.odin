@@ -19,7 +19,7 @@ host_pane_pool_init :: proc(workspace_id: string, capacity: int = 5, machine_roo
 
 // Destroy the pool and close all host-owned panes. Called on host exit.
 host_pane_pool_close :: proc(herdr_exe: string) -> int {
-	return pane_pool_close_all(&host_pane_pool, herdr_exe)
+	return pane_pool_close_all(&host_pane_pool, session_surface_open(herdr_exe))
 }
 
 // Acquire a pane for a dispatch. If no FREE pane exists and pool is at capacity,
