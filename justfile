@@ -23,3 +23,11 @@ gates-request repo out:
 
 gates-report request events state trace out:
     odin run tools/gates -- report --request {{request}} --events {{events}} --state-dir {{state}} --trace {{trace}} --out {{out}}
+
+# Install the Pi prompt templates this repository ships, so they appear as
+# slash commands. Pi reads user templates from ~/.pi/agent/prompts and reloads
+# them on /reload.
+install-prompts:
+    mkdir -p ~/.pi/agent/prompts
+    cp prompts/*.md ~/.pi/agent/prompts/
+    @echo "installed: $(ls prompts/*.md | xargs -n1 basename | tr "\n" " ")"
