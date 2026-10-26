@@ -45,6 +45,8 @@ Host_Session :: struct {
 	shot_id:    string,
 	pane_id:    string,
 	exited:     bool, // agent_exited was reported; the Station may still run its Taste
+	station:    Process_Identity, // reported by the Station itself; zero until it does
+	agent_pid:  int,
 }
 host_sessions: [dynamic]Host_Session
 
@@ -258,6 +260,10 @@ host_relay_message :: proc(message: Activity_Message) {
 	span_begin("report relay")
 	defer span_end()
 	// Record in progress ledger before emitting.
+	if message.kind == ACTIVITY_KIND_STATION_PID {
+		host_record_station_pid(message)
+		return
+	}
 	progress_supervision_record_report(message.brew_id, message.shot_id, message.kind)
 
 	relayed := host_emit(Host_Event{
@@ -336,6 +342,33 @@ host_relay_message :: proc(message: Activity_Message) {
 	}
 }
 
+// Records the identity a Station reported about itself and drops its spooled copy; it is
+// not a user-facing report. A malformed or unknown report leaves the session unrecorded.
+host_record_station_pid :: proc(message: Activity_Message) {
+	if identity, agent_pid, ok := parse_station_pid(message.description); ok {
+		for i in 0..<len(host_sessions) {
+			if host_sessions[i].request_id == message.brew_id && host_sessions[i].shot_id == message.shot_id {
+				host_sessions[i].station = identity
+				host_sessions[i].agent_pid = agent_pid
+				break
+			}
+		}
+	}
+	if message.spool != "" {
+		spool_path, _ := filepath.join({host_history_root, STATION_SPOOL_DIR_NAME, message.spool}, context.temp_allocator)
+		_ = os.remove(spool_path)
+	}
+}
+
+// The reported Station pid, or 0 if it never reported or that process is no longer the
+// one that reported (pid reuse: the start time differs).
+session_station_pid :: proc(session: Host_Session) -> int {
+	if session.station.pid > 0 && identity_liveness(session.station) == .Alive {
+		return session.station.pid
+	}
+	return 0
+}
+
 HOST_SAMPLE_INTERVAL :: 2 * time.Second
 host_last_sample: time.Tick
 
@@ -359,7 +392,7 @@ host_sample_session :: proc(session: Host_Session) {
 	if err != "" {
 		return
 	}
-	_ = sample_station(state_root, session.request_id, session.shot_id, 0)
+	_ = sample_station(state_root, session.request_id, session.shot_id, session_station_pid(session))
 }
 
 // Ends a Shot's session: frees its pane and machine slot, then starts queued Shots.
@@ -1124,11 +1157,15 @@ host_cancel :: proc(root: json.Object, request_id: string) {
 	}
 }
 
-// A positive PID the pane reports now is asked to stop. A missing or unreadable identity
+// A positive PID the Station reported (else the pane reports now) is asked to stop. A missing or unreadable identity
 // is not an error; it is reported as a reason instead of a signal.
 host_cancel_session :: proc(request_id: string, session: Host_Session) {
-	// Read at cancel time: the pane's foreground is only the Station once it is running.
-	identity := host_pane_identity("herdr", session.pane_id)
+	// The Station's own report first; the pane's foreground (read at cancel time, and only
+	// the Station once it is running) is the fallback for one that never reported.
+	identity := session.station
+	if session_station_pid(session) == 0 {
+		identity = host_pane_identity("herdr", session.pane_id)
+	}
 	if identity.pid > 0 {
 		stop_worker_gracefully(identity)
 		host_emit(Host_Event{type = "cancelled", request_id = request_id, shot_id = session.shot_id})

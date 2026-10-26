@@ -274,6 +274,9 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 		write_error("could not start the agent")
 		return 1
 	}
+	if me, me_ok := current_identity(); me_ok {
+		station_report(&sender, brew_id, station_id, ACTIVITY_KIND_STATION_PID, station_pid_description(me, process.pid))
+	}
 	// Install the handler before the first prompt, so a cancel that arrives once the
 	// agent is running is always handled.
 	relay := new(Station_Relay)
