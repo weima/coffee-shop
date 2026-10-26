@@ -531,6 +531,22 @@ The developer's own experience is the decisive evidence here: three days on Wind
 
 **Open questions this section does not answer.** Whether anything replaces a pane at all — the guardrails exclude tmux and zmx, so dropping Herdr means either no multiplexer or a deliberately amended guardrail. Whether the developer still follows a Shot live, or only reads its report afterwards. And whether the reported WSL2 cost is Herdr at all, which the measurement above settles.
 
+## v0.4 completion record (2026-10-26)
+
+**Shipped on Pi.** Every gate below was run and its evidence recorded; none is asserted from a summary.
+
+- **Item 1(a), the end-to-end Order: PASS.** Two cuppers left their Stations untouched — no commit and no modified file in either. Two Pulls each passed a Taste *before* committing and each touched exactly one file. Blend produced **one** commit whose tree is identical, file by file, to the two Pulls', with no third file differing.
+- **Item 1(b), the same under Oreo: DEFERRED WITH EVIDENCE, not passed.** A two-line documentation edit under the Oreo runtime hung for twelve minutes at **0.0% CPU with zero reports**; the model-reply deadline did not bound it and a routed cancel did not interrupt it. The guardrails make Pi the required path and Oreo optional, so v0.4 ships on Pi. The first Oreo task is therefore concrete: make a turn either complete or fail, and make cancel effective on that path.
+- **Item 2, the `codemode` measurement: MEASURED, and inconclusive for its purpose.** The same grep-countable task, dispatched twice with byte-identical requests except the `codemode` key: **108,907 against 108,890 total tokens**, a delta of 17 (0.016%), both answers correct, and **both arms answered with `grep`** — the enabled arm never used the tool. That says nothing about the expensive task class the feature targets. A decisive run needs a task where a script replaces many tool calls, plus a check that it was invoked.
+- **Item 5.8: PASS on its terms.** Seven trace files — the host plus six Stations — with `station start` at 63.6 ms over 6 spans among the top five (`dispatch request` 716 ms, `herdr call` 93.6 ms over 13 calls).
+- **Item 5.9: MEASURED.** Per-Shot Station and tree peaks: tree resident memory **460–520 MiB**, 42–70 descriptors, 2–5 children. CPU is `not measured` on macOS by design. The default concurrency of **5** therefore costs roughly **2.3–2.6 GiB**, which is the number the item asked to choose it from.
+- **Item 5.10: PASS.** `gate-s6` queued at event 8, dequeued at 12, started at 13, with five started before it and no failure events.
+- **Suite acceptance:** three consecutive runs, 372 tests each, all green; 374 tests green twice more after the process-group fix.
+
+**Defects found by running the gates rather than the tests**, all fixed before the tag: the pane-reclaim gap that stalled any dispatch above five Shots; a zombie leak worth 2248 processes and machine-wide fork failures, caused by the setuid `/bin/ps` whose wait is skipped; fourteen `__server` processes that never idle-exited; a process-group kill that could signal its own caller's group; and process-global test state that made two tests flaky.
+
+**Still open after this release:** the suite lock's dead-holder reclamation, and — per the section below — removing Herdr.
+
 ## Scope guardrails
 
 The target is one machine, a main-agent/Barista session (Pi first), a foreground Coffee Shop host, and Herdr. Pi is required for the first usable path. Oreo may take the main or worker agent role after the Pi-based flow is usable and Oreo is stable; Rachel is an optional developer aid. Neither is a core dependency. Keep task decomposition with the Barista and integration decisions with the developer. The foreground host is in scope; a detached daemon is not. Do not add remote workers, unrelated agent harnesses, tmux or zmx backends, Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.
