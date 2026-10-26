@@ -3,6 +3,8 @@ package main
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
+import "core:strconv"
+import "core:strings"
 
 ACTIVITY_QUIET_AFTER_NS :: i64(12 * 60 * 1_000_000_000)
 
@@ -139,3 +141,24 @@ activity_duration_label :: proc(seconds: i64) -> string {
 	return fmt.aprintf("%dh%02dm", duration/3600, (duration%3600)/60)
 }
 
+
+// The Station tells the host who it is. Internal: the host records it and does not relay it.
+ACTIVITY_KIND_STATION_PID :: "station_pid"
+
+station_pid_description :: proc(station: Process_Identity, agent_pid: int) -> string {
+	return fmt.tprintf("station=%d start=%d agent=%d", station.pid, station.start_time, agent_pid)
+}
+
+parse_station_pid :: proc(description: string) -> (station: Process_Identity, agent_pid: int, ok: bool) {
+	fields := strings.split(description, " ", context.temp_allocator)
+	if len(fields) != 3 || !strings.has_prefix(fields[0], "station=") || !strings.has_prefix(fields[1], "start=") || !strings.has_prefix(fields[2], "agent=") {
+		return
+	}
+	pid, pid_ok := strconv.parse_int(fields[0][len("station="):])
+	start, start_ok := strconv.parse_u64(fields[1][len("start="):])
+	agent, agent_ok := strconv.parse_int(fields[2][len("agent="):])
+	if !pid_ok || !start_ok || !agent_ok || pid <= 0 || agent < 0 {
+		return
+	}
+	return Process_Identity{pid = pid, start_time = start}, agent, true
+}
