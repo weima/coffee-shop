@@ -136,15 +136,24 @@ odin_run_child :: proc(pid: int) -> int {
 // shortcut: a Station mid-turn loses that turn at the timeout, not at a clean stop; a clean stop would need the Station to answer the cancel itself.
 DEV_CANCEL_TIMEOUT_SECONDS :: 60
 
-// Schedules a SIGKILL of the wrapper's process group after seconds. The group is killed even
-// when its leader has already exited: the Station and Pi can outlive the wrapper.
+// Runs after the timeout, in the background. The target is re-read then, because the pid may
+// have been reused during the sleep. $1 seconds, $2 wrapper pid, $3 the caller's group.
+// Refuses a pid that is gone or whose group is unreadable, and any target in the caller's group.
+// The group form is used only when the wrapper leads its own group; else only the wrapper dies.
+// shortcut: a wrapper that exited before the timeout is not signalled, so its surviving Station is left to the tab-close fallback.
+DEV_CANCEL_KILL_SCRIPT :: `(sleep "$1"
+pg=$(ps -o pgid= -p "$2" 2>/dev/null | tr -d ' ')
+[ -n "$pg" ] && [ "$pg" != "$3" ] || exit 0
+if [ "$pg" = "$2" ]; then kill -KILL -- "-$2"; else kill -KILL "$2"; fi) 2>/dev/null </dev/null >/dev/null 2>&1 &`
+
+// Schedules a guarded SIGKILL of the wrapper (and its group, when it leads one) after seconds.
 dev_cancel_escalate :: proc(wrapper, seconds: int) {
 	command := []string{
-		"/bin/sh", "-c",
-		"(sleep \"$1\"; kill -KILL -\"$2\" 2>/dev/null) </dev/null >/dev/null 2>&1 &",
+		"/bin/sh", "-c", DEV_CANCEL_KILL_SCRIPT,
 		"coffee-shop",
 		fmt.tprintf("%d", seconds),
 		fmt.tprintf("%d", wrapper),
+		fmt.tprintf("%d", int(posix.getpgrp())),
 	}
 	process, spawn_err := os.process_start(os.Process_Desc{command = command})
 	if spawn_err != nil {
