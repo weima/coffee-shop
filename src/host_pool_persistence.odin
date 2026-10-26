@@ -91,14 +91,11 @@ host_pool_recover :: proc(state_root, herdr_exe: string) -> (ok: bool, err: stri
 	}
 
 	// Close all persisted owned panes.
+	surface := session_surface_open(herdr_exe)
 	closed_count := 0
 	for j in 0..<len(state.owned_pane_ids) {
 		pane_id := state.owned_pane_ids[j]
-		cmd := []string{herdr_exe, "pane", "close", state.workspace_id, pane_id}
-		result, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{command = cmd}, context.temp_allocator)
-		// Temp-allocator slices must not be freed individually; the arena owns them.
-
-		if exec_err == nil && result.success {
+		if surface.ops.pane_close(surface, state.workspace_id, pane_id) {
 			closed_count += 1
 			when ODIN_DEBUG {
 				log.debugf("host_pool_recover: closed pane %s", pane_id)

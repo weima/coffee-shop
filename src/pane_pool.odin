@@ -243,22 +243,14 @@ pane_pool_reclaim :: proc(pool: ^Pane_Pool, pane_id: string) -> bool {
 }
 
 // Close all host-owned panes on clean host exit.
-pane_pool_close_all :: proc(pool: ^Pane_Pool, herdr_exe: string) -> int {
+pane_pool_close_all :: proc(pool: ^Pane_Pool, surface: Session_Surface) -> int {
 	when ODIN_DEBUG {
 		log.debug("closing all host-owned panes")
 	}
 	exit_code := 0
 	for i in 0..<len(pool.host_owned_pane_ids) {
 		pane_id := pool.host_owned_pane_ids[i]
-		// Use Herdr to close the pane.
-		cmd := []string{herdr_exe, "pane", "close", pool.workspace_id, pane_id}
-		result, stdout, stderr, err := os.process_exec(os.Process_Desc{command = cmd}, context.allocator)
-		defer delete(stdout)
-		defer delete(stderr)
-		if err != nil || !result.success {
-			when ODIN_DEBUG {
-				log.warnf("failed to close pane %s: %v, %s", pane_id, err, string(stderr))
-			}
+		if !surface.ops.pane_close(surface, pool.workspace_id, pane_id) {
 			exit_code = 1
 		}
 	}
