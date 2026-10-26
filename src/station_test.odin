@@ -837,12 +837,10 @@ run_station_held_open_env :: proc(t: ^testing.T, root, agent_script: string, env
 	agent, _ := filepath.join({root, "agent.sh"}, context.temp_allocator)
 	testing.expect_value(t, os.make_directory_all(repo), os.Error(nil))
 	testing.expect_value(t, os.write_entire_file(agent, agent_script, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
-	init_state, _, init_stderr, init_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `git init -q "$1" && git -C "$1" config user.name test && git -C "$1" config user.email test@example.com && git -C "$1" commit -q --allow-empty -m init`, "held-test", repo},
-	}, context.allocator)
-	defer delete(init_stderr)
-	testing.expect_value(t, init_err, os.Error(nil))
-	testing.expect(t, init_state.success, string(init_stderr))
+	// exec_reaped waits with waitpid on this pid; os.process_exec's wait fails with ESRCH when the child exits first.
+	init_out, init_ok := exec_reaped({"sh", "-c", `git init -q "$1" && git -C "$1" config user.name test && git -C "$1" config user.email test@example.com && git -C "$1" commit -q --allow-empty -m init 2>&1`, "held-test", repo})
+	defer delete(init_out)
+	testing.expect(t, init_ok, string(init_out))
 
 	binary := build_test_binary(t, root)
 	defer delete(binary)
