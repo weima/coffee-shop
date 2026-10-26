@@ -197,39 +197,69 @@ server_lock_release :: proc(file: ^os.File) {
 	}
 }
 
-// True while some Brew on this repository has a Shot that has not finished.
-repository_has_active_brew :: proc(state_root, repository: string) -> bool {
+// The Brew that keeps the server for `repository` alive, and why; "" when none
+// does. A Brew blocks only on evidence it can still make progress: it has a
+// Shot that has not finished, its repository directory exists, and its
+// supervisor is Alive. A Brew whose supervisor is Gone or Unknown, or whose
+// repository is gone, will never finish by itself and must not pin the server.
+// An unreadable state root or Brew never blocks.
+blocking_brew :: proc(state_root, repository: string) -> (brew_id, reason: string) {
+	if !os.exists(repository) {
+		return "", ""
+	}
 	handle, open_err := os.open(state_root)
 	if open_err != nil {
-		return false
+		return "", ""
 	}
 	defer os.close(handle)
 	entries, read_err := os.read_dir(handle, -1, context.allocator)
 	defer os.file_info_slice_delete(entries, context.allocator)
 	if read_err != nil {
-		return false
+		return "", ""
 	}
 	for entry in entries {
-		if !strings.has_prefix(entry.name, "brew-") {
-			continue
-		}
-		brew_dir := state_file_path(state_root, entry.name)
-		brew_repository, brew_token, ok := brew_identity(brew_dir)
-		active := false
-		if ok && brew_repository == repository {
-			register, state_err := read_state_recovering(brew_dir)
-			active = state_err.kind == .None && !all_terminal(register)
-			destroy_struct(&register)
-		}
-		delete(brew_repository)
-		delete(brew_token)
-		delete(brew_dir)
-		if active {
-			return true
+		if strings.has_prefix(entry.name, "brew-") && brew_blocks(state_root, entry.name, repository) {
+			return strings.clone(entry.name), "non-terminal Brew with a live supervisor"
 		}
 	}
-	return false
+	return "", ""
 }
+
+brew_blocks :: proc(state_root, name, repository: string) -> bool {
+	brew_dir := state_file_path(state_root, name)
+	defer delete(brew_dir)
+	brew_repository, brew_token, ok := brew_identity(brew_dir)
+	defer delete(brew_repository)
+	defer delete(brew_token)
+	if !ok || brew_repository != repository {
+		return false
+	}
+	register, state_err := read_state_recovering(brew_dir)
+	defer destroy_struct(&register)
+	if state_err.kind != .None || all_terminal(register) {
+		return false
+	}
+	return supervisor_liveness(brew_dir) == .Alive
+}
+
+// True while some Brew on this repository keeps the server needed.
+repository_has_active_brew :: proc(state_root, repository: string) -> bool {
+	brew_id, _ := blocking_brew(state_root, repository)
+	defer delete(brew_id)
+	return brew_id != ""
+}
+
+// One line naming why the server is still alive, written beside its record so
+// the next stuck server is diagnosable without counting processes.
+server_record_alive_reason :: proc(directory, brew_id, reason: string) {
+	path := state_file_path(directory, SERVER_ALIVE_REASON_NAME)
+	defer delete(path)
+	line := fmt.aprintf("%s: %s\n", brew_id, reason)
+	defer delete(line)
+	_ = write_file_atomic(path, transmute([]byte)line)
+}
+
+SERVER_ALIVE_REASON_NAME :: "alive-reason"
 
 SERVER_HEARTBEAT_NS :: 1_000_000_000
 SERVER_IDLE_NS :: 30 * 1_000_000_000
@@ -237,6 +267,10 @@ SERVER_IDLE_NS :: 30 * 1_000_000_000
 // The __server process: one per repository. It exits quietly if another server
 // already holds the repository, and after a period with no active Brew.
 run_server :: proc(state_root, repository: string) -> int {
+	return run_server_idle(state_root, repository, SERVER_IDLE_NS)
+}
+
+run_server_idle :: proc(state_root, repository: string, idle_ns: i64) -> int {
 	log.debugf("server start repository=%s state=%s", repository, state_root)
 	id := server_id(repository)
 	defer delete(id)
@@ -280,11 +314,14 @@ run_server :: proc(state_root, repository: string) -> int {
 		if now - last_beat >= SERVER_HEARTBEAT_NS {
 			last_beat = now
 			_ = server_heartbeat(directory, &record)
-			if repository_has_active_brew(state_root, repository) {
+			brew_id, reason := blocking_brew(state_root, repository)
+			if brew_id != "" {
 				last_active = now
+				server_record_alive_reason(directory, brew_id, reason)
 			}
+			delete(brew_id)
 		}
-		if now - last_active >= SERVER_IDLE_NS {
+		if now - last_active >= idle_ns {
 			return 0
 		}
 	}
