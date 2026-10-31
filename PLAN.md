@@ -611,7 +611,7 @@ Each wave is chosen so that the Shots in it own disjoint files. A Pull that need
 **Phases.**
 
 1. **Freeze the wire contract as data.** Turn the host's stdout event shapes, request shapes, socket paths, exit codes, spool and history formats into a written contract plus a black-box conformance test that any implementation can be run against. No behaviour change.
-2. **The Odin seam.** Add the subcommands Go needs — `prepare` and `release`, alongside the existing `station`, `pr` and `cleanup` — with a JSON failure shape and non-zero exit, so orchestration can drive the work without linking it.
+2. **The Odin seam.** Add the subcommands Go needs — `prepare` and `release`, alongside the existing `station`, `pr` and `cleanup` — with a JSON failure shape and non-zero exit, so orchestration can drive the work without linking it. **Started:** both exist (`src/seam.odin`); they validate every path and branch before any Git call, print `{"type":"error","reason":"…"}` on stdout with exit 1, print nothing on success, and `prepare` then `release` is a tested round trip.
 3. **The Go orchestrator.** `csd` runs the host: loop, listeners, dispatch, queue, slots, Station spawn and watch, log pump, relay, spool, history, ledger, cancel escalation, behind `coffee-shop host --impl=go`, headless only. The Odin Station keeps the turn deadline and the #143 cancel path; its regression tests must stay green, because that fix is now in the other language.
 4. **Cut over, then delete.** Default to the Go host, remove the Odin host loop and Station supervisor, then do the v0.5 Wave 3 deletions in the same release.
 5. **Measure.** The same five-Shot run on macOS and WSL2, wall-clock per Shot, host CPU and resident memory, before and after.
