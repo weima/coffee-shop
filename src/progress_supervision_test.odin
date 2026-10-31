@@ -53,6 +53,10 @@ test_write_history :: proc(history_dir, request_id: string, events: []string) ->
 
 @test
 test_progress_supervision_rebuild_empty :: proc(t: ^testing.T) {
+	// The ledger is process-global and the runner uses ten threads.
+	host_pool_test_lock()
+	defer host_pool_test_unlock()
+
 	// Empty history should result in an empty ledger.
 	history_dir, err := test_create_history()
 	testing.expect(t, err == "", fmt.tprintf("setup failed: %s", err))
@@ -69,6 +73,10 @@ test_progress_supervision_rebuild_empty :: proc(t: ^testing.T) {
 
 @test
 test_progress_supervision_rebuild_with_sessions :: proc(t: ^testing.T) {
+	// The ledger is process-global and the runner uses ten threads.
+	host_pool_test_lock()
+	defer host_pool_test_unlock()
+
 	// History with session_started and station_report events should rebuild the ledger.
 	history_dir, err := test_create_history()
 	testing.expect(t, err == "", fmt.tprintf("setup failed: %s", err))
@@ -110,6 +118,10 @@ test_progress_supervision_rebuild_with_sessions :: proc(t: ^testing.T) {
 
 @test
 test_progress_supervision_rebuild_with_terminal :: proc(t: ^testing.T) {
+	// The ledger is process-global and the runner uses ten threads.
+	host_pool_test_lock()
+	defer host_pool_test_unlock()
+
 	// Terminal reports should not appear in pending list after rebuild.
 	history_dir, err := test_create_history()
 	testing.expect(t, err == "", fmt.tprintf("setup failed: %s", err))
@@ -141,6 +153,10 @@ test_progress_supervision_rebuild_with_terminal :: proc(t: ^testing.T) {
 
 @test
 test_progress_supervision_record_and_check :: proc(t: ^testing.T) {
+	// The ledger is process-global and the runner uses ten threads.
+	host_pool_test_lock()
+	defer host_pool_test_unlock()
+
 	defer progress_supervision_cleanup()
 	// Manual add, update, and check for stale/needs_input.
 	progress_supervision_init("")
@@ -158,6 +174,10 @@ test_progress_supervision_record_and_check :: proc(t: ^testing.T) {
 
 @test
 test_progress_supervision_stale_detection :: proc(t: ^testing.T) {
+	// The ledger is process-global and the runner uses ten threads.
+	host_pool_test_lock()
+	defer host_pool_test_unlock()
+
 	defer progress_supervision_cleanup()
 	// Stale detection when adding a Station and then advancing time.
 	progress_supervision_init("")
@@ -180,6 +200,10 @@ test_progress_supervision_stale_detection :: proc(t: ^testing.T) {
 
 @test
 test_progress_supervision_needs_input_alert :: proc(t: ^testing.T) {
+	// The ledger is process-global and the runner uses ten threads.
+	host_pool_test_lock()
+	defer host_pool_test_unlock()
+
 	defer progress_supervision_cleanup()
 	// needs_input should trigger an alert event.
 	progress_supervision_init("")
@@ -193,6 +217,10 @@ test_progress_supervision_needs_input_alert :: proc(t: ^testing.T) {
 
 @test
 test_progress_supervision_terminal_no_alert :: proc(t: ^testing.T) {
+	// The ledger is process-global and the runner uses ten threads.
+	host_pool_test_lock()
+	defer host_pool_test_unlock()
+
 	defer progress_supervision_cleanup()
 	// Terminal reports should not trigger any alerts.
 	progress_supervision_init("")
