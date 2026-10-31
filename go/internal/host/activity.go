@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/weima/coffee-shop/go/internal/proto"
 	"github.com/weima/coffee-shop/go/internal/state"
@@ -28,11 +29,23 @@ const (
 // relayed: it is plumbing for a cancel, not a user-facing report.
 const StationPIDKind = "station_pid"
 
+// ActivityReports is the buffer between Stations and the relay. A Station writes and
+// leaves; the relay owns ordering, history and stdout, so one slow write cannot stall an
+// accept loop and two reports can never interleave on stdout.
+const ActivityReports = 64
+
 // activityServer receives Station reports over the activity socket.
+//
+// One goroutine accepts connections and one reads each connection; a single relay
+// goroutine owns the writer. Nothing here writes stdout except the relay, which is what
+// keeps event lines whole.
 type activityServer struct {
 	listener net.Listener
 	root     string
-	w        *writer
+	reports  chan proto.Message
+	readers  sync.WaitGroup
+	relayed  chan struct{}
+	stopped  sync.Once
 }
 
 // listenActivity binds <state>/host/activity.sock. The host directory is made private
@@ -55,52 +68,75 @@ func listenActivity(root string, w *writer) (*activityServer, error) {
 		_ = listener.Close()
 		return nil, fmt.Errorf("restrict socket: %w", err)
 	}
-	return &activityServer{listener: listener, root: root, w: w}, nil
+	return &activityServer{
+		listener: listener,
+		root:     root,
+		reports:  make(chan proto.Message, ActivityReports),
+		relayed:  make(chan struct{}),
+	}, nil
 }
 
-// Serve handles reports until the listener closes or the context ends.
-func (s *activityServer) Serve(ctx context.Context) error {
+// start begins relaying and accepting. Run must call stop when it is done.
+func (s *activityServer) start(ctx context.Context, w *writer) {
+	// The relay is the only writer of reports: it applies the history-then-stdout-then-
+	// spool rule in order, one report at a time.
 	go func() {
-		<-ctx.Done()
-		_ = s.listener.Close()
-	}()
-	for {
-		conn, err := s.listener.Accept()
-		if err != nil {
-			// Closing the listener is how this server stops, so it is not a failure.
-			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
-				return nil
-			}
-			return fmt.Errorf("accept report: %w", err)
+		defer close(s.relayed)
+		for message := range s.reports {
+			w.relayReport(message)
+			s.removeSpool(message)
 		}
-		s.handle(conn)
-		_ = conn.Close()
-	}
+	}()
+
+	go func() {
+		for {
+			conn, err := s.listener.Accept()
+			if err != nil {
+				// Closing the listener is how this server stops, so it is not a failure.
+				if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+					break
+				}
+				fmt.Fprintf(os.Stderr, "csd: activity: accept: %v\n", err)
+				break
+			}
+			s.readers.Add(1)
+			go s.readConn(ctx, conn)
+		}
+		// Readers must finish before the channel closes, or a send races the close.
+		s.readers.Wait()
+		close(s.reports)
+	}()
 }
 
-// Close stops accepting reports.
-func (s *activityServer) Close() error { return s.listener.Close() }
+// stop closes the listener and waits for every in-flight report to be relayed.
+func (s *activityServer) stop() {
+	s.stopped.Do(func() {
+		_ = s.listener.Close()
+		<-s.relayed
+	})
+}
 
-// handle reads reports until the Station closes the connection. A Station keeps one
+// readConn reads reports until the Station closes the connection. A Station keeps one
 // connection for its whole life, so reading a single line would strand every later
-// report; a malformed or invalid report is dropped and the connection stays usable,
-// because a Station is best-effort and a bad report must never end the host.
-func (s *activityServer) handle(conn net.Conn) {
+// report; an invalid report is dropped and the connection stays usable, because a
+// Station is best-effort and a bad report must never end the host.
+func (s *activityServer) readConn(ctx context.Context, conn net.Conn) {
+	defer s.readers.Done()
+	defer func() { _ = conn.Close() }()
+
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 0, 4096), MaxPayload)
 	for scanner.Scan() {
-		if message, ok := decodeMessage(scanner.Text()); ok {
-			s.relay(message)
+		message, ok := decodeMessage(scanner.Text())
+		if !ok {
+			continue
+		}
+		select {
+		case s.reports <- message:
+		case <-ctx.Done():
+			return
 		}
 	}
-}
-
-// relay makes a report durable and announces it. The order matters: history first, then
-// stdout, then remove the spooled copy, so a crash at any point leaves the report
-// recoverable rather than lost.
-func (s *activityServer) relay(message proto.Message) {
-	s.w.relayReport(message)
-	s.removeSpool(message)
 }
 
 // removeSpool drops the durable copy once the report has been relayed.

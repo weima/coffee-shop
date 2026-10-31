@@ -140,10 +140,13 @@ These are the rules the first Go PR should follow, and the ones I would hold a r
 1. **Standard library first.** No third-party dependency in phase 1–4. The port needs
    `net`, `os/exec`, `encoding/json`, `context`, `sync`, `os/signal`, `os`, `path/filepath`,
    `log/slog`. A dependency needs a stated reason in the PR, not a preference.
-2. **One goroutine, one owner.** Every goroutine is started by a function that also owns
-   its exit: a done channel, a `sync.WaitGroup`, or a context. No fire-and-forget. The
-   host has exactly four long-lived goroutines: stdin reader, activity accept loop,
-   request accept loop, and the session watchdog. The port should not add a fifth without
+2. **One goroutine, one owner, and a channel between them.** Every goroutine is started by
+   a function that also owns its exit: a done channel, a `sync.WaitGroup`, or a context.
+   No fire-and-forget. Work arrives over a channel rather than by sharing a writer: the
+   activity listener accepts and reads connections, but only the single relay goroutine
+   writes history and stdout, so two Stations can never interleave an event line. The host
+   has exactly four long-lived goroutines — stdin reader, activity accept loop, request
+   accept loop, relay, session watchdog — and the port should not add another without
    saying why.
 3. **`context` is the cancel path.** Deadlines and cancels travel in contexts, not in
    package globals. The v0.5 cancel bug was a flag that only one thread read; a context

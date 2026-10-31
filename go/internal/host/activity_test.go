@@ -255,3 +255,41 @@ func TestActivityRelaysEveryReportOnOneConnection(t *testing.T) {
 		t.Fatalf("station_pid must not be relayed:\n%s", out.String())
 	}
 }
+
+// Two Stations reporting at the same time must not interleave on stdout: the relay is the
+// single writer, and the channel is the only path to it. A torn event line is a wire bug a
+// consumer cannot recover from.
+func TestConcurrentStationsNeverTearAnEventLine(t *testing.T) {
+	root, out, stop := serveStateHost(t)
+	defer stop()
+
+	const stations = 8
+	done := make(chan struct{}, stations)
+	for i := 0; i < stations; i++ {
+		go func(n int) {
+			defer func() { done <- struct{}{} }()
+			conn, err := net.Dial("unix", state.ActivitySocket(root))
+			if err != nil {
+				return
+			}
+			defer func() { _ = conn.Close() }()
+			shot := fmt.Sprintf("shot-%d", n)
+			for j := 0; j < 20; j++ {
+				line := fmt.Sprintf(`{"brew_id":"req-1","shot_id":"%s","kind":"turn_done","description":"report %d from %s","timestamp_ns":%d}`, shot, j, shot, j+1)
+				if _, err := conn.Write([]byte(line + "\n")); err != nil {
+					return
+				}
+			}
+		}(i)
+	}
+	for i := 0; i < stations; i++ {
+		<-done
+	}
+	waitFor(t, out, `"shot_id":"shot-7"`)
+
+	for _, line := range strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n") {
+		if !strings.HasPrefix(line, `{"type":"`) || !strings.HasSuffix(line, "}") {
+			t.Fatalf("torn event line: %q", line)
+		}
+	}
+}

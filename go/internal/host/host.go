@@ -61,7 +61,7 @@ func Run(ctx context.Context, opts Options) error {
 			return err
 		}
 		server = listening
-		defer func() { _ = server.Close() }()
+		defer server.stop()
 	}
 
 	// ready has no request_id in the contract (the Odin host writes only type and
@@ -74,11 +74,7 @@ func Run(ctx context.Context, opts Options) error {
 		// Reports a previous host spooled but never announced are relayed before this
 		// host accepts a new one, so recovery cannot race a live report.
 		ReplaySpool(opts.StateRoot, w)
-		go func() {
-			if err := server.Serve(ctx); err != nil && ctx.Err() == nil {
-				fmt.Fprintf(os.Stderr, "csd: activity: %v\n", err)
-			}
-		}()
+		server.start(ctx, w)
 	}
 
 	scanner := bufio.NewScanner(opts.In)
