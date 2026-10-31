@@ -1,8 +1,10 @@
 package main
 
+import "core:fmt"
 import "core:log"
 import "core:os"
 import "core:strings"
+import "core:time"
 
 // Logging for development. Messages below the level chosen by CS_LOG_LEVEL are
 // dropped, so debug messages can stay in the code at no cost. Levels, lowest first:
@@ -31,4 +33,17 @@ setup_logging :: proc() -> log.Logger {
 		}
 	}
 	return log.create_console_logger(level)
+}
+
+// All human-readable Coffee Shop logs and host events use RFC 3339 UTC with
+// millisecond precision, including trailing zeroes: 2026-10-31T19:20:01.080Z.
+log_timestamp :: proc(now: time.Time, allocator := context.temp_allocator) -> string {
+	nanos := time.time_to_unix_nano(now)
+	millis := nanos / 1_000_000
+	whole := time.unix(millis / 1000, 0)
+	text, ok := time.time_to_rfc3339(whole, 0, false, allocator)
+	if !ok {
+		return ""
+	}
+	return fmt.aprintf("%s.%03dZ", text[:len(text)-1], millis % 1000, allocator = allocator)
 }

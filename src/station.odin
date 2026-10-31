@@ -391,7 +391,7 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 	state, wait_err := station_reap_agent(process)
 	shutdown_status := station_orderly_shutdown(&relay, reader_thread)
 	station_close_file(&agent_out_read)
-	fmt.println("Agent exited.")
+	fmt.printfln("%s Agent exited.", log_timestamp(time.now()))
 	station_report(&sender, brew_id, station_id, "agent_exited", "Agent exited")
 	if shutdown_status == STATION_CANCELLED_EXIT_CODE {
 		return shutdown_status

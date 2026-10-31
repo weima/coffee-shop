@@ -298,7 +298,7 @@ station_display_line :: proc(display: ^Station_Display, text: string) {
 	sync.mutex_lock(&display.mutex)
 	defer sync.mutex_unlock(&display.mutex)
 	station_display_clear_locked(display)
-	fmt.println(text)
+	fmt.printfln("%s %s", log_timestamp(time.now()), text)
 	station_display_draw_locked(display)
 }
 

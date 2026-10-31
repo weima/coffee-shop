@@ -164,5 +164,5 @@ test_request_socket_delivers_a_reply_to_its_station :: proc(t: ^testing.T) {
 
 	history, history_err := os.read_entire_file(host_history_path("req-1", context.temp_allocator), context.temp_allocator)
 	testing.expect_value(t, history_err, os.Error(nil))
-	testing.expect(t, strings.contains(string(history), `{"type":"reply_sent","request_id":"req-1","shot_id":"shot-a"}`), string(history))
+	testing.expect(t, host_output_contains(string(history), `{"type":"reply_sent","request_id":"req-1","shot_id":"shot-a"}`), string(history))
 }

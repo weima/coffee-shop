@@ -74,6 +74,7 @@ Host_Event :: struct {
 	reason:      string `json:"reason,omitempty"`,
 	branch:      string `json:"branch,omitempty"`,
 	commit:      string `json:"commit,omitempty"`,
+	at:          string `json:"at"`,
 }
 
 // Foreground host: reads one JSON request per line from stdin and answers on
@@ -1441,7 +1442,9 @@ valid_host_model :: proc(model: string) -> bool {
 // Every caller runs on the one loop thread, so stdout writes cannot interleave and
 // need no lock.
 host_emit :: proc(event: Host_Event) -> bool {
-	data, err := json.marshal(event, {}, context.temp_allocator)
+	stamped := event
+	stamped.at = log_timestamp(time.now())
+	data, err := json.marshal(stamped, {}, context.temp_allocator)
 	if err != nil {
 		host_write_line(`{"type":"error","reason":"could not encode event"}`)
 		return false
@@ -1455,6 +1458,11 @@ host_emit :: proc(event: Host_Event) -> bool {
 }
 
 host_write_line :: proc(line: string) {
+	// Raw host events (ready, error, sessions) preserve all existing field order.
+	if strings.has_prefix(line, "{") && strings.has_suffix(line, "}") && !strings.contains(line, `"at":"`) {
+		fmt.printfln("%s,\"at\":\"%s\"}", line[:len(line)-1], log_timestamp(time.now()))
+		return
+	}
 	fmt.println(line)
 }
 
