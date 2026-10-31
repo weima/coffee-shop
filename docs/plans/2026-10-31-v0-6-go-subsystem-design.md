@@ -1,6 +1,24 @@
 # v0.6 design — the Barista-to-Station subsystem in Go
 
-**Status:** approved direction, not implemented. Written 2026-10-31.
+**Status:** approved direction, in progress. Written 2026-10-31; phase 1 (the contract and
+its conformance harness, PR #148) and phase 2 (the Odin seam, PR #149) are open, and the
+first Go host slice that speaks the contract scaffolding is PR #150.
+
+**Evidence that the contract is implementation-neutral.** The same harness passes against
+both hosts, each compiled from current source:
+
+```
+CS_CONFORMANCE_CMD='odin run src -- host'    → PASS
+CS_CONFORMANCE_CMD='go run ./cmd/csd'        → PASS
+```
+
+**The one gate that is still unproven, and why it matters here.** v0.5 never showed five
+Stations holding five Slots for a sustained period. The attempt that put `sleep 90` in the
+Shot's Taste queued the sixth Shot correctly, then stopped producing events: two Stations
+reported `agent_exited` and no later Taste report, three logged only their first prompt,
+and the run hit its 30-minute timeout. Nothing in that run was diagnosed. Until it is,
+phase 3's concurrency gate inherits an unexplained defect, and the Go port should
+reproduce the scenario deliberately rather than by accident.
 
 ## Why
 
