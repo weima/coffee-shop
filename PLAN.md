@@ -608,7 +608,7 @@ Each wave is chosen so that the Shots in it own disjoint files. A Pull that need
 
 **Phases.**
 
-1. **Freeze the wire contract as data.** Turn the host's stdout event shapes, request shapes, socket paths, exit codes, spool and history formats into a written contract plus a black-box conformance test that any implementation can be run against. No behaviour change.
+1. **Freeze the wire contract as data.** Turn the host's stdout event shapes, request shapes, socket paths, exit codes, spool and history formats into a written contract plus a black-box conformance test that any implementation can be run against. No behaviour change. **Started:** `go/internal/proto` holds the types with the contract's field order and timestamp shape, `go/internal/conformance` holds the harness, and `go/internal/conformance/testdata/recorded-v05-gate.ndjson` plus its golden stream are a real v0.5 gate run. `CS_CONFORMANCE_CMD='odin run src -- host'` with `CS_CONFORMANCE_REPO`/`CS_CONFORMANCE_STATE` runs the check against a live host; it passes against the Odin host today.
 2. **The Go host, behind a switch.** `coffee-shop host --impl=go` runs the Go binary against a real repository, headless only, no pane backend. Odin keeps the CLI. The conformance test and the existing host contract tests must pass against both implementations.
 3. **Station supervision in Go.** Agent spawn, RPC line protocol, bounded per-Shot log, turn deadline, cancel that reaches a blocked turn, durable report before relay. This is the part the defects lived in; port it with the v0.5 regression tests as acceptance.
 4. **Cut over, then delete.** Default to the Go host, remove the Odin host loop and Station supervisor, then do the v0.5 Wave 3 deletions in the same release.
