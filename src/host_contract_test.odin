@@ -67,16 +67,16 @@ test_foreground_host_accepts_dispatches_and_starts_sessions :: proc(t: ^testing.
 	testing.expect_value(t, exec_err, os.Error(nil))
 	testing.expect(t, state_run.success, string(stderr))
 	out := string(stdout)
-	testing.expect(t, strings.contains(out, `{"type":"ready","protocol":1}`), out)
-	testing.expect(t, strings.contains(out, `{"type":"dispatch_accepted","request_id":"order-1"}`), out)
-	testing.expect(t, strings.contains(out, `{"type":"session_started","request_id":"order-1","shot_id":"shot-a","pane_id":"p0"}`), out)
-	testing.expect(t, strings.contains(out, `{"type":"dispatch_accepted","request_id":"order-2"}`), out)
-	testing.expect(t, strings.contains(out, `{"type":"session_started","request_id":"order-2","shot_id":"shot-b","pane_id":"p1"}`), out)
-	testing.expect(t, strings.contains(out, `"request_id":"order-3"`) && strings.contains(out, `each shot needs a valid id and a prompt`), out)
-	testing.expect(t, !strings.contains(out, `{"type":"dispatch_accepted","request_id":"order-3"}`), out)
-	testing.expect(t, strings.contains(out, `"request_id":"order-4","shot_id":"shot-c"`) && strings.contains(out, `shot model must be`), out)
-	testing.expect(t, !strings.contains(out, `{"type":"dispatch_accepted","request_id":"order-4"}`), out)
-	testing.expect(t, strings.contains(out, `{"type":"stopped","request_id":"shutdown-1"}`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"ready","protocol":1}`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"dispatch_accepted","request_id":"order-1"}`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"session_started","request_id":"order-1","shot_id":"shot-a","pane_id":"p0"}`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"dispatch_accepted","request_id":"order-2"}`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"session_started","request_id":"order-2","shot_id":"shot-b","pane_id":"p1"}`), out)
+	testing.expect(t, host_output_contains(out, `"request_id":"order-3"`) && host_output_contains(out, `each shot needs a valid id and a prompt`), out)
+	testing.expect(t, !host_output_contains(out, `{"type":"dispatch_accepted","request_id":"order-3"}`), out)
+	testing.expect(t, host_output_contains(out, `"request_id":"order-4","shot_id":"shot-c"`) && host_output_contains(out, `shot model must be`), out)
+	testing.expect(t, !host_output_contains(out, `{"type":"dispatch_accepted","request_id":"order-4"}`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"stopped","request_id":"shutdown-1"}`), out)
 
 	prompt_path := fmt.aprintf("%s/host/order-1/prompts/shot-a.md", state)
 	defer delete(prompt_path)
@@ -166,10 +166,10 @@ test_foreground_host_passes_shot_kind_and_rejects_unknown_kind :: proc(t: ^testi
 	testing.expect_value(t, exec_err, os.Error(nil))
 	testing.expect(t, state_run.success, string(stderr))
 	out := string(stdout)
-	testing.expect(t, strings.contains(out, `{"type":"session_started","request_id":"order-5","shot_id":"shot-r"`), out)
-	testing.expect(t, strings.contains(out, `{"type":"session_started","request_id":"order-5","shot_id":"shot-e"`), out)
-	testing.expect(t, strings.contains(out, `{"type":"error","request_id":"order-6","shot_id":"shot-w","reason":"shot kind must be execute or research"}`), out)
-	testing.expect(t, !strings.contains(out, `{"type":"dispatch_accepted","request_id":"order-6"}`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"session_started","request_id":"order-5","shot_id":"shot-r"`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"session_started","request_id":"order-5","shot_id":"shot-e"`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"error","request_id":"order-6","shot_id":"shot-w","reason":"shot kind must be execute or research"}`), out)
+	testing.expect(t, !host_output_contains(out, `{"type":"dispatch_accepted","request_id":"order-6"}`), out)
 	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-6/stations/shot-w", state)), "unknown kind must not create a worktree")
 
 	calls_data, calls_err := os.read_entire_file(fmt.tprintf("%s/calls.log", root), context.allocator)
@@ -318,7 +318,7 @@ test_foreground_host_passes_taste_and_message_to_station :: proc(t: ^testing.T) 
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-t1","shot_id":"shot-t","pane_id":"p0"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-t1","shot_id":"shot-t","pane_id":"p0"}`), run.out)
 	testing.expect(t, strings.contains(run.calls, "--prompt-file '") && strings.contains(run.calls, "--taste 'just test' --message 'Add the taste check' -- pi --mode rpc --tools +codemode -e"), run.calls)
 }
 
@@ -328,7 +328,7 @@ test_foreground_host_omits_taste_for_shot_without_taste :: proc(t: ^testing.T) {
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-t2","shot_id":"shot-n"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-t2","shot_id":"shot-n"`), run.out)
 	testing.expect(t, strings.contains(run.calls, "--station shot-n") && strings.contains(run.calls, "-- pi --mode rpc --tools +codemode -e"), run.calls)
 	testing.expect(t, !strings.contains(run.calls, "--taste") && !strings.contains(run.calls, "--message"), run.calls)
 }
@@ -339,8 +339,8 @@ test_foreground_host_rejects_taste_on_research_shot :: proc(t: ^testing.T) {
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"error","request_id":"order-t3","shot_id":"shot-r","reason":"shot taste needs an execute kind"}`), run.out)
-	testing.expect(t, !strings.contains(run.out, `{"type":"dispatch_accepted","request_id":"order-t3"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"error","request_id":"order-t3","shot_id":"shot-r","reason":"shot taste needs an execute kind"}`), run.out)
+	testing.expect(t, !host_output_contains(run.out, `{"type":"dispatch_accepted","request_id":"order-t3"}`), run.out)
 	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-t3/stations/shot-r", run.state)), "a refused taste must not create a worktree")
 	testing.expect(t, !strings.contains(run.calls, "shot-r"), "a refused taste must not call Herdr")
 }
@@ -356,10 +356,10 @@ test_foreground_host_rejects_taste_without_valid_message :: proc(t: ^testing.T) 
 `, "@LONG@", long_message, context.temp_allocator)
 	run := run_host_requests(t, "coffee-shop-host-message-*", requests)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"error","request_id":"order-t4","shot_id":"shot-m","reason":"shot message is required with a taste and must be 1 to 200 characters on one line"}`), run.out)
-	testing.expect(t, strings.contains(run.out, `{"type":"error","request_id":"order-t5","shot_id":"shot-l","reason":"shot message is required with a taste and must be 1 to 200 characters on one line"}`), run.out)
-	testing.expect(t, !strings.contains(run.out, `"type":"dispatch_accepted","request_id":"order-t4"`), run.out)
-	testing.expect(t, !strings.contains(run.out, `"type":"dispatch_accepted","request_id":"order-t5"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"error","request_id":"order-t4","shot_id":"shot-m","reason":"shot message is required with a taste and must be 1 to 200 characters on one line"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"error","request_id":"order-t5","shot_id":"shot-l","reason":"shot message is required with a taste and must be 1 to 200 characters on one line"}`), run.out)
+	testing.expect(t, !host_output_contains(run.out, `"type":"dispatch_accepted","request_id":"order-t4"`), run.out)
+	testing.expect(t, !host_output_contains(run.out, `"type":"dispatch_accepted","request_id":"order-t5"`), run.out)
 	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-t4/stations/shot-m", run.state)), "a refused message must not create a worktree")
 	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-t5/stations/shot-l", run.state)), "a refused message must not create a worktree")
 	testing.expect(t, !strings.contains(run.calls, "shot-m") && !strings.contains(run.calls, "shot-l"), "a refused message must not call Herdr")
@@ -374,8 +374,8 @@ test_host_opens_shots_as_tabs_in_one_workspace_per_repository :: proc(t: ^testin
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-w1","shot_id":"shot-w1","pane_id":"p0"}`), run.out)
-	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-w2","shot_id":"shot-w2","pane_id":"p1"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-w1","shot_id":"shot-w1","pane_id":"p0"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-w2","shot_id":"shot-w2","pane_id":"p1"}`), run.out)
 	testing.expect_value(t, strings.count(run.calls, "workspace create"), 1)
 	testing.expect_value(t, strings.count(run.calls, "tab create"), 1)
 	testing.expect(t, strings.contains(run.calls, "--label beans --no-focus"), run.calls)
@@ -396,8 +396,8 @@ test_host_opens_a_second_workspace_for_a_second_repository :: proc(t: ^testing.T
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-r1","shot_id":"shot-r1","pane_id":"p0"}`), run.out)
-	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-r2","shot_id":"shot-r2","pane_id":"p0"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-r1","shot_id":"shot-r1","pane_id":"p0"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-r2","shot_id":"shot-r2","pane_id":"p0"}`), run.out)
 	testing.expect_value(t, strings.count(run.calls, "workspace create"), 2)
 	testing.expect_value(t, strings.count(run.calls, "tab create"), 0)
 	testing.expect(t, strings.contains(run.calls, "--label beans --no-focus") && strings.contains(run.calls, "--label pulses --no-focus"), run.calls)
@@ -411,8 +411,8 @@ test_host_replaces_unusable_saved_workspace_and_still_starts_shot :: proc(t: ^te
 {"type":"shutdown","request_id":"shutdown-1"}
 `, "w-stale")
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-s1","shot_id":"shot-s","pane_id":"p0"}`), run.out)
-	testing.expect(t, !strings.contains(run.out, "session_failed"), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-s1","shot_id":"shot-s","pane_id":"p0"}`), run.out)
+	testing.expect(t, !host_output_contains(run.out, "session_failed"), run.out)
 	testing.expect(t, strings.contains(run.calls, "tab create --workspace w-stale"), run.calls)
 	testing.expect_value(t, strings.count(run.calls, "workspace create"), 1)
 	testing.expect(t, strings.contains(run.calls, "tab rename t0 Shot shot-s"), run.calls)
@@ -432,7 +432,7 @@ test_host_same_named_repositories_get_separate_workspaces :: proc(t: ^testing.T)
 {"type":"shutdown","request_id":"shutdown-1"}
 `, other_path = "elsewhere/beans")
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-n2","shot_id":"shot-n2"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-n2","shot_id":"shot-n2"`), run.out)
 	testing.expect_value(t, strings.count(run.calls, "workspace create"), 2)
 	testing.expect_value(t, strings.count(run.calls, "tab create"), 0)
 	testing.expect_value(t, strings.count(run.calls, "--label beans --no-focus"), 2)
@@ -456,9 +456,9 @@ test_host_warns_and_starts_shot_when_workspace_id_cannot_be_saved :: proc(t: ^te
 {"type":"shutdown","request_id":"shutdown-1"}
 `, save_blocked = true)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"warning","request_id":"order-f1","shot_id":"shot-f","reason":"could not save the workspace id; the next dispatch will create a new workspace"}`), run.out)
-	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-f1","shot_id":"shot-f","pane_id":"p0"}`), run.out)
-	testing.expect(t, !strings.contains(run.out, "session_failed"), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"warning","request_id":"order-f1","shot_id":"shot-f","reason":"could not save the workspace id; the next dispatch will create a new workspace"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-f1","shot_id":"shot-f","pane_id":"p0"}`), run.out)
+	testing.expect(t, !host_output_contains(run.out, "session_failed"), run.out)
 	testing.expect(t, strings.contains(run.calls, "tab rename t0 Shot shot-f"), run.calls)
 }
 
@@ -470,7 +470,7 @@ test_foreground_host_passes_shot_thinking_level_to_station :: proc(t: ^testing.T
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-h1","shot_id":"shot-h"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-h1","shot_id":"shot-h"`), run.out)
 	// Tools come before the model and thinking flags, so Pi reads the allowlist and
 	// the level independently.
 	testing.expect(t, strings.contains(run.calls, "-- pi --mode rpc --tools +codemode --model 'github-copilot/claude-haiku-5.5' --thinking 'low' -e"), run.calls)
@@ -484,7 +484,7 @@ test_foreground_host_omits_thinking_for_shot_without_thinking :: proc(t: ^testin
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-h2","shot_id":"shot-p"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-h2","shot_id":"shot-p"`), run.out)
 	testing.expect(t, strings.contains(run.calls, "--station shot-p") && strings.contains(run.calls, "-- pi --mode rpc --tools +codemode -e"), run.calls)
 	testing.expect(t, !strings.contains(run.calls, "--thinking"), run.calls)
 }
@@ -497,9 +497,9 @@ test_foreground_host_rejects_invalid_thinking_level :: proc(t: ^testing.T) {
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"error","request_id":"order-h3","shot_id":"shot-x","reason":"shot thinking must be off, minimal, low, medium, high, xhigh, or max"}`), run.out)
-	testing.expect(t, !strings.contains(run.out, `{"type":"dispatch_accepted","request_id":"order-h3"}`), run.out)
-	testing.expect(t, !strings.contains(run.out, `"type":"session_started","request_id":"order-h3"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"error","request_id":"order-h3","shot_id":"shot-x","reason":"shot thinking must be off, minimal, low, medium, high, xhigh, or max"}`), run.out)
+	testing.expect(t, !host_output_contains(run.out, `{"type":"dispatch_accepted","request_id":"order-h3"}`), run.out)
+	testing.expect(t, !host_output_contains(run.out, `"type":"session_started","request_id":"order-h3"`), run.out)
 	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-h3/stations/shot-x", run.state)), "invalid thinking must not create a worktree")
 	testing.expect(t, !strings.contains(run.calls, "shot-x"), "invalid thinking must not call Herdr")
 }
@@ -516,15 +516,15 @@ test_foreground_host_validates_oreo_runtime_before_launch_and_uses_transport_onl
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"oreo-good","shot_id":"shot-o"`), "valid Oreo Shot should start")
+	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"oreo-good","shot_id":"shot-o"`), "valid Oreo Shot should start")
 	testing.expect(t, strings.contains(run.calls, "OREO_HOST='") && strings.contains(run.calls, "OREO_PROVIDER='openai-codex' OREO_MODEL='gpt-6-luna' OREO_THINKING='high' OREO_SESSION_ID=shot-o pi --mode rpc --no-tools --no-mcp --no-extensions --model 'openai-codex/gpt-6-luna' --thinking high -e"), run.calls)
 	testing.expect(t, strings.contains(run.calls, "OREO_PROVIDER='openai-codex' OREO_MODEL='gpt-6-luna' OREO_THINKING='high'"), run.calls)
 	for id in ([]string{"shot-u", "shot-m", "shot-b", "shot-t"}) {
 		testing.expect(t, !strings.contains(run.calls, id), run.calls)
 	}
 	for request in ([]string{"oreo-bad-runtime", "oreo-no-route", "oreo-bad-route", "oreo-no-thinking"}) {
-		testing.expect(t, strings.contains(run.out, fmt.tprintf(`{{"type":"error","request_id":"%s"`, request)), run.out)
-		testing.expect(t, !strings.contains(run.out, fmt.tprintf(`{{"type":"dispatch_accepted","request_id":"%s"`, request)), run.out)
+		testing.expect(t, host_output_contains(run.out, fmt.tprintf(`{{"type":"error","request_id":"%s"`, request)), run.out)
+		testing.expect(t, !host_output_contains(run.out, fmt.tprintf(`{{"type":"dispatch_accepted","request_id":"%s"`, request)), run.out)
 		testing.expect(t, !os.exists(fmt.tprintf("%s/host/%s/stations", run.state, request)))
 	}
 }
@@ -550,8 +550,8 @@ test_host_emits_received_for_every_request_line :: proc(t: ^testing.T) {
 	defer delete(requests)
 	run := run_host_requests(t, "coffee-shop-host-received-*", requests)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"order-recv-1","bytes":%d}}`, len(sessions))), run.out)
-	testing.expect(t, strings.contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"shutdown-1","bytes":%d}}`, len(shutdown))), run.out)
+	testing.expect(t, host_output_contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"order-recv-1","bytes":%d}}`, len(sessions))), run.out)
+	testing.expect(t, host_output_contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"shutdown-1","bytes":%d}}`, len(shutdown))), run.out)
 }
 
 // A malformed line is still received (with an empty request id), and the usual
@@ -568,10 +568,10 @@ test_host_receives_malformed_line_before_error :: proc(t: ^testing.T) {
 	defer host_contract_destroy(run)
 	received := fmt.tprintf(`{{"type":"received","request_id":"","bytes":%d}}`, len(bad))
 	error := `{"type":"error","reason":"invalid json"}`
-	testing.expect(t, strings.contains(run.out, received), run.out)
-	testing.expect(t, strings.contains(run.out, error), run.out)
-	testing.expect(t, strings.index(run.out, error) > strings.index(run.out, received), run.out)
-	testing.expect(t, strings.contains(run.out, `{"type":"received","request_id":"shutdown-1"`) && strings.contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, received), run.out)
+	testing.expect(t, host_output_contains(run.out, error), run.out)
+	testing.expect(t, strings.index(strip_all_event_timestamps(run.out), error) > strings.index(strip_all_event_timestamps(run.out), received), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"received","request_id":"shutdown-1"`) && host_output_contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
 }
 
 // A line over the 65536-byte limit is a protocol guard, not a fatal scan failure:
@@ -585,11 +585,11 @@ test_host_reports_overlong_line_and_keeps_serving :: proc(t: ^testing.T) {
 	defer delete(requests)
 	run := run_host_requests(t, "coffee-shop-host-overlong-*", requests)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"error"`) && strings.contains(run.out, "65536") && strings.contains(run.out, "70000"), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"error"`) && host_output_contains(run.out, "65536") && host_output_contains(run.out, "70000"), run.out)
 	// The overlong line is discarded, so it never becomes a received event.
-	testing.expect(t, !strings.contains(run.out, fmt.tprintf(`"bytes":%d`, len(long_line))), run.out)
-	testing.expect(t, strings.contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"after-long","bytes":%d}}`, len(after))), run.out)
-	testing.expect(t, strings.contains(run.out, `{"type":"sessions","sessions":[]}`), run.out)
+	testing.expect(t, !host_output_contains(run.out, fmt.tprintf(`"bytes":%d`, len(long_line))), run.out)
+	testing.expect(t, host_output_contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"after-long","bytes":%d}}`, len(after))), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"sessions","sessions":[]}`), run.out)
 	testing.expect(t, strings.index(run.out, `"after-long"`) > strings.index(run.out, "65536"), run.out)
 }
 
@@ -602,9 +602,9 @@ test_host_cancel_signals_the_named_shot :: proc(t: ^testing.T) {
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"session_started","request_id":"order-c1","shot_id":"shot-a","pane_id":"p0"}`), run.out)
-	testing.expect(t, strings.contains(run.out, `{"type":"cancelled","request_id":"cancel-1","shot_id":"shot-a"}`), run.out)
-	testing.expect(t, !strings.contains(run.out, `"request_id":"cancel-1","shot_id":"shot-a","reason"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-c1","shot_id":"shot-a","pane_id":"p0"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"cancelled","request_id":"cancel-1","shot_id":"shot-a"}`), run.out)
+	testing.expect(t, !host_output_contains(run.out, `"request_id":"cancel-1","shot_id":"shot-a","reason"`), run.out)
 }
 
 @(test)
@@ -614,7 +614,7 @@ test_host_refuses_non_ascii_station_command :: proc(t: ^testing.T) {
 `
 	run := run_host_requests(t, "coffee-shop-host-nonascii-*", requests, "", "pulses", false, "state-é")
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `"reason":"generated Station command contains non-ASCII bytes"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `"reason":"generated Station command contains non-ASCII bytes"`), run.out)
 	testing.expect(t, !strings.contains(run.calls, "pane run"), run.calls)
 }
 
@@ -628,9 +628,9 @@ test_host_cancel_reports_unknown_shot_and_keeps_serving :: proc(t: ^testing.T) {
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"cancelled","request_id":"cancel-2","shot_id":"shot-missing","reason":"no Station is running for that shot"}`), run.out)
-	testing.expect(t, strings.contains(run.out, `{"type":"sessions"`), run.out)
-	testing.expect(t, strings.contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"cancelled","request_id":"cancel-2","shot_id":"shot-missing","reason":"no Station is running for that shot"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"sessions"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
 }
 
 // A cancel with no shot_id answers once per running Station.
@@ -641,8 +641,8 @@ test_host_cancel_without_shot_cancels_every_station :: proc(t: ^testing.T) {
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"cancelled","request_id":"cancel-3","shot_id":"shot-a"}`), run.out)
-	testing.expect(t, strings.contains(run.out, `{"type":"cancelled","request_id":"cancel-3","shot_id":"shot-b"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"cancelled","request_id":"cancel-3","shot_id":"shot-a"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"cancelled","request_id":"cancel-3","shot_id":"shot-b"}`), run.out)
 }
 
 // The loop still serves a following valid request after a cancel.
@@ -654,10 +654,10 @@ test_host_cancel_keeps_serving_a_following_request :: proc(t: ^testing.T) {
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"cancelled","request_id":"cancel-4","shot_id":"shot-a"}`), run.out)
-	testing.expect(t, strings.contains(run.out, `{"type":"sessions"`), run.out)
-	testing.expect(t, strings.contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
-	testing.expect(t, strings.index(run.out, `{"type":"sessions"`) > strings.index(run.out, `{"type":"cancelled","request_id":"cancel-4"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"cancelled","request_id":"cancel-4","shot_id":"shot-a"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"sessions"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
+	testing.expect(t, strings.index(strip_all_event_timestamps(run.out), `{"type":"sessions"`) > strings.index(strip_all_event_timestamps(run.out), `{"type":"cancelled","request_id":"cancel-4"`), run.out)
 }
 
 // A cancel without a request_id is refused the same way every other request is.
@@ -667,9 +667,9 @@ test_host_cancel_without_request_id_is_rejected :: proc(t: ^testing.T) {
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `{"type":"error","reason":"request_id must be a valid shot-style identifier (letters, digits, - or _, up to 64)"}`), run.out)
-	testing.expect(t, !strings.contains(run.out, `"type":"cancelled"`), run.out)
-	testing.expect(t, strings.contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"error","reason":"request_id must be a valid shot-style identifier (letters, digits, - or _, up to 64)"}`), run.out)
+	testing.expect(t, !host_output_contains(run.out, `"type":"cancelled"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
 }
 
 @(test)
@@ -694,8 +694,8 @@ test_foreground_host_refuses_invalid_interactive_and_codemode :: proc(t: ^testin
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, `"request_id":"order-o1","shot_id":"shot-i","reason":"shot interactive must be true or false"`), run.out)
-	testing.expect(t, strings.contains(run.out, `"request_id":"order-o2","shot_id":"shot-c","reason":"shot codemode must be true or false"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `"request_id":"order-o1","shot_id":"shot-i","reason":"shot interactive must be true or false"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `"request_id":"order-o2","shot_id":"shot-c","reason":"shot codemode must be true or false"`), run.out)
 	testing.expect(t, !strings.contains(run.calls, "shot-i") && !strings.contains(run.calls, "shot-c"), "a refused option must not call Herdr")
 	testing.expect(t, strings.contains(run.calls, "--station shot-ok") && strings.contains(run.calls, "--interactive --codemode false"), run.calls)
 	testing.expect(t, !strings.contains(run.calls, "+codemode"), run.calls)

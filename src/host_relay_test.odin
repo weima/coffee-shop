@@ -106,10 +106,10 @@ test_host_relays_station_reports_to_stdout :: proc(t: ^testing.T) {
 	defer delete(out_data)
 	testing.expect_value(t, out_err, os.Error(nil))
 	out := string(out_data)
-	testing.expect(t, strings.contains(out, `{"type":"ready","protocol":1}`), out)
-	testing.expect(t, strings.contains(out, `{"type":"station_report","request_id":"order-1","shot_id":"shot-a","kind":"turn_done","description":"turn 1"}`), out)
-	testing.expect(t, strings.contains(out, `{"type":"station_report","request_id":"order-1","shot_id":"shot-a","kind":"agent_exited","description":"Agent exited"}`), out)
-	testing.expect(t, strings.contains(out, `{"type":"stopped","request_id":"done"}`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"ready","protocol":1}`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"station_report","request_id":"order-1","shot_id":"shot-a","kind":"turn_done","description":"turn 1"}`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"station_report","request_id":"order-1","shot_id":"shot-a","kind":"agent_exited","description":"Agent exited"}`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"stopped","request_id":"done"}`), out)
 
 	history, history_err := os.read_entire_file(fmt.tprintf("%s/host/order-1/history.ndjson", state), context.allocator)
 	defer delete(history)
@@ -159,7 +159,7 @@ test_host_relays_full_long_station_report :: proc(t: ^testing.T) {
 	out := string(out_data)
 	full := strings.repeat("x", 3000, context.temp_allocator)
 	expected := strings.concatenate({`"kind":"turn_done","description":"`, full, `"}`}, context.temp_allocator)
-	testing.expect(t, strings.contains(out, expected), out[:min(len(out), 400)])
+	testing.expect(t, host_output_contains(out, expected), out[:min(len(out), 400)])
 }
 
 // Two hosts must not evict each other's socket.
@@ -224,7 +224,7 @@ test_second_host_keeps_first_host_socket_alive :: proc(t: ^testing.T) {
 	defer delete(second_data)
 	testing.expect_value(t, out_err, os.Error(nil))
 	testing.expect_value(t, second_read_err, os.Error(nil))
-	testing.expect(t, strings.contains(string(out_data), `{"type":"sessions","sessions":[]}`), string(out_data))
+	testing.expect(t, host_output_contains(string(out_data), `{"type":"sessions","sessions":[]}`), string(out_data))
 	testing.expect(t, strings.contains(string(second_data), "another host is already running"), string(second_data))
 }
 
@@ -257,7 +257,7 @@ test_host_starts_over_stale_socket_file :: proc(t: ^testing.T) {
 	defer delete(stderr)
 	testing.expect_value(t, exec_err, os.Error(nil))
 	testing.expect(t, state_run.success, string(stderr))
-	testing.expect(t, strings.contains(string(stdout), `{"type":"ready","protocol":1}`), string(stdout))
+	testing.expect(t, host_output_contains(string(stdout), `{"type":"ready","protocol":1}`), string(stdout))
 }
 
 // Starts the host with its stdin on a FIFO and sources the actions fragment as soon
@@ -325,10 +325,10 @@ test_host_handles_two_request_lines_in_one_write :: proc(t: ^testing.T) {
 	defer host_contract_destroy(run)
 	one := fmt.tprintf(`{{"type":"received","request_id":"one","bytes":%d}}`, len(first))
 	two := fmt.tprintf(`{{"type":"received","request_id":"two","bytes":%d}}`, len(second))
-	testing.expect(t, strings.contains(run.out, one) && strings.contains(run.out, two), run.out)
-	testing.expect(t, strings.index(run.out, one) < strings.index(run.out, two), run.out)
-	testing.expect_value(t, strings.count(run.out, `{"type":"sessions","sessions":[]}`), 2)
-	testing.expect(t, strings.contains(run.out, `{"type":"stopped","request_id":"done"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, one) && host_output_contains(run.out, two), run.out)
+	testing.expect(t, strings.index(strip_all_event_timestamps(run.out), one) < strings.index(strip_all_event_timestamps(run.out), two), run.out)
+	testing.expect_value(t, host_output_count(run.out, `{"type":"sessions","sessions":[]}`), 2)
+	testing.expect(t, host_output_contains(run.out, `{"type":"stopped","request_id":"done"}`), run.out)
 }
 
 // One request line split across two writes is buffered until its newline and then
@@ -352,11 +352,11 @@ printf '%%s\n' '%s' >&3
 	defer delete(actions)
 	run := run_host_writes(t, "coffee-shop-stdin-split-*", actions)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"split","bytes":%d}}`, len(split))), run.out)
+	testing.expect(t, host_output_contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"split","bytes":%d}}`, len(split))), run.out)
 	// Received plus the unknown-request error: handled once, not once per write.
-	testing.expect_value(t, strings.count(run.out, `"request_id":"split"`), 2)
-	testing.expect_value(t, strings.count(run.out, `"reason":"unknown request type"`), 1)
-	testing.expect(t, strings.contains(run.out, `{"type":"stopped","request_id":"done"}`), run.out)
+	testing.expect_value(t, host_output_count(run.out, `"request_id":"split"`), 2)
+	testing.expect_value(t, host_output_count(run.out, `"reason":"unknown request type"`), 1)
+	testing.expect(t, host_output_contains(run.out, `{"type":"stopped","request_id":"done"}`), run.out)
 }
 
 // Every line, valid or not, still produces exactly one received event before it is
@@ -370,10 +370,10 @@ test_host_receives_every_line_written :: proc(t: ^testing.T) {
 	defer delete(actions)
 	run := run_host_writes(t, "coffee-shop-stdin-recv-*", actions)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"recv-a","bytes":%d}}`, len(first))), run.out)
-	testing.expect(t, strings.contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"","bytes":%d}}`, len(bad))), run.out)
-	testing.expect(t, strings.contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"recv-b","bytes":%d}}`, len(last))), run.out)
-	testing.expect(t, strings.contains(run.out, `{"type":"stopped","request_id":"recv-b"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"recv-a","bytes":%d}}`, len(first))), run.out)
+	testing.expect(t, host_output_contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"","bytes":%d}}`, len(bad))), run.out)
+	testing.expect(t, host_output_contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"recv-b","bytes":%d}}`, len(last))), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"stopped","request_id":"recv-b"}`), run.out)
 }
 
 // A request that always produces exactly one terminal reply: a cancel with no
@@ -472,18 +472,18 @@ test_host_reads_and_answers_every_request_under_load :: proc(t: ^testing.T) {
 	testing.expect_value(t, total, 250)
 	// Every valid request plus the shutdown line was received; each valid request
 	// got its one terminal reply.
-	testing.expect_value(t, strings.count(out, `{"type":"received"`), total + 1)
-	testing.expect_value(t, strings.count(out, `{"type":"cancelled"`), total)
-	testing.expect(t, strings.contains(out, `{"type":"stopped","request_id":"load-done"}`), out)
+	testing.expect_value(t, host_output_count(out, `{"type":"received"`), total + 1)
+	testing.expect_value(t, host_output_count(out, `{"type":"cancelled"`), total)
+	testing.expect(t, host_output_contains(out, `{"type":"stopped","request_id":"load-done"}`), out)
 	// Each over-long line was actually sent and dropped, so the reader did not stop
 	// before the valid requests that followed it.
-	testing.expect_value(t, strings.count(out, "exceeds the 65536-byte limit"), 5)
+	testing.expect_value(t, host_output_count(out, "exceeds the 65536-byte limit"), 5)
 
 	for id in ids {
 		received := strings.concatenate({`{"type":"received","request_id":"`, id, `"`}, context.temp_allocator)
 		terminal := strings.concatenate({`{"type":"cancelled","request_id":"`, id, `"`}, context.temp_allocator)
-		received_count := strings.count(out, received)
-		terminal_count := strings.count(out, terminal)
+		received_count := host_output_count(out, received)
+		terminal_count := host_output_count(out, terminal)
 		testing.expectf(t, received_count == 1, "request %s: %d received events, expected exactly 1", id, received_count)
 		testing.expectf(t, terminal_count == 1, "request %s: %d terminal replies, expected exactly 1", id, terminal_count)
 	}
@@ -518,7 +518,7 @@ test_host_recovers_unrelayed_spooled_report :: proc(t: ^testing.T) {
 	defer delete(stderr)
 	testing.expect_value(t, exec_err, os.Error(nil))
 	testing.expect(t, run_state.success, string(stderr))
-	testing.expect(t, strings.contains(string(stdout), `{"type":"station_report","request_id":"order-1","shot_id":"shot-a","kind":"turn_done","description":"finished while the host was down"}`), string(stdout))
+	testing.expect(t, host_output_contains(string(stdout), `{"type":"station_report","request_id":"order-1","shot_id":"shot-a","kind":"turn_done","description":"finished while the host was down"}`), string(stdout))
 	history, history_err := os.read_entire_file(fmt.tprintf("%s/host/order-1/history.ndjson", state), context.allocator)
 	defer delete(history)
 	testing.expect_value(t, history_err, os.Error(nil))
@@ -562,9 +562,9 @@ test_host_recovers_multiple_unrelayed_spooled_reports :: proc(t: ^testing.T) {
 	out := string(stdout)
 	for i in 0 ..< len(ids) {
 		expected := fmt.tprintf(`{{"type":"station_report","request_id":"order-1","shot_id":"%s","kind":"turn_done","description":"pending %s"}}`, ids[i], ids[i])
-		testing.expect_value(t, strings.count(out, expected), 1)
+		testing.expect_value(t, host_output_count(out, expected), 1)
 	}
-	testing.expect_value(t, strings.count(out, `"type":"station_report"`), len(ids))
+	testing.expect_value(t, host_output_count(out, `"type":"station_report"`), len(ids))
 
 	history, history_err := os.read_entire_file(fmt.tprintf("%s/host/order-1/history.ndjson", state), context.allocator)
 	defer delete(history)
