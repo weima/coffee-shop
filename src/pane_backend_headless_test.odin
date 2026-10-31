@@ -107,3 +107,24 @@ test_headless_slots_limit :: proc(t: ^testing.T) {
 	delete(b)
 	delete(c)
 }
+
+// The load-dependent half of the test above, made deterministic: one write larger
+// than the whole bound must keep its newest bytes, not its first. A full pipe under
+// load hands the pump exactly such a chunk at the end of a run, so losing the tail
+// loses the run's final line.
+@(test)
+test_headless_oversized_chunk_keeps_the_tail :: proc(t: ^testing.T) {
+	root := headless_test_root()
+	defer delete(root)
+	defer os.remove_all(root)
+	key, err := headless_session_open(root, "req-c", "shot-c", root, 32)
+	testing.expect_value(t, err, "")
+	s := headless_session_surface(root)
+	command := `printf '%s%s\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' TARGET`
+	testing.expect_value(t, s.ops.pane_run(s, key, command), "")
+	log_path := fmt.tprintf("%s/host/req-c/logs/shot-c.log", root)
+	testing.expect(t, headless_wait_for(log_path, "TARGET"), "the newest bytes of an oversized chunk are kept")
+	testing.expect(t, s.ops.tab_close(s, key), "close")
+	info, _ := os.stat(log_path, context.temp_allocator)
+	testing.expect(t, info.size <= 32, "the rotation still keeps each generation within the bound")
+}
