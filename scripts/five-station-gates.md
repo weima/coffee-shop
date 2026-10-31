@@ -24,6 +24,8 @@ Each run mints a new request id (`gate-five-YYYYMMDD-HHMMSS-mmm`, printed by `ga
 
 ## Report
 
+Each host event now has `at`, RFC 3339 UTC with millisecond precision. The report uses `session_started` through each terminal `station_report` to print per-Shot elapsed seconds, plus the span from the first Station start to the last terminal report. Older event files without `at`, or Shots without a terminal report, say `not measured`.
+
 - **5.10**: whether the sixth Shot got `dispatch_queued` → `dispatch_dequeued` → `session_started` (src/host.odin:891, :327, :938), Stations started before it queued, and any failure events.
 - **5.9**: per-Shot Station and Pi-tree peaks (cpu, rss, fds, children) from `<state>/workers/<shot>.resource` (src/resource_profile.odin:26, :126).
 - **5.8**: top spans by inclusive total time across all trace files.

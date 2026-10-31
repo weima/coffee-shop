@@ -70,13 +70,15 @@ fx_events :: proc(path: string, ids: []string, waits: bool) {
 	b := strings.builder_make()
 	line(&b, `{{"type":"dispatch_accepted"}}`)
 	for id in ids[:5] {
-		line(&b, `{{"type":"session_started","shot_id":"%s"}}`, id)
+		line(&b, `{{"type":"session_started","shot_id":"%s","at":"2026-10-31T19:20:00.000Z"}}`, id)
+		line(&b, `{{"type":"station_report","shot_id":"%s","kind":"taste_passed","at":"2026-10-31T19:21:30.125Z"}}`, id)
 	}
 	if waits {
 		line(&b, `{{"type":"dispatch_queued","shot_id":"%s"}}`, ids[5])
 		line(&b, `{{"type":"dispatch_dequeued","shot_id":"%s"}}`, ids[5])
 	}
-	line(&b, `{{"type":"session_started","shot_id":"%s"}}`, ids[5])
+	line(&b, `{{"type":"session_started","shot_id":"%s","at":"2026-10-31T19:20:00.000Z"}}`, ids[5])
+	line(&b, `{{"type":"station_report","shot_id":"%s","kind":"taste_passed","at":"2026-10-31T19:21:30.125Z"}}`, ids[5])
 	write_text(path, strings.to_string(b))
 }
 
@@ -117,6 +119,7 @@ selftest_waits :: proc(c: ^Checker, waits: bool) {
 		tprint("waits=%v: sixth-Shot verdict", waits))
 	check(c, has(md, "| 1 | c | 9.000 | 1 | 9.000 |") && has(md, "| 2 | a | 6.000 | 2 | 3.000 |"), "trace totals summed across files, ranked")
 	check(c, has(md, "tr.bad: not a Spall"), "unreadable trace named, not hidden")
+	check(c, has(md, "gate-s1: 90.125 s"), "per-Shot elapsed time derived from RFC 3339 event timestamps")
 	check(c, has(md, "| gate-s5 | - | not measured: no .resource file"), "missing record -> not measured")
 	check(c, has(md, "| gate-s1 | station_peak | 1500 | 100.0 | 12 | 2 |") && has(md, "| gate-s1 | tree_peak | not measured |"), "known and unknown metrics kept apart")
 	check(c, has(md, "Sum of every known rss peak above (Station + tree, peaks not simultaneous): 800.0 MiB"), "rss sum of known peaks")
