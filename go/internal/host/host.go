@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/weima/coffee-shop/go/internal/proto"
+	"github.com/weima/coffee-shop/go/internal/state"
 )
 
 // Protocol is the value of the `ready` event's `protocol` field.
@@ -29,6 +31,10 @@ type Options struct {
 	In  io.Reader
 	Out io.Writer
 	Now func() time.Time
+	// StateRoot enables the host-owned artifacts: the activity socket, the spool and
+	// per-request history. Empty keeps the host a pure stdin/stdout loop, which is what
+	// the contract tests use.
+	StateRoot string
 }
 
 // Run serves one foreground host until shutdown or the end of input.
@@ -40,12 +46,39 @@ func Run(ctx context.Context, opts Options) error {
 	if now == nil {
 		now = time.Now
 	}
-	w := &writer{out: opts.Out, now: now}
+	w := &writer{out: opts.Out, now: now, root: opts.StateRoot}
+
+	var server *activityServer
+	if opts.StateRoot != "" {
+		if err := state.EnsureDir(state.HostDir(opts.StateRoot), true); err != nil {
+			return fmt.Errorf("create host directory: %w", err)
+		}
+		if err := state.EnsureDir(state.SpoolDir(opts.StateRoot), true); err != nil {
+			return fmt.Errorf("create report spool: %w", err)
+		}
+		listening, err := listenActivity(opts.StateRoot, w)
+		if err != nil {
+			return err
+		}
+		server = listening
+		defer func() { _ = server.Close() }()
+	}
 
 	// ready has no request_id in the contract (the Odin host writes only type and
 	// protocol), so it is written as its own shape rather than through proto.Event.
 	if err := w.raw(fmt.Sprintf(`{"type":"ready","protocol":%d,"at":%q}`, Protocol, stamp(now()))); err != nil {
 		return err
+	}
+
+	if server != nil {
+		// Reports a previous host spooled but never announced are relayed before this
+		// host accepts a new one, so recovery cannot race a live report.
+		ReplaySpool(opts.StateRoot, w)
+		go func() {
+			if err := server.Serve(ctx); err != nil && ctx.Err() == nil {
+				fmt.Fprintf(os.Stderr, "csd: activity: %v\n", err)
+			}
+		}()
 	}
 
 	scanner := bufio.NewScanner(opts.In)
@@ -78,8 +111,56 @@ func stamp(t time.Time) string {
 }
 
 type writer struct {
-	out io.Writer
-	now func() time.Time
+	out  io.Writer
+	now  func() time.Time
+	root string
+}
+
+// relayReport records a report and announces it, in that order. A report that cannot be
+// recorded is still announced: a reader seeing it twice is better than a completion
+// nobody sees.
+func (w *writer) relayReport(message proto.Message) {
+	if message.Kind == StationPIDKind {
+		return
+	}
+	_ = w.appendHistory(message)
+	_ = w.emit(proto.Event{
+		Type:        "station_report",
+		RequestID:   message.BrewID,
+		ShotID:      message.ShotID,
+		Kind:        message.Kind,
+		Description: reportText(message.Description),
+	})
+}
+
+// appendHistory writes the report to <host>/<request>/history.ndjson.
+func (w *writer) appendHistory(message proto.Message) error {
+	if w.root == "" {
+		return nil
+	}
+	dir := state.RequestDir(w.root, message.BrewID)
+	if err := state.EnsureDir(dir, true); err != nil {
+		return err
+	}
+	entry := proto.Event{
+		Type:        "station_report",
+		RequestID:   message.BrewID,
+		ShotID:      message.ShotID,
+		Kind:        message.Kind,
+		Description: reportText(message.Description),
+		At:          stamp(w.now()),
+	}
+	line, err := proto.EventLine(entry)
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(state.HistoryPath(w.root, message.BrewID), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	_, err = file.Write(line)
+	return err
 }
 
 // handle acknowledges one line and then acts on it. Every line is acknowledged before it

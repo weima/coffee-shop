@@ -14,13 +14,19 @@ import (
 	"syscall"
 
 	"github.com/weima/coffee-shop/go/internal/host"
+	"github.com/weima/coffee-shop/go/internal/state"
 )
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := host.Run(ctx, host.Options{In: os.Stdin, Out: os.Stdout}); err != nil {
+	root, err := state.Root()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "csd: %v\n", err)
+		os.Exit(2)
+	}
+	if err := host.Run(ctx, host.Options{In: os.Stdin, Out: os.Stdout, StateRoot: root}); err != nil {
 		fmt.Fprintf(os.Stderr, "csd: %v\n", err)
 		os.Exit(1)
 	}
