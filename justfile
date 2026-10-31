@@ -5,6 +5,7 @@ build:
 
 check:
     odin check src
+    cd go && go vet ./...
 
 # ODIN_TEST_FAIL_ON_BAD_MEMORY makes the runner count leaks and bad frees as test
 # failures, so a memory error can no longer ride along with "All tests were successful."
@@ -13,6 +14,7 @@ check:
 test:
     sh tests/test-suite-lock.sh
     sh scripts/test-suite.sh
+    cd go && go test -race ./...
 
 # Five-Station gates 5.8-5.10: see scripts/five-station-gates.md.
 gates-selftest:
