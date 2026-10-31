@@ -99,6 +99,11 @@ run_host :: proc() -> int {
 		host_write_line(`{"type":"error","reason":"could not create the host directory"}`)
 		return 1
 	}
+	// The request socket lives here, so only the user may enter it, whatever the umask or an older install left.
+	if !host_dir_make_private(host_dir) {
+		host_write_line(`{"type":"error","reason":"could not make the host directory private"}`)
+		return 1
+	}
 	extension_dir, _ := filepath.join({host_dir, "extensions"}, context.allocator)
 	if !os.is_directory(extension_dir) && os.make_directory_all(extension_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
 		host_write_line(`{"type":"error","reason":"could not create the extension directory"}`)
@@ -144,6 +149,12 @@ run_host :: proc() -> int {
 		return 1
 	}
 	defer activity_listener_close(&listener)
+	requests, requests_ok := host_request_listener_open(host_dir)
+	if !requests_ok {
+		host_write_line(`{"type":"error","reason":"could not open the host request socket"}`)
+		return 1
+	}
+	defer activity_listener_close(&requests)
 	executable_info, info_err := os.current_process_info({.Executable_Path}, context.allocator)
 	if info_err != nil || executable_info.executable_path == "" {
 		host_write_line(`{"type":"error","reason":"could not locate the Coffee Shop executable"}`)
@@ -179,7 +190,7 @@ run_host :: proc() -> int {
 		_, _ = host_pool_persist(state_root)
 		_ = host_dispatch_cleanup("herdr")
 	}
-	host_loop(&listener)
+	host_loop(&listener, &requests)
 	return 0
 }
 
@@ -195,15 +206,18 @@ Host_Line :: struct {
 // Serves stdin requests and Station reports from one poll over two descriptors on
 // one thread. stdin keeps the blocking default and is read only after poll reports
 // it ready; the listener is non-blocking and is drained every turn.
-host_loop :: proc(listener: ^Activity_Listener) {
+host_loop :: proc(listener, requests: ^Activity_Listener) {
 	line: Host_Line
 	chunk: [4096]u8
 	for {
-		fds := [2]posix.pollfd{
+		fds := [3]posix.pollfd{
 			{fd = posix.STDIN_FILENO, events = {.IN}},
 			{fd = listener.fd, events = {.IN}},
+			{fd = requests.fd, events = {.IN}},
 		}
 		_ = posix.poll(raw_data(fds[:]), posix.nfds_t(len(fds)), HOST_LOOP_POLL_MS)
+		host_serve_requests(requests)
+		free_all(context.temp_allocator)
 
 		// Reports arrive on accepted clients, which poll on the listener cannot
 		// signal, so drain every turn instead of only on a new connection.
@@ -593,6 +607,34 @@ host_handle_stdin_line :: proc(text: string) -> bool {
 	stop := host_handle_line(text)
 	free_all(context.temp_allocator)
 	return stop
+}
+
+// Request-socket intake. Only `reply` with exactly its four fields is accepted, so
+// nothing in a socket request can name a repo, command, path or shell. It reaches
+// the same host_reply as the stdin path; "" means delivered, else the reason.
+host_handle_request_line :: proc(text: string) -> string {
+	host_emit_received(text)
+	value, parse_err := json.parse_string(text, .JSON, false, context.temp_allocator)
+	if parse_err != .None {
+		return "invalid json"
+	}
+	root, is_object := value.(json.Object)
+	if !is_object {
+		return "request must be an object"
+	}
+	if type_name, _ := root["type"].(json.String); type_name != "reply" {
+		return "the request socket accepts only reply requests"
+	}
+	for key in root {
+		if key != "type" && key != "request_id" && key != "shot_id" && key != "message" {
+			return fmt.tprintf("unexpected field %q", key)
+		}
+	}
+	request_id := host_request_id(root)
+	if request_id == "" {
+		return "request_id must be a valid shot-style identifier (letters, digits, - or _, up to 64)"
+	}
+	return host_reply(root, request_id)
 }
 
 // The line limit is a protocol guard, not a fatal error: name the limit and the
@@ -1199,30 +1241,35 @@ host_pane_identity :: proc(herdr, pane_id: string) -> Process_Identity {
 
 // Types a reply into a Station's pane. The Station reads it from stdin and either
 // answers the agent's pending dialog or sends it as a follow-up prompt.
-host_reply :: proc(root: json.Object, request_id: string) {
+host_reply :: proc(root: json.Object, request_id: string) -> (reason: string) {
 	shot_id, shot_ok := host_string(root, "shot_id")
 	message, message_ok := host_string(root, "message")
 	if !shot_ok || !valid_shot_id(shot_id) {
-		host_emit(Host_Event{type = "error", request_id = request_id, reason = "reply needs a valid shot_id"})
-		return
+		reason = "reply needs a valid shot_id"
+		host_emit(Host_Event{type = "error", request_id = request_id, reason = reason})
+		return reason
 	}
 	message = strings.trim_space(message)
 	if !message_ok || message == "" || len(message) > HOST_REPLY_MAX || strings.contains_any(message, "\r\n") {
-		host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = "reply must be one non-empty line"})
-		return
+		reason = "reply must be one non-empty line"
+		host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = reason})
+		return reason
 	}
 	for session in host_sessions {
 		if session.request_id == request_id && session.shot_id == shot_id {
-			surface := session_surface_open("herdr")
+			surface := session_surface_open(host_herdr_exe)
 			if err := surface.ops.pane_run(surface, session.pane_id, message); err != "" {
-				host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = fmt.tprintf("could not send the reply: %s", err)})
-				return
+				reason = fmt.tprintf("could not send the reply: %s", err)
+				host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = reason})
+				return reason
 			}
 			host_emit(Host_Event{type = "reply_sent", request_id = request_id, shot_id = shot_id})
-			return
+			return ""
 		}
 	}
-	host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = "no Station is running for that shot"})
+	reason = "no Station is running for that shot"
+	host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = reason})
+	return reason
 }
 
 // Herdr's command argument is ASCII-only; checking the encoded bytes also catches

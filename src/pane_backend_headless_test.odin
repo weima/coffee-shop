@@ -46,6 +46,8 @@ test_headless_start_output_input_close :: proc(t: ^testing.T) {
 	opened, open_err := s.ops.tab_create(s, "req-a", "shot-a", root, context.temp_allocator)
 	testing.expect_value(t, open_err, "")
 	log_path := fmt.tprintf("%s/host/req-a/logs/shot-a.log", root)
+	// `status --stations` and `log` must name the file the Station actually writes.
+	testing.expect_value(t, station_log_path(root, "req-a", "shot-a"), log_path)
 
 	// exec leaves no grandchild holding the output pipe, so close can finish the log.
 	run_err := s.ops.pane_run(s, opened.pane_id, "echo started; echo oops 1>&2; read line; echo got:$line; exec sleep 30")

@@ -284,7 +284,7 @@ test_headless_no_host_no_log :: proc(t: ^testing.T) {
 	testing.expect_value(t, print_stations(root, "", false), 1)
 	// A log that does not exist yet has a path but no file.
 	path := station_log_path(root, "req-1", "shot-a")
-	testing.expect(t, strings.has_suffix(path, "/host/req-1/shot-a.log"))
+	testing.expect(t, strings.has_suffix(path, "/host/req-1/logs/shot-a.log"))
 	testing.expect(t, !os.exists(path))
 }
 

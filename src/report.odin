@@ -587,6 +587,7 @@ station_changes :: proc(station_path: string) -> string {
 
 STATION_LOG_SUFFIX :: ".log"
 HOST_REPLY_EXIT_UNREACHABLE :: 4
+HOST_REPLY_EXIT_REFUSED :: 5
 
 host_dir_of :: proc(state_root: string) -> string {
 	dir, _ := filepath.join({state_root, "host"}, context.temp_allocator)
@@ -607,8 +608,11 @@ host_is_running :: proc(state_root: string) -> bool {
 }
 
 // <state root>/host/<request>/<shot>.log; the headless backend writes it.
+// Where a Station's headless log lives. The headless backend writes exactly this path
+// (headless_session_open), so `status --stations` and `log` can find a running Station's
+// output without a pane; the headless test asserts the two agree.
 station_log_path :: proc(state_root, request_id, shot_id: string) -> string {
-	dir, _ := filepath.join({host_dir_of(state_root), request_id}, context.temp_allocator)
+	dir, _ := filepath.join({host_dir_of(state_root), request_id, "logs"}, context.temp_allocator)
 	return state_file_path(dir, strings.concatenate({shot_id, STATION_LOG_SUFFIX}, context.temp_allocator), context.temp_allocator)
 }
 
@@ -751,10 +755,10 @@ Reply_Request :: struct {
 	message:    string `json:"message"`,
 }
 
-// The host reads requests only on its own stdin, which belongs to its parent, so
-// a separate CLI process cannot deliver the line. Without a host it says so and
-// exits 1; with one it cannot send and exits 4. --print emits the line for a
-// parent to pipe into the host.
+// Delivers the reply to the running host's request socket (<state>/host/requests.sock).
+// Exit 0 delivered; 1 no host running; 4 a host is running but its socket could not
+// be reached; 5 the host answered and refused or failed the delivery. --print emits
+// the line for a parent to pipe into the host's stdin instead.
 run_reply :: proc(request_id, shot_id, message: string, print_only: bool) -> int {
 	defer free_all(context.temp_allocator)
 	line, line_err := reply_request_line(request_id, shot_id, message)
@@ -771,10 +775,24 @@ run_reply :: proc(request_id, shot_id, message: string, print_only: bool) -> int
 		write_error(err)
 		return 2
 	}
+	return reply_deliver(state_root, line)
+}
+
+reply_deliver :: proc(state_root, line: string) -> int {
 	if !host_is_running(state_root) {
 		write_error("no host is running; the reply was not sent")
 		return 1
 	}
-	write_error("a host is running but accepts requests only on its stdin; the reply was not sent (use --print and pipe the line to the host)")
+	result, reason := host_request_send(host_dir_of(state_root), line)
+	switch result {
+	case .Delivered:
+		return 0
+	case .Unreachable:
+		write_error(fmt.tprintf("a host is running but its request socket could not be used: %s; the reply was not sent", reason))
+		return HOST_REPLY_EXIT_UNREACHABLE
+	case .Refused:
+		write_error(fmt.tprintf("the host refused the reply: %s", reason))
+		return HOST_REPLY_EXIT_REFUSED
+	}
 	return HOST_REPLY_EXIT_UNREACHABLE
 }
