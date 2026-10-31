@@ -186,7 +186,7 @@ stateDiagram-v2
 
 Recipes are strict JSON objects described by the root `recipe.schema.json`. They have exactly one of `order`/`order_file`, a non-empty `shots` array, optional `share`, optional model/thinking defaults, and optional `preamble`/`preamble_file`. A Shot has exactly one of `prompt`/`prompt_file`, a unique safe `id`, optional model/thinking overrides, and optional `expect_changes`. File inputs resolve relative to the Recipe, reject absolute/traversal paths, and are read before Stations are created. Text is snapshotted in Brew state. Scale defaults to two; `workers` opts into 1–5.
 
-The foreground host's dispatch request carries the same per-Shot `model` and `thinking` fields. A dispatched Shot therefore chooses its own cost profile, and a Shot that omits `thinking` runs at Pi's own default, which the developer cannot see from the request. The thinking level is a cost control, not a cosmetic setting: it drives how many turns a Station takes, and turn count is what dominates a Station's token spend.
+The foreground host's dispatch request carries the per-Shot `model` and `thinking` fields. A Pi Station defaults to `opencode-go/deepseek-v4.1-flash`; an explicit Shot model overrides it. An Oreo Shot still requires its own provider/model route. A Shot that omits `thinking` runs at Pi's own default, which the developer cannot see from the request. The thinking level is a cost control, not a cosmetic setting: it drives how many turns a Station takes, and turn count is what dominates a Station's token spend.
 
 ## Shared paths
 

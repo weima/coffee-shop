@@ -111,8 +111,9 @@ test_foreground_host_accepts_dispatches_and_starts_sessions :: proc(t: ^testing.
 		shot_b_end = shot_b_marker + shot_b_end - shot_b_start
 	}
 	shot_b_command := calls[shot_b_start : shot_b_start+shot_b_end]
-	testing.expect(t, strings.contains(shot_b_command, fmt.tprintf("--station shot-b --brew order-2 --prompt-file '%s' -- pi --mode rpc --tools +codemode -e", shot_b_path)), shot_b_command)
-	testing.expect(t, !strings.contains(shot_b_command, "--model"), shot_b_command)
+	testing.expect(t, strings.contains(shot_b_command, fmt.tprintf("--station shot-b --brew order-2 --prompt-file '%s' -- pi --mode rpc --tools +codemode --model 'opencode-go/deepseek-v4.1-flash' -e", shot_b_path)), shot_b_command)
+	// An explicit Shot model still overrides the Pi Station default.
+	testing.expect(t, strings.contains(calls, "--model 'github-copilot/claude-haiku-5.5' -e"), calls)
 	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-4/stations/shot-c", state)), "invalid model must not create a worktree")
 	testing.expect(t, !strings.contains(calls, "shot-c"), "invalid model must not call Herdr")
 }
@@ -177,7 +178,7 @@ test_foreground_host_passes_shot_kind_and_rejects_unknown_kind :: proc(t: ^testi
 	testing.expect_value(t, calls_err, os.Error(nil))
 	calls := string(calls_data)
 	testing.expect(t, !strings.contains(calls, "shot-w"), "unknown kind must not call Herdr")
-	testing.expect(t, strings.contains(calls, "station --kind research --report") && strings.contains(calls, "-- pi --mode rpc --tools read,grep,find,ls,write,codemode -e"), calls)
+	testing.expect(t, strings.contains(calls, "station --kind research --report") && strings.contains(calls, "-- pi --mode rpc --tools read,grep,find,ls,write,codemode --model 'opencode-go/deepseek-v4.1-flash' -e"), calls)
 	research_command_start := strings.index(calls, "station --kind research --report")
 	research_command_end := strings.index_byte(calls[research_command_start:], '\n')
 	if research_command_end < 0 {
@@ -187,7 +188,7 @@ test_foreground_host_passes_shot_kind_and_rejects_unknown_kind :: proc(t: ^testi
 	}
 	research_command := calls[research_command_start:research_command_end]
 	testing.expect(t, strings.contains(research_command, "codemode"), research_command)
-	testing.expect(t, strings.contains(calls, "station --kind execute --report") && strings.contains(calls, "-- pi --mode rpc --tools +codemode -e"), calls)
+	testing.expect(t, strings.contains(calls, "station --kind execute --report") && strings.contains(calls, "-- pi --mode rpc --tools +codemode --model 'opencode-go/deepseek-v4.1-flash' -e"), calls)
 	testing.expect_value(t, strings.count(calls, "--tools"), 2)
 }
 
@@ -319,7 +320,7 @@ test_foreground_host_passes_taste_and_message_to_station :: proc(t: ^testing.T) 
 `)
 	defer host_contract_destroy(run)
 	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-t1","shot_id":"shot-t","pane_id":"p0"}`), run.out)
-	testing.expect(t, strings.contains(run.calls, "--prompt-file '") && strings.contains(run.calls, "--taste 'just test' --message 'Add the taste check' -- pi --mode rpc --tools +codemode -e"), run.calls)
+	testing.expect(t, strings.contains(run.calls, "--prompt-file '") && strings.contains(run.calls, "--taste 'just test' --message 'Add the taste check' -- pi --mode rpc --tools +codemode --model 'opencode-go/deepseek-v4.1-flash' -e"), run.calls)
 }
 
 @(test)
@@ -329,7 +330,7 @@ test_foreground_host_omits_taste_for_shot_without_taste :: proc(t: ^testing.T) {
 `)
 	defer host_contract_destroy(run)
 	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-t2","shot_id":"shot-n"`), run.out)
-	testing.expect(t, strings.contains(run.calls, "--station shot-n") && strings.contains(run.calls, "-- pi --mode rpc --tools +codemode -e"), run.calls)
+	testing.expect(t, strings.contains(run.calls, "--station shot-n") && strings.contains(run.calls, "-- pi --mode rpc --tools +codemode --model 'opencode-go/deepseek-v4.1-flash' -e"), run.calls)
 	testing.expect(t, !strings.contains(run.calls, "--taste") && !strings.contains(run.calls, "--message"), run.calls)
 }
 
@@ -485,7 +486,7 @@ test_foreground_host_omits_thinking_for_shot_without_thinking :: proc(t: ^testin
 `)
 	defer host_contract_destroy(run)
 	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-h2","shot_id":"shot-p"`), run.out)
-	testing.expect(t, strings.contains(run.calls, "--station shot-p") && strings.contains(run.calls, "-- pi --mode rpc --tools +codemode -e"), run.calls)
+	testing.expect(t, strings.contains(run.calls, "--station shot-p") && strings.contains(run.calls, "-- pi --mode rpc --tools +codemode --model 'opencode-go/deepseek-v4.1-flash' -e"), run.calls)
 	testing.expect(t, !strings.contains(run.calls, "--thinking"), run.calls)
 }
 
@@ -535,7 +536,7 @@ test_foreground_host_keeps_pi_runtime_as_default :: proc(t: ^testing.T) {
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.calls, "-- pi --mode rpc --tools +codemode -e"), run.calls)
+	testing.expect(t, strings.contains(run.calls, "-- pi --mode rpc --tools +codemode --model 'opencode-go/deepseek-v4.1-flash' -e"), run.calls)
 	testing.expect(t, !strings.contains(run.calls, "OREO_PROVIDER"), run.calls)
 }
 
