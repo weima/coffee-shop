@@ -226,24 +226,23 @@ headless_pump :: proc(session: ^Headless_Session) {
 	for {
 		n, err := os.read(session.pump_read, buf[:])
 		if n > 0 {
+			chunk := buf[:n]
 			if written + n > session.log_max {
 				_ = os.close(session.pump_file)
 				old := fmt.tprintf("%s.1", session.log_path)
 				_ = os.rename(session.log_path, old)
 				session.pump_file, _ = os.create(session.log_path)
 				written = 0
+				// One read can exceed the whole bound. Keep its newest bytes, not its first:
+				// the bounded log exists to hold the tail of a run, and a full pipe under load
+				// delivers exactly that chunk at the end.
+				if len(chunk) > session.log_max {
+					chunk = chunk[len(chunk) - session.log_max:]
+				}
 			}
 			if session.pump_file != nil {
-				// Never exceed the bound. A single chunk can be larger than the room left, so write
-				// only what remains: output is capped, the Station is not stopped.
-				take := n
-				if room := session.log_max - written; take > room {
-					take = room
-				}
-				if take > 0 {
-					_, _ = os.write(session.pump_file, buf[:take])
-					written += take
-				}
+				_, _ = os.write(session.pump_file, chunk)
+				written += len(chunk)
 			}
 		}
 		if err != nil || n == 0 {
