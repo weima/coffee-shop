@@ -60,7 +60,7 @@ default_request_id :: proc() -> string {
 }
 
 cmd_request :: proc(args: []string) -> string {
-	flags, err := parse_flags(args, {"repo", "out", "shots", "request-id", "prompt", "prompt-file"})
+	flags, err := parse_flags(args, {"repo", "out", "shots", "request-id", "prompt", "prompt-file", "kind", "taste", "message"})
 	if err != "" {return err}
 	if m := need(flags, "repo", "out"); m != "" {return m}
 	a := RequestArgs{repo = flags["repo"], out = flags["out"], request_id = default_request_id(), prompt = DEFAULT_PROMPT}
@@ -71,6 +71,9 @@ cmd_request :: proc(args: []string) -> string {
 		if rerr != nil {return tprint("cannot read `%s`: %v", v, rerr)}
 		a.prompt = string(data)
 	}
+	if v, ok := flags["kind"]; ok {a.kind = v}
+	if v, ok := flags["taste"]; ok {a.taste = v}
+	if v, ok := flags["message"]; ok {a.message = v}
 	a.shots, err = int_flag(flags, "shots", 6)
 	if err != "" {return err}
 	return write_request(a)

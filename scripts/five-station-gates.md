@@ -7,6 +7,8 @@ The Odin tool `tools/gates` (run as `odin run tools/gates -- <args>`, never a bu
 ```sh
 W=/tmp/gates && mkdir -p $W
 just gates-request /abs/path/to/repo $W/request.jsonl        # six Shots gate-s1..gate-s6; fresh request id gate-five-<UTC timestamp> each run
+# For an overlap gate the recipe is not enough (it takes no extra flags):
+#   odin run tools/gates -- request --repo /abs/path/to/repo --out $W/request.jsonl --kind execute --taste true
 # Orchestrator: start the foreground host with these, feed it request.jsonl on stdin,
 # keep stdin open until all six Shots finish, and capture stdout:
 #   CS_SPALL_FILE=$W/trace  CS_STATE_DIR=$W/state  <host command> < $W/request.jsonl > $W/events.jsonl
@@ -14,7 +16,9 @@ just gates-report $W/request.jsonl $W/events.jsonl $W/state $W/trace $W/report.m
 ```
 
 Trace files are `$W/trace.host` and `$W/trace.<station>` (src/profiling.odin:44-52); the report reads `$W/trace*`.
-Shots are `research` kind with a `sleep 90` prompt so Stations overlap; use `--prompt`/`--prompt-file` (call `odin run tools/gates -- request ...` directly; flags `--shots`, `--request-id` too) for another load.
+Shots are `research` kind with a `sleep 90` prompt so Stations overlap; use `--prompt`/`--prompt-file` (call `odin run tools/gates -- request ...` directly; flags `--shots`, `--request-id`, `--kind`, `--taste` too) for another load.
+
+**A research Shot cannot sleep.** Its tool list is `read,grep,find,ls,write,codemode`, so a prompt that runs a shell command is declined and the Shot finishes at once: the six Shots then never overlap, and the 5.10 check reads a run that never queued. For an overlap gate use `--kind execute --taste true`: an execute Shot has a shell, and the taste ends the turn instead of leaving the session open (a Shot with no Taste stays interactive by design). The same `--tools` allowlist also hides the extension's `coffee_shop_ask` from a research Shot, so a `needs_input` check needs an execute Shot too.
 
 Each run mints a new request id (`gate-five-YYYYMMDD-HHMMSS-mmm`, printed by `gates-request`), so repeat runs need no cleanup or id juggling. Branches are `cs-host-<request id>-<shot id>`. `--request-id ID` pins one deliberately; a pinned id must not collide with existing branches from an earlier run (Git refuses with `a branch named ... already exists`), so delete the old branches/worktrees first. The report pairs events by Shot id read from the request file, so it is unaffected by the request id.
 

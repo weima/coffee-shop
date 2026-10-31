@@ -10,7 +10,9 @@ DEFAULT_PROMPT :: "Read README.md, then run `sleep 90`, then report done."
 Shot :: struct {
 	id:     string,
 	prompt: string,
-	kind:   string,
+	kind:    string,
+	taste:   string,
+	message: string `json:"message,omitempty"`,
 }
 
 Recipe :: struct {
@@ -26,7 +28,11 @@ Request :: struct {
 
 RequestArgs :: struct {
 	repo, out, request_id, prompt: string,
-	shots: int,
+	// kind and taste default to the research fixture the gate has always used. A
+	// research Shot has no shell, so its prompt cannot sleep; an execute Shot with a
+	// taste does the work and then ends instead of holding its session open.
+	kind, taste, message: string,
+	shots:               int,
 }
 
 shot_ids :: proc(n: int) -> []string {
@@ -43,9 +49,11 @@ write_request :: proc(a: RequestArgs) -> string {
 		return tprint("bad --repo `%s`: %v", a.repo, aerr)
 	}
 	ids := shot_ids(a.shots)
+	kind := a.kind
+	if kind == "" {kind = "research"}
 	shots := make([]Shot, len(ids))
 	for id, i in ids {
-		shots[i] = {id, a.prompt, "research"}
+		shots[i] = {id = id, prompt = a.prompt, kind = kind, taste = a.taste, message = a.message}
 	}
 	req := Request{"dispatch", a.request_id, abs, {shots}}
 	data, merr := json.marshal(req)

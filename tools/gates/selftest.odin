@@ -98,7 +98,7 @@ selftest_waits :: proc(c: ^Checker, waits: bool) {
 	t, _ := os.make_directory_temp("", "gates-", context.allocator)
 	defer os.remove_all(t)
 	req := join(t, "req.jsonl")
-	if e := write_request({t, req, "dry", "x", 6}); e != "" {
+	if e := write_request({repo = t, out = req, request_id = "dry", prompt = "x", shots = 6}); e != "" {
 		check(c, false, e)
 		return
 	}
