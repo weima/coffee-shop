@@ -4,6 +4,7 @@ import "core:c"
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
+import "core:strconv"
 import "core:strings"
 import "core:sync"
 import "core:sys/posix"
@@ -1612,4 +1613,110 @@ test_station_parse_validates_interactive_and_codemode :: proc(t: ^testing.T) {
 
 	_, bad_err := parse_args({"station", "--report", "/tmp/r.sock", "--station", "a", "--brew", "b", "--prompt", "hi", "--codemode", "maybe", "--", "pi"})
 	testing.expect(t, strings.contains(bad_err, "codemode"), bad_err)
+}
+
+// A model request in flight: the agent never answers, and it does not exit when the
+// Station closes its input. This is the shape that hung for twelve minutes.
+FAKE_AGENT_THAT_NEVER_ANSWERS :: `#!/bin/sh
+printf '%s\n' "$$" > "$1"
+while :; do sleep 1; done
+`
+
+// A routed cancel must reach a turn that is waiting on an agent reply. The Station's
+// main thread is blocked reading the agent's output, so only the watchdog can stop it.
+@(test)
+test_station_cancel_stops_a_turn_waiting_on_the_agent :: proc(t: ^testing.T) {
+	sync.mutex_lock(&station_cancel_flag_lock)
+	defer sync.mutex_unlock(&station_cancel_flag_lock)
+
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-cancel-turn-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	socket, _ := filepath.join({root, "report.sock"}, context.temp_allocator)
+	agent, _ := filepath.join({root, "agent.sh"}, context.temp_allocator)
+	pid_file, _ := filepath.join({root, "agent.pid"}, context.temp_allocator)
+	testing.expect_value(t, os.write_entire_file(agent, FAKE_AGENT_THAT_NEVER_ANSWERS, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
+	binary := build_test_binary(t, root)
+	defer delete(binary)
+	listener, listener_ok := activity_listener_open(socket)
+	testing.expect(t, listener_ok)
+	defer activity_listener_close(&listener)
+
+	// Hold the Station's stdin open so only the signal can end the session.
+	stdin_read, stdin_write, pipe_err := os.pipe()
+	testing.expect_value(t, pipe_err, os.Error(nil))
+	defer os.close(stdin_write)
+	process, start_err := os.process_start(os.Process_Desc{
+		command = {binary, "station", "--report", socket, "--station", "shot-a", "--brew", "order-1", "--prompt", "hi", "--", "sh", agent, pid_file},
+		stdin = stdin_read,
+		stderr = os.stderr,
+	})
+	_ = os.close(stdin_read)
+	testing.expect_value(t, start_err, os.Error(nil))
+	if start_err != nil {
+		return
+	}
+
+	// The agent writes its pid before it goes quiet, so the signal is sent only once
+	// the turn is genuinely waiting on it.
+	agent_pid := 0
+	for _ in 0 ..< 200 {
+		if data, read_err := os.read_entire_file(pid_file, context.temp_allocator); read_err == nil && len(strings.trim_space(string(data))) > 0 {
+			if parsed, parsed_ok := strconv.parse_int(strings.trim_space(string(data))); parsed_ok {
+				agent_pid = parsed
+			}
+			break
+		}
+		time.sleep(20 * time.Millisecond)
+	}
+	testing.expect(t, agent_pid > 0, "the agent should report its pid")
+	if agent_pid <= 0 {
+		_ = posix.kill(posix.pid_t(process.pid), .SIGKILL)
+		_, _ = os.process_wait(process)
+		return
+	}
+
+	testing.expect_value(t, posix.kill(posix.pid_t(process.pid), .SIGTERM), posix.result.OK)
+	state, wait_err := os.process_wait(process, 10*time.Second)
+	if wait_err == .Timeout {
+		// A Station that will not stop is the defect under test; end it here so the test
+		// binary is not left holding a live child's output. The agent keeps the pipes
+		// open as well, so it goes with it.
+		_ = posix.kill(posix.pid_t(process.pid), .SIGKILL)
+		_ = posix.kill(posix.pid_t(agent_pid), .SIGKILL)
+		_, _ = os.process_wait(process)
+		testing.expect(t, false, "the Station must stop a turn waiting on the agent")
+		return
+	}
+	testing.expect_value(t, state.exit_code, STATION_CANCELLED_EXIT_CODE)
+
+	// No orphan: the answer must not be a Station that exits and leaves its agent running.
+	gone := false
+	for _ in 0 ..< 50 {
+		if posix.kill(posix.pid_t(agent_pid), posix.Signal(0)) != .OK {
+			gone = true
+			break
+		}
+		time.sleep(20 * time.Millisecond)
+	}
+	testing.expect(t, gone, "the agent must be stopped with the Station, not left behind")
+
+	kinds := make([dynamic]string, context.temp_allocator)
+	for {
+		result := activity_listener_receive(&listener)
+		if result.kind == .Unavailable {
+			break
+		}
+		if result.kind == .Message {
+			append(&kinds, strings.clone(result.message.kind, context.temp_allocator))
+		}
+		destroy_struct(&result.message)
+	}
+	testing.expect(t, slice_contains(kinds[:], "agent_exited"), "the Station reports the agent's exit")
+	testing.expect(t, !slice_contains(kinds[:], "incomplete"), "a cancel is not reported as a deadline expiry")
 }
