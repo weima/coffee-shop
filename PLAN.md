@@ -553,6 +553,29 @@ Each wave is chosen so that the Shots in it own disjoint files. A Pull that need
 
 **Deliberately out of scope for v0.5:** reintroducing a multiplexer. If live multi-pane watching turns out to be essential, that is a new requirement with its own decision, not a fallback built into this one.
 
+## v0.5 completion record (2026-10-31)
+
+**Closed partially, and the record says so.** Five defects were found and fixed, two gates passed, and the release's headline item — deleting the Herdr dependency — **did not happen**. It is carried into v0.6 rather than claimed here.
+
+**Shipped.**
+
+- **Reply delivery without a pane (#142).** The host listens on `<state>/host/requests.sock` (0700 directory, 0600 socket) and accepts only `reply` with exactly its four fields, so a separate `coffee-shop reply` process can answer a Station and no socket request can name a repo, command or path. Exit codes: 0 delivered, 1 no host, 4 socket unreachable, 5 refused. The same change fixed two gaps between #138 and #139: `status --stations` and `log` named `<request>/<shot>.log` while the headless backend wrote `<request>/logs/<shot>.log`, and the headless log kept the **first** bytes of an oversized read instead of the newest, so a run under load lost the tail it was read for.
+- **A cancel reaches a turn in flight (#143).** The cancel flag was only read by the typed-input reader; the main flow sits in a blocking read on the agent's stdout, so a Station waiting on a provider reply ignored a cancel until the agent answered or the 30-minute deadline fired. The watchdog thread now stops the agent for a cancel as well as a deadline, and the main flow reaps in bounded steps and escalates SIGTERM → SIGKILL, so a Station can neither block forever on an agent that will not go nor exit and leave it running.
+- **The progress ledger owns its keys (#144).** The ledger stored each Station's map key and ids from `context.temp_allocator`, which the host frees every turn, so the first report after a turn compared against freed memory and crashed the host in `string_eq`. This is what ended both v0.5 gate attempts. The ledger now copies its keys and ids and frees them on destroy.
+- **One timestamp format, and elapsed-time reporting (#145).** Every host event carries `at` (appended last, so existing field order is preserved) and permanent Station log lines are stamped: RFC 3339 UTC, exactly three millisecond digits. The Five-Station report now prints per-Shot elapsed time from `session_started` to the terminal report, plus the request span.
+- **Pi Stations default to `opencode-go/deepseek-v4.1-flash` (#146).** An explicit Shot model still overrides it; Oreo still requires its own provider/model route; one-shot Brew Workers are unchanged.
+
+**Gates.**
+
+- **Headless five-plus-one run: PASS on its own terms.** With `herdr` absent from `PATH` and `CS_PANE_BACKEND=headless`, six Shots reached terminal reports, `gate-s6` went `dispatch_queued` → `dispatch_dequeued` → `session_started`, and 5 Stations started before it. A separate Shot raised `needs_input`, `coffee-shop reply` returned 0, `reply_sent` was recorded, and that Station then reached `taste_passed`. Host exit 0, no error events, request elapsed **145.970 s**, Station memory peaks 283–521 MiB.
+- **Sustained-overlap evidence: NOT PROVEN, and one attempt hung.** In the timed run the agents moved their `sleep` into background tasks and exited early, so the five Slots were not held for the intended period. A rerun that put `sleep 90` in the Shot's Taste queued the sixth Shot correctly but never produced its terminal report within 30 minutes: two Stations reported `agent_exited` and then nothing, three logged only their first prompt. The cause is unconfirmed. Treat "five Shots genuinely overlap and the sixth waits for a real slot" as unproven.
+- **WSL2/macOS before-and-after measurement: NOT DONE.** It needs the WSL2 machine.
+- **Suite:** 395 tests green, no memory failures, at `991612a`.
+
+**Defects found by running the gates rather than by tests:** the ledger use-after-free above; the headless log keeping the wrong end of an oversized read; `status`/`log` pointing at a path the headless backend never wrote; and the hostile load test's request-timeout flake under a 10-thread runner.
+
+**Carried into v0.6:** deleting the Herdr/pane paths (Wave 3 items 6–7 above, still open), the WSL2 measurement, and the unproven sustained-overlap gate.
+
 ## v0.4 completion record (2026-10-26)
 
 **Shipped on Pi.** Every gate below was run and its evidence recorded; none is asserted from a summary.
@@ -569,6 +592,38 @@ Each wave is chosen so that the Shots in it own disjoint files. A Pull that need
 
 **Still open after this release:** the suite lock's dead-holder reclamation, and — per the section below — removing Herdr.
 
+## Roadmap: v0.6.0 — the Barista-to-Station subsystem moves to Go
+
+**Decision, 2026-10-31.** The developer decided to replace the substrate between the Barista and its Stations — the foreground host loop, the request and activity sockets, the Station supervisor (spawn, RPC pipe, log pump, turn deadline, cancel), the queue and slot accounting — with **Go**. The reason given is direct: it has proven hard to get right in raw Odin. The v0.5 record is the evidence, not an opinion: a map key allocated on a temporary allocator crashed the host after its first turn; a cancel could not reach a turn blocked on a model reply; the reap of an agent could block forever; and a bounded log kept the wrong end of an oversized read.
+
+**What this is not.** Not a rewrite of Coffee Shop. Recipe parsing, Git worktrees, station directories, Register/Receipt, Taste, Blend, the `pr`/`cleanup` commands, the machine-wide slot files and the one-shot `brew` path stay as they are until a phase says otherwise. This release moves the *process and socket substrate*, because that is where the defects were, and it keeps the wire contract byte-identical so both implementations can run against the same tests.
+
+**Design:** [v0.6 Go subsystem design](docs/plans/2026-10-31-v0-6-go-subsystem-design.md).
+
+**Carried in from v0.5, and part of this release:**
+
+- **Delete the Herdr/pane paths** (v0.5 Wave 3 items 6–7): remove `pane_pool.odin`, `host_pane_pool.odin`'s pool half, `pane_clear.odin`, `pane_backend_herdr.odin`, `host_pool_persistence.odin`'s pane recovery half, the pane branches in `host.odin`, `pr.odin`'s pane discovery, `settle.odin`'s tab close; retire `docs/tab-lifecycle.md`; amend the guardrail that names Herdr as required. This becomes moot for the moved code and must not be re-implemented in Go: the Go host has **no pane backend**.
+- **The sustained-overlap gate** that v0.5 did not prove: five Shots genuinely holding five Slots, with a sixth waiting for a freed one.
+- **The WSL2/macOS measurement** of the removal.
+
+**Phases.**
+
+1. **Freeze the wire contract as data.** Turn the host's stdout event shapes, request shapes, socket paths, exit codes, spool and history formats into a written contract plus a black-box conformance test that any implementation can be run against. No behaviour change.
+2. **The Go host, behind a switch.** `coffee-shop host --impl=go` runs the Go binary against a real repository, headless only, no pane backend. Odin keeps the CLI. The conformance test and the existing host contract tests must pass against both implementations.
+3. **Station supervision in Go.** Agent spawn, RPC line protocol, bounded per-Shot log, turn deadline, cancel that reaches a blocked turn, durable report before relay. This is the part the defects lived in; port it with the v0.5 regression tests as acceptance.
+4. **Cut over, then delete.** Default to the Go host, remove the Odin host loop and Station supervisor, then do the v0.5 Wave 3 deletions in the same release.
+5. **Measure.** The same five-Shot run on macOS and WSL2, wall-clock per Shot, host CPU and resident memory, before and after.
+
+**Gates.**
+
+- Conformance: one black-box suite passes against the Odin host and the Go host on identical request streams, byte-for-byte on every event field except timing.
+- Lifecycle: a cancel stops a Station blocked on a model reply, and leaves no orphan agent.
+- Durability: kill the host mid-run; every terminal report is still relayed or recoverable after restart, without reading a log.
+- Concurrency: five Stations hold five Slots and a sixth waits, sustained, with a timed report.
+- Parity: the existing suite stays green through every phase; no test is weakened to accommodate the port.
+
+**Deliberately out of scope for v0.6:** a second agent runtime, a multiplexer, a detached daemon, remote workers, and rewriting the Git, Recipe, Taste or Blend paths.
+
 ## Scope guardrails
 
-The target is one machine, a main-agent/Barista session (Pi first), a foreground Coffee Shop host, and Herdr. Pi is required for the first usable path. Oreo may take the main or worker agent role after the Pi-based flow is usable and Oreo is stable; Rachel is an optional developer aid. Neither is a core dependency. Keep task decomposition with the Barista and integration decisions with the developer. The foreground host is in scope; a detached daemon is not. Do not add remote workers, unrelated agent harnesses, tmux or zmx backends, Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.
+The target is one machine, a main-agent/Barista session (Pi first), a foreground Coffee Shop host, and Herdr. Pi is required for the first usable path. The host and Station supervisor may be implemented in Go from v0.6, behind the same wire contract, and the v0.6 decision to delete Herdr and the pane paths stands: do not add a pane backend, tmux or zmx to the Go host without a separately approved requirement. Oreo may take the main or worker agent role after the Pi-based flow is usable and Oreo is stable; Rachel is an optional developer aid. Neither is a core dependency. Keep task decomposition with the Barista and integration decisions with the developer. The foreground host is in scope; a detached daemon is not. Do not add remote workers, unrelated agent harnesses, tmux or zmx backends, Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.
