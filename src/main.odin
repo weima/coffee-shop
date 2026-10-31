@@ -56,6 +56,12 @@ run_cli :: proc(args: []string) -> int {
 	if command.kind == .Host {
 		return run_host()
 	}
+	if command.kind == .Prepare {
+		return run_prepare(command.repo, command.branch, command.worktree_dir)
+	}
+	if command.kind == .Release {
+		return run_release(command.repo, command.worktree_dir)
+	}
 	if command.kind == .Pr {
 		return run_pr(command.run_id, command.shot_id, command.branch, command.remote, command.message, command.blend)
 	}
