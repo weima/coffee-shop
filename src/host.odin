@@ -860,6 +860,9 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 			return
 		}
 
+		if runtime == SHOT_RUNTIME_PI && model == "" {
+			model = DEFAULT_PI_STATION_MODEL
+		}
 		append(&options, shot_options)
 		append(&ids, id)
 		append(&prompts, prompt)
@@ -1389,6 +1392,7 @@ SHOT_KIND_EXECUTE :: "execute"
 SHOT_KIND_RESEARCH :: "research"
 SHOT_RUNTIME_PI :: "pi"
 SHOT_RUNTIME_OREO :: "oreo"
+DEFAULT_PI_STATION_MODEL :: "opencode-go/deepseek-v4.1-flash"
 // Research and review may write scratch files and run codemode; the Station or review checks the source.
 SCRATCH_WRITE_TOOLS :: "read,grep,find,ls,write,codemode"
 
