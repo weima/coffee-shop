@@ -11,8 +11,8 @@ check:
 # The test binary and its dSYM bundle are written to a private temporary directory so
 # nothing lands in the repository for `git add -A` to stage.
 test:
-    sh tests/test-suite-lock.sh
-    sh scripts/test-suite.sh
+    go -C go test ./suitelock
+    go -C go run ./suitelock ..
 
 # Five-Station gates 5.8-5.10: see scripts/five-station-gates.md.
 gates-selftest:
