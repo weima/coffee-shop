@@ -76,14 +76,15 @@ write_error :: proc(message: string) {
 
 GO_HOST_NAME :: "csd"
 
-GO_HOST_MISSING :: "--impl=go needs the Go host binary: set CS_CSD to its path, or put csd on PATH"
+GO_HOST_MISSING :: "the Go host is unavailable: set CS_CSD or put the matching csd on PATH; bare `odin run src -- host` does not embed it"
 
-// The Go host comes from CS_CSD, then PATH, then this build's embedded copy, which is
-// written under the state directory. A missing binary is reported here instead of
-// surfacing as a failed exec.
-resolve_go_host :: proc(csd_env, path_env: string) -> (path: string, found: bool) {
+// An explicit CS_CSD is authoritative. Otherwise prefer this build's embedded csd to PATH.
+resolve_go_host :: proc(csd_env, embedded_path, path_env: string) -> (path: string, found: bool) {
 	if csd_env != "" {
 		return csd_env, os.is_file(csd_env)
+	}
+	if embedded_path != "" {
+		return embedded_path, os.is_file(embedded_path)
 	}
 	remaining := path_env
 	for directory in strings.split_iterator(&remaining, ":") {
@@ -101,14 +102,16 @@ resolve_go_host :: proc(csd_env, path_env: string) -> (path: string, found: bool
 // The host protocol is line-delimited JSON on stdin/stdout, so the Go host has to
 // replace this process: a wrapper that buffered either stream would break it.
 // Returns only when the exec itself failed.
-exec_go_host :: proc(path: string) -> string {
+exec_go_host :: proc(path, cli_path: string) -> string {
+	if os.set_env("CS_CLI", cli_path) != nil {
+		return "cannot set CS_CLI for Go host dispatch"
+	}
 	argv := [2]cstring{strings.clone_to_cstring(path, context.temp_allocator), nil}
 	posix.execv(argv[0], raw_data(argv[:]))
 	return fmt.tprintf("cannot exec the Go host %s: %v", path, posix.get_errno())
 }
 
 run_host_go :: proc(csd_env, path_env: string) -> int {
-	path, found := resolve_go_host(csd_env, path_env)
 	// The Pi extension and the private host directory are csd's start-up now: it installs
 	// the extension itself (go/internal/extension.Install), so a fresh state directory
 	// dispatches without this binary doing anything before the handover.
@@ -117,19 +120,25 @@ run_host_go :: proc(csd_env, path_env: string) -> int {
 		write_error(state_err)
 		return 1
 	}
-	if !found && csd_embedded() {
-		// A normal build carries the Go host, so there is nothing to install by hand.
+	embedded_path := ""
+	if csd_env == "" && csd_embedded() {
 		extracted, extract_reason := csd_extract(state_root, context.allocator)
 		if extract_reason != "" {
 			write_error(extract_reason)
 			return 1
 		}
-		path, found = extracted, true
+		embedded_path = extracted
 	}
+	path, found := resolve_go_host(csd_env, embedded_path, path_env)
 	if !found {
 		write_error(GO_HOST_MISSING)
 		return 1
 	}
-	write_error(exec_go_host(path))
+	cli_path, cli_err := os.get_executable_path(context.temp_allocator)
+	if cli_err != nil {
+		write_error("cannot resolve the current Coffee Shop executable for CS_CLI")
+		return 1
+	}
+	write_error(exec_go_host(path, cli_path))
 	return 1
 }

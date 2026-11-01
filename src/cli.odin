@@ -131,7 +131,7 @@ Usage:
   coffee-shop cleanup <run-id> [--branch <name>]
   coffee-shop prepare --repo <path> --branch <name> --dir <path>
   coffee-shop release --repo <path> --dir <path>
-  coffee-shop host [--impl=odin|go]
+  coffee-shop host [--impl=go|odin]
   coffee-shop --help
 `
 
@@ -152,10 +152,10 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 			return Command{kind = .Help}, "invalid host arguments"
 		}
 		switch options.impl {
-		case "", "odin":
-			return Command{kind = .Host}, ""
-		case "go":
+		case "", "go":
 			return Command{kind = .Host, host_impl = .Go}, ""
+		case "odin":
+			return Command{kind = .Host, host_impl = .Odin}, ""
 		}
 		return Command{kind = .Help}, fmt.tprintf("unknown host implementation %q: use odin or go", options.impl)
 	case "station":

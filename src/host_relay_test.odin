@@ -13,7 +13,7 @@ HOST_RELAY_SCRIPT :: `set -u
 state="$1"; fifo="$2"; out="$3"; err="$4"; agent="$5"; received="$6"; bin="$7"
 export CS_STATE_DIR="$state"
 mkfifo "$fifo"
-"$bin" host < "$fifo" > "$out" 2> "$err" &
+"$bin" host --impl=odin < "$fifo" > "$out" 2> "$err" &
 pid=$!
 exec 3> "$fifo"
 sock="$state/host/activity.sock"
@@ -167,14 +167,14 @@ HOST_LOCK_SCRIPT :: `set -eu
 state="$1"; fifo="$2"; out="$3"; err="$4"; second_out="$5"; second_err="$6"; bin="$7"
 export CS_STATE_DIR="$state"
 mkfifo "$fifo"
-"$bin" host < "$fifo" > "$out" 2> "$err" &
+"$bin" host --impl=odin < "$fifo" > "$out" 2> "$err" &
 pid=$!
 exec 3> "$fifo"
 sock="$state/host/activity.sock"
 i=0
 while [ ! -S "$sock" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i+1)); done
 set +e
-printf '%s\n' '{"type":"shutdown","request_id":"second"}' | CS_STATE_DIR="$state" "$bin" host > "$second_out" 2> "$second_err"
+printf '%s\n' '{"type":"shutdown","request_id":"second"}' | CS_STATE_DIR="$state" "$bin" host --impl=odin > "$second_out" 2> "$second_err"
 second_status=$?
 set -e
 test "$second_status" -ne 0
@@ -251,7 +251,7 @@ test_host_starts_over_stale_socket_file :: proc(t: ^testing.T) {
 	defer delete(binary)
 
 	state_run, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `printf '%s\n' '{"type":"shutdown","request_id":"done"}' | CS_STATE_DIR="$1" "$2" host`, "stale-test", state, binary},
+		command = {"sh", "-c", `printf '%s\n' '{"type":"shutdown","request_id":"done"}' | CS_STATE_DIR="$1" "$2" host --impl=odin`, "stale-test", state, binary},
 	}, context.allocator)
 	defer delete(stdout)
 	defer delete(stderr)
@@ -266,7 +266,7 @@ HOST_STDIN_SCRIPT :: `set -u
 state="$1"; fifo="$2"; out="$3"; err="$4"; bin="$5"; actions="$6"
 export CS_STATE_DIR="$state"
 mkfifo "$fifo"
-"$bin" host < "$fifo" > "$out" 2> "$err" &
+"$bin" host --impl=odin < "$fifo" > "$out" 2> "$err" &
 pid=$!
 exec 3> "$fifo"
 sock="$state/host/activity.sock"
@@ -512,7 +512,7 @@ test_host_recovers_unrelayed_spooled_report :: proc(t: ^testing.T) {
 	binary := build_test_binary(t, root)
 	defer delete(binary)
 	run_state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `printf '%s\n' '{"type":"shutdown","request_id":"done"}' | CS_STATE_DIR="$1" "$2" host`, "recover-test", state, binary},
+		command = {"sh", "-c", `printf '%s\n' '{"type":"shutdown","request_id":"done"}' | CS_STATE_DIR="$1" "$2" host --impl=odin`, "recover-test", state, binary},
 	}, context.allocator)
 	defer delete(stdout)
 	defer delete(stderr)
@@ -553,7 +553,7 @@ test_host_recovers_multiple_unrelayed_spooled_reports :: proc(t: ^testing.T) {
 	binary := build_test_binary(t, root)
 	defer delete(binary)
 	run_state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `printf '%s\n' '{"type":"shutdown","request_id":"done"}' | CS_STATE_DIR="$1" "$2" host`, "recover-many-test", state, binary},
+		command = {"sh", "-c", `printf '%s\n' '{"type":"shutdown","request_id":"done"}' | CS_STATE_DIR="$1" "$2" host --impl=odin`, "recover-many-test", state, binary},
 	}, context.allocator)
 	defer delete(stdout)
 	defer delete(stderr)

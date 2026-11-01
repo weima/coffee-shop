@@ -9,7 +9,7 @@ import "core:testing"
 // No Herdr or Pi process runs: Blend only uses Git.
 BLEND_TEST_SCRIPT :: `set -u
 export CS_STATE_DIR="$2"
-cat "$1" | "$3" host
+cat "$1" | "$3" host --impl=odin
 `
 
 // Runs git in repo and returns its trimmed stdout. ok is false when Git fails.
