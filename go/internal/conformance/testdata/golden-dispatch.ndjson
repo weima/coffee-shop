@@ -1,0 +1,7 @@
+{"type":"ready","protocol":1,"at":"AT"}
+{"type":"received","request_id":"g1","bytes":256,"at":"AT"}
+{"type":"dispatch_accepted","request_id":"g1","at":"AT"}
+{"type":"session_started","request_id":"g1","shot_id":"s1","at":"AT"}
+{"type":"station_report","request_id":"g1","shot_id":"s1","kind":"pulled","description":"fake pulled","at":"AT"}
+{"type":"received","request_id":"g1","bytes":37,"at":"AT"}
+{"type":"stopped","request_id":"g1","at":"AT"}
