@@ -3,9 +3,11 @@ package main
 import "core:os"
 import "core:path/filepath"
 
-// Setup the host and the Go host share before either takes over, so `host --impl=go` on a
-// fresh state directory is as usable as the Odin host: a private host directory and the Pi
-// extensions, which are compiled into this binary and cannot be installed by `csd` alone.
+// The Odin host's start-up: a private host directory and the Pi extensions, which are
+// compiled into this binary. Only the Odin host itself calls it — the `--impl=go`
+// handover no longer does: csd installs coffee-shop.ts at start (go/internal/extension),
+// and the Oreo extension is written when the Odin host next prepares the same state
+// directory.
 //
 // Returns the paths it wrote. The caller owns them.
 Host_Prepare :: struct {
