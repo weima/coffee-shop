@@ -231,10 +231,10 @@ These are the rules the first Go PR should follow, and the ones I would hold a r
 
 1. The seam command names: `prepare` / `release` above, or something else the CLI should
    grow? The Station command keeps its current shape either way.
-2. Who owns the machine-wide slot files — Go reimplements the small on-disk protocol so
-   Odin `brew` and the Go host share one budget, or Go shells out to Odin for a slot? The
-   design says reimplement, because the format is a contract and a process hop per
-   acquire is worse.
+2. ~~Who owns the machine-wide slot files?~~ **Decided and implemented:** Go
+   reimplements the on-disk protocol — the same `machine-limit/slot-<n>.lock` files with an
+   exclusive advisory lock — so a Go host and an Odin `brew` share one budget without a
+   process hop per acquire.
 3. Does the Odin binary keep a `host` subcommand at all after cutover (a shim that execs
    `csd`), or is `csd` invoked directly by the Barista with `coffee-shop host` removed?
    Keeping the shim preserves one documented entry point.

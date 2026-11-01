@@ -85,6 +85,7 @@ func Run(ctx context.Context, opts Options) error {
 		extension := filepath.Join(state.HostDir(opts.StateRoot), "extensions", "coffee-shop.ts")
 		dispatch = newDispatcher(opts.StateRoot, cli, state.ActivitySocket(opts.StateRoot), extension, os.Getenv("CS_STATION_MODEL"), w)
 		w.onTerminal = dispatch.terminalReport
+		defer dispatch.shutdown()
 	}
 
 	if server != nil {
