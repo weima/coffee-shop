@@ -1,6 +1,13 @@
 package main
 
 import "core:flags"
+import "core:fmt"
+
+// Which host implementation `host` runs. The Go host is a separate binary.
+Host_Impl :: enum {
+	Odin,
+	Go,
+}
 
 Command_Kind :: enum {
 	Help,
@@ -43,6 +50,7 @@ Command :: struct {
 	workspace: string,
 	blend: bool,
 	stations: bool,
+	host_impl: Host_Impl,
 	tail: int,
 	dump: bool,
 	print_only: bool,
@@ -83,6 +91,10 @@ Seam_Arguments :: struct {
 Release_Arguments :: struct {
 	repo: string `args:"required" usage:"Beans Git repository path (absolute)."`,
 	dir:  string `args:"required" usage:"Worktree directory to remove (absolute)."`,
+}
+
+Host_Arguments :: struct {
+	impl: string `usage:"Host implementation: odin (default) or go."`,
 }
 
 Log_Arguments :: struct {
@@ -139,7 +151,7 @@ Usage:
   coffee-shop cleanup <run-id> [--branch <name>]
   coffee-shop prepare --repo <path> --branch <name> --dir <path>
   coffee-shop release --repo <path> --dir <path>
-  coffee-shop host
+  coffee-shop host [--impl=odin|go]
   coffee-shop --help
 `
 
@@ -161,7 +173,17 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 		}
 		return Command{kind = .Brew, repo = options.repo, recipe = options.recipe}, ""
 	case "host":
-		return Command{kind = .Host}, ""
+		options: Host_Arguments
+		if flags.parse(&options, args[1:], .Unix) != nil {
+			return Command{kind = .Help}, "invalid host arguments"
+		}
+		switch options.impl {
+		case "", "odin":
+			return Command{kind = .Host}, ""
+		case "go":
+			return Command{kind = .Host, host_impl = .Go}, ""
+		}
+		return Command{kind = .Help}, fmt.tprintf("unknown host implementation %q: use odin or go", options.impl)
 	case "station":
 		return parse_station_args(args[1:])
 	case "__server":
