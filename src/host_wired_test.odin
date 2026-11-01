@@ -1,5 +1,39 @@
 package main
 
+FAKE_HERDR :: `#!/bin/sh
+d="$FAKE_HERDR_DIR"
+if [ -n "$FAKE_HERDR_DOWN" ]; then
+  echo '{"id":"x","error":{"code":"server_not_running","message":"no herdr server is running"}}' >&2
+  exit 1
+fi
+case "$1 $2" in
+"workspace create")
+  echo '{"id":"x","result":{"type":"workspace_created","workspace":{"workspace_id":"w1"},"tab":{"tab_id":"t0"},"root_pane":{"pane_id":"p0"}}}' ;;
+"tab create")
+  n=$(( $(cat "$d/n" 2>/dev/null || echo 0) + 1 )); echo $n > "$d/n"
+  echo "{\"id\":\"x\",\"result\":{\"type\":\"tab_created\",\"tab\":{\"tab_id\":\"t$n\"},\"root_pane\":{\"pane_id\":\"p$n\"}}}" ;;
+"pane run")
+  # Like a real pane: a session of its own, so closing the tab can end the Worker
+  # and everything it started.
+  pane="$3"; shift 3
+  set -m
+  sh -c "exec $*" >"$d/worker-$pane.log" 2>&1 &
+  echo $! > "$d/pid-$pane"
+  echo '{}' ;;
+"tab close")
+  pid=$(cat "$d/pid-p${3#t}" 2>/dev/null)
+  if [ -n "$pid" ] && [ -n "$FAKE_HERDR_CLOSE_DELAY" ]; then
+    # The tab closes at once, but its Worker exits only after the delay.
+    (sleep "$FAKE_HERDR_CLOSE_DELAY"; kill -s TERM -- "-$pid" 2>/dev/null) >/dev/null 2>&1 &
+  elif [ -n "$pid" ]; then
+    kill -s TERM -- "-$pid" 2>/dev/null
+  fi
+  echo '{}' ;;
+*) echo '{}' ;;
+esac
+`
+
+
 import "core:fmt"
 import "core:os"
 import "core:strings"

@@ -29,18 +29,6 @@ run_cli :: proc(args: []string) -> int {
 		return 0
 	}
 
-	if command.kind == .Brew {
-		brew_id, err := run_brew(command.repo, command.recipe)
-		// Print the ID even on failure so the Brew can be inspected with `status`.
-		if brew_id != "" {
-			fmt.println(brew_id)
-		}
-		if err != "" {
-			write_error(err)
-			return 1
-		}
-		return 0
-	}
 	if command.kind == .Status {
 		return run_status(command.brew_id, command.stations)
 	}
@@ -49,12 +37,6 @@ run_cli :: proc(args: []string) -> int {
 	}
 	if command.kind == .Reply {
 		return run_reply(command.brew_id, command.shot_id, command.message, command.print_only)
-	}
-	if command.kind == .Cancel {
-		return run_cancel(command.brew_id)
-	}
-	if command.kind == .Collect {
-		return run_collect(command.brew_id)
 	}
 	if command.kind == .Host {
 		if command.host_impl == .Go {
@@ -80,9 +62,7 @@ run_cli :: proc(args: []string) -> int {
 	if command.kind == .Server {
 		return run_server(command.state_root, command.repo)
 	}
-	if command.kind == .Worker {
-		return run_worker(command.state_root, command.brew_id, command.shot_id, command.token)
-	}
+
 
 	write_error("command not implemented yet")
 	return 3

@@ -3,6 +3,8 @@ package main
 import "core:fmt"
 import "core:log"
 import "core:strings"
+
+SCALE :: 5 // Host concurrency limit shared by the activity and request listeners.
 import "core:time"
 
 // Dispatch queue for Shots waiting for a free pane.

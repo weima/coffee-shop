@@ -4,7 +4,8 @@
 
 Coffee Shop is a local Odin orchestrator for work initiated from a long-lived main-agent session. Pi is the first user-facing **Barista**: it receives a natural-language **Order**, prepares an explicit **Recipe**, and asks a foreground Coffee Shop host to manage isolated Git worktrees and worker sessions. The first usable workflow uses Pi for both main and worker sessions. Oreo may take either agent role once stable; Oreo and Rachel are optional improvements, not prerequisites.
 
-> **Current status:** The interactive workflow is implemented — a foreground host dispatches interactive Pi **Stations** as headless child processes, one isolated Git worktree each, and relays their reports. The `brew`/`status`/`cancel`/`collect` CLI remains as the one-shot compatibility foundation, whose Pi Workers run one fixed prompt and exit. The automated vertical-slice suite passes on Linux, WSL and macOS, and a real Pi/Herdr smoke Brew passed on macOS with Pi `1.1.0` and Herdr `0.9.3`. The long-lived host, interactive worker sessions, and live completion/needs-input relay are **implemented**; `PLAN.md` records what shipped and what is still live.
+> **Current status:** The interactive workflow is implemented — a foreground host dispatches interactive Pi **Stations** as headless child processes, one isolated Git worktree each, and relays their reports. The retired one-shot `brew`/Worker workflow is no longer part of the CLI; `status` lists live host Stations, with `log` and `reply` for host requests. The automated vertical-slice suite passes on Linux, WSL and macOS, and a real Pi/Herdr smoke Brew passed on macOS with Pi `1.1.0` and Herdr `0.9.3`. The long-lived host, interactive worker sessions, and live completion/needs-input relay are **implemented**; `PLAN.md` records what shipped and what is still live.
+
 
 ## The story behind the names
 
@@ -23,8 +24,8 @@ To **use** Coffee Shop you need:
 
 - Linux (including WSL) or macOS. Linux process identity uses `/proc`; macOS uses Darwin's process-usage API. Native Windows is not supported.
 - [Git](https://git-scm.com/).
-- [Herdr](https://herdr.dev) `0.9.3` and [Pi](https://pi.dev) `1.1.0` on your `PATH`, with Pi already authenticated. A Herdr server must be running, but you do not need to run Coffee Shop inside a Herdr pane: from a plain terminal the Herdr CLI uses its default socket. If no server is reachable, `brew` records the Brew, exits 1, and reports Herdr's message (for example `no herdr server is running ...; run herdr to start or attach it`). Start Herdr, then run a new Brew.
-- Whatever the Beans repository's own tests need (for example `npm` or `make`), because the Filter runs them.
+- [Herdr](https://herdr.dev) `0.9.3` and [Pi](https://pi.dev) `1.1.0` on your `PATH`, with Pi already authenticated. A Herdr server must be running, but you do not need to run Coffee Shop inside a Herdr pane: from a plain terminal the Herdr CLI uses its default socket. The Herdr server must be reachable when dispatching Stations.
+- Whatever the Beans repository's own tests need (for example `npm` or `make`) when running its Taste/checks.
 
 To **develop** Coffee Shop you also need:
 
@@ -62,7 +63,8 @@ Two things to know:
 
 **Input boundary:** “Coffee Shop waits for input” means the foreground host waits for structured requests from the active main-agent harness. Raw user text goes to that harness; Coffee Shop does not interpret it.
 
-**Current implementation:** two paths exist. `brew` accepts a prepared JSON Recipe, starts non-interactive `pi --mode json --print --no-session` Workers, waits for terminal Shots, then exits — the one-shot foundation, retained for compatibility. The interactive path is the foreground host and its Stations, described in [the architecture](docs/architecture.md). A Station runs as a headless child process (`CS_PANE_BACKEND=headless` selects it, and it is now the supported path); its output goes to a bounded per-Shot log under `<state>/host/<request>/logs/<shot>.log`, and the old Herdr pane pool and tab lifecycle no longer exist.
+**Current implementation:** the foreground host dispatches interactive Pi Stations as headless child processes (`CS_PANE_BACKEND=headless` selects the supported path), described in [the architecture](docs/architecture.md). The former one-shot `brew` and Worker execution path has been retired; Station output goes to bounded per-Shot logs, and the Herdr pane pool and tab lifecycle no longer exist.
+
 
 ### Go host (v0.6, in progress)
 
@@ -112,29 +114,6 @@ Each Station is a fresh checkout, so gitignored directories such as `node_module
 - The link is read-through: a Worker that installs or upgrades packages changes the Beans' real copy, so tell Workers not to install dependencies.
 - It works for any repository-local directory, for example `node_modules`, `vendor/bundle`, `.bundle` or `.venv`. Ecosystems that keep packages in a global cache outside the repository, such as NuGet's `~/.nuget/packages`, need nothing shared.
 - When a Station lacks one of those common directories that the Beans has, the Filter adds a note suggesting `share` instead of leaving you with a confusing test failure.
-
-## Current one-shot CLI usage
-
-A typical one-shot session:
-
-1. The Barista writes a Recipe and runs `brew`. It blocks until every Shot is finished, so run it in the background (for example with Pi's `bg_run`) rather than in the foreground.
-2. While it runs, `status <brew-id>` shows each Shot, and `cancel <brew-id>` stops the Brew.
-3. `collect <brew-id>` produces the Tray. Review each Station by hand, integrate the changes you want, and delete Stations and state yourself when you are done.
-
-```sh
-coffee-shop brew --repo <path> --recipe <recipe.json>
-coffee-shop status <brew-id>
-coffee-shop cancel <brew-id>
-coffee-shop collect <brew-id>
-```
-
-- `brew` creates and runs the Brew, blocks until every Shot is terminal, then prints the Brew ID (`brew-<UTC start time>-<pid>`). It exits 0 even if some Workers failed, because those outcomes belong to `status` and `collect`. It exits 1, still printing the ID, only when no Worker could be started at all (for example, no Herdr server is running).
-- At most two Workers run at once by default; `workers` can opt into a limit up to five.
-- `status` prints the Brew and each Shot's status. Running Shots also show elapsed time and the latest Pi activity; activity older than 12 minutes is marked quiet. Activity is only a progress hint: process identity remains the liveness authority, and quiet Workers are never killed automatically.
-- `cancel` requests cancellation; repeating it is safe.
-- `collect` prints each Shot's outcome, Worker report and Station changes, then runs the Filter once per completed Shot: a Pi review against the repository's `standards.md` that must leave the source unchanged and the repository's own test commands. The saved evidence is reused on later collections. It ends with the decisions that need a human, and exits non-zero unless every Shot completed. See [the architecture](docs/architecture.md#filter-and-tray).
-- Brew state is stored under `$CS_STATE_DIR/<brew-id>` when `CS_STATE_DIR` is set, or `~/.coffee-shop/<brew-id>` otherwise. `CS_STATE_DIR` must be an absolute path.
-- Stations and Brew state are never deleted automatically; `collect` preserves them.
 
 ## Limitations
 

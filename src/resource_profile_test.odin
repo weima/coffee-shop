@@ -1,5 +1,7 @@
 package main
 
+DEAD_IDENTITY :: Process_Identity{pid = 2147480000, start_time = 1}
+
 import "core:os"
 import "core:strings"
 import "core:testing"
