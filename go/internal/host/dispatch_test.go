@@ -29,6 +29,11 @@ func TestMain(m *testing.M) {
 		fakeDurabilityStation(os.Args[1:])
 		return
 	}
+	// The overlap test's fake Station, likewise: a Station the test can free.
+	if os.Getenv(fakeOverlapStationEnv) != "" {
+		fakeOverlapStation(os.Args[1:])
+		return
+	}
 	os.Exit(m.Run())
 }
 
