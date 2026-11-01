@@ -196,7 +196,8 @@ These are the rules the first Go PR should follow, and the ones I would hold a r
    do the v0.5 Wave 3 deletions: `pane_pool.odin`, `pane_backend_herdr.odin`,
    `pane_clear.odin`, the pool half of `host_pane_pool.odin`, `host_pool_persistence.odin`'s
    pane recovery, `pr.odin`'s pane discovery, `settle.odin`'s tab close,
-   `docs/tab-lifecycle.md`, the guardrail line, and the six tests that fake Herdr.
+   the guardrail line, and the six tests that fake Herdr. (The retired
+   Station-lifecycle document is no longer on this list: removing it is already done.)
 5. **Measure.** The same five-Shot run on macOS and WSL2: wall-clock per Shot, host CPU
    and resident memory, before and after. The WSL2 half needs that machine.
 
