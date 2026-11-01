@@ -144,6 +144,18 @@ run_host_go :: proc(csd_env, path_env: string) -> int {
 		write_error(prepare_err)
 		return 1
 	}
+	// The Go host drives the work through this binary (`prepare`, `station`, `pr`), so tell
+	// it where this binary is. Without it the handover produces a host that can receive
+	// requests but cannot dispatch anything.
+	// In dev mode this binary is a temporary build that `odin run` deletes, so pointing the
+	// Go host at it would leave it calling a path that no longer exists; a dev run sets
+	// CS_CLI itself.
+	if os.get_env("CS_MODE", context.temp_allocator) != "dev" {
+		executable_info, info_err := os.current_process_info({.Executable_Path}, context.temp_allocator)
+		if info_err == nil && executable_info.executable_path != "" {
+			os.set_env("CS_CLI", executable_info.executable_path)
+		}
+	}
 	write_error(exec_go_host(path))
 	return 1
 }
