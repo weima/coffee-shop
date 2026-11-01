@@ -57,6 +57,11 @@ func Run(ctx context.Context, opts Options) error {
 		if err := state.EnsureDir(state.HostDir(opts.StateRoot), true); err != nil {
 			return fmt.Errorf("create host directory: %w", err)
 		}
+		lock, err := acquireHostLock(opts.StateRoot)
+		if err != nil {
+			return err
+		}
+		defer lock.release()
 		if err := state.EnsureDir(state.SpoolDir(opts.StateRoot), true); err != nil {
 			return fmt.Errorf("create report spool: %w", err)
 		}
@@ -86,6 +91,13 @@ func Run(ctx context.Context, opts Options) error {
 		dispatch = newDispatcher(opts.StateRoot, cli, state.ActivitySocket(opts.StateRoot), extension, os.Getenv("CS_STATION_MODEL"), w)
 		w.onTerminal = dispatch.terminalReport
 		defer dispatch.shutdown()
+
+		requests, err := listenRequests(opts.StateRoot, dispatch, w)
+		if err != nil {
+			return err
+		}
+		defer requests.stop()
+		requests.start(ctx)
 	}
 
 	if server != nil {
@@ -150,7 +162,6 @@ func (w *writer) relayReport(message proto.Message) {
 	if message.Kind == StationPIDKind {
 		return
 	}
-	_ = w.appendHistory(message)
 	if w.onTerminal != nil && terminalReportKinds(message.Kind) {
 		w.onTerminal(message.BrewID, message.ShotID)
 	}
@@ -161,36 +172,6 @@ func (w *writer) relayReport(message proto.Message) {
 		Kind:        message.Kind,
 		Description: reportText(message.Description),
 	})
-}
-
-// appendHistory writes the report to <host>/<request>/history.ndjson.
-func (w *writer) appendHistory(message proto.Message) error {
-	if w.root == "" {
-		return nil
-	}
-	dir := state.RequestDir(w.root, message.BrewID)
-	if err := state.EnsureDir(dir, true); err != nil {
-		return err
-	}
-	entry := proto.Event{
-		Type:        "station_report",
-		RequestID:   message.BrewID,
-		ShotID:      message.ShotID,
-		Kind:        message.Kind,
-		Description: reportText(message.Description),
-		At:          stamp(w.now()),
-	}
-	line, err := proto.EventLine(entry)
-	if err != nil {
-		return err
-	}
-	file, err := os.OpenFile(state.HistoryPath(w.root, message.BrewID), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = file.Close() }()
-	_, err = file.Write(line)
-	return err
 }
 
 // handle acknowledges one line and then acts on it. Every line is acknowledged before it
@@ -221,6 +202,17 @@ func (w *writer) handleWith(line string, dispatch *dispatcher) (stop bool, err e
 		}
 		dispatch.dispatch(context.Background(), request.RequestID, json.RawMessage(line))
 		return false, nil
+	case "cancel":
+		if dispatch == nil {
+			return false, w.emit(proto.Event{Type: "error", RequestID: requestID, Reason: "this host has no CLI seam configured, so it cannot cancel"})
+		}
+		var shotID string
+		var root map[string]json.RawMessage
+		if json.Unmarshal([]byte(line), &root) == nil {
+			_ = json.Unmarshal(root["shot_id"], &shotID)
+		}
+		dispatch.cancel(request.RequestID, shotID)
+		return false, nil
 	case "shutdown":
 		id := requestID
 		if id == "" {
@@ -236,11 +228,47 @@ func (w *writer) handleWith(line string, dispatch *dispatcher) (stop bool, err e
 
 func (w *writer) emit(e proto.Event) error {
 	e.At = stamp(w.now())
+	// History first, then stdout: a reader that sees an event can rely on it being
+	// recorded, and `status --stations` rebuilds liveness from this file.
+	if historyEvent(e.Type) {
+		_ = w.appendEvent(e)
+	}
 	line, err := proto.EventLine(e)
 	if err != nil {
 		return err
 	}
 	_, err = w.out.Write(line)
+	return err
+}
+
+// historyEvent is the set of events the durable history keeps, matching the Odin host.
+func historyEvent(eventType string) bool {
+	switch eventType {
+	case "dispatch_accepted", "session_started", "session_failed", "station_report", "reply_sent", "blended", "blend_failed":
+		return true
+	}
+	return false
+}
+
+// appendEvent writes one event to <host>/<request>/history.ndjson.
+func (w *writer) appendEvent(e proto.Event) error {
+	if w.root == "" || !validShotID(e.RequestID) {
+		return nil
+	}
+	dir := state.RequestDir(w.root, e.RequestID)
+	if err := state.EnsureDir(dir, true); err != nil {
+		return err
+	}
+	line, err := proto.EventLine(e)
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(state.HistoryPath(w.root, e.RequestID), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	_, err = file.Write(line)
 	return err
 }
 

@@ -24,3 +24,11 @@ func killProcessGroup(cmd *exec.Cmd) error {
 	}
 	return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 }
+
+// killProcessGroupHard is the escalation for a Station that ignored SIGTERM.
+func killProcessGroupHard(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return nil
+	}
+	return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+}

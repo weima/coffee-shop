@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/weima/coffee-shop/go/internal/proto"
 	"github.com/weima/coffee-shop/go/internal/state"
@@ -65,7 +66,9 @@ type stationRun struct {
 	shotID    string
 	cmd       *exec.Cmd
 	log       *boundedLog
-	terminal  bool // a terminal report was relayed
+	stdin     io.WriteCloser // the Station's input: a reply is one line written here
+	terminal  bool           // a terminal report was relayed
+	exited    bool           // the process is gone, so it must not be signalled again
 }
 
 // queuedShot is a Shot waiting for a Slot, with everything needed to start it later.
@@ -251,6 +254,11 @@ func (d *dispatcher) launch(ctx context.Context, requestID string, shot ShotRequ
 	argv := d.stationArgv(requestID, shot, promptPath)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = stationDir
+	stdin, err := cmd.StdinPipe() // writes become the Station's stdin, reads are impossible
+	if err != nil {
+		_ = log.Close()
+		return fmt.Errorf("open Station input: %w", err)
+	}
 	cmd.Stdout = log
 	cmd.Stderr = log
 	// The Station gets its own process group so a cancel can reach the whole tree.
@@ -263,7 +271,7 @@ func (d *dispatcher) launch(ctx context.Context, requestID string, shot ShotRequ
 		return fmt.Errorf("could not start the Station: %w", err)
 	}
 
-	run := &stationRun{requestID: requestID, shotID: shot.ID, cmd: cmd, log: log}
+	run := &stationRun{requestID: requestID, shotID: shot.ID, cmd: cmd, log: log, stdin: stdin}
 	d.mu.Lock()
 	d.running[slotKey(requestID, shot.ID)] = run
 	d.mu.Unlock()
@@ -271,6 +279,7 @@ func (d *dispatcher) launch(ctx context.Context, requestID string, shot ShotRequ
 
 	go func() {
 		_ = cmd.Wait()
+		_ = stdin.Close()
 		_ = log.Close()
 		d.processExited(requestID, shot.ID)
 	}()
@@ -325,11 +334,57 @@ func (d *dispatcher) processExited(requestID, shotID string) {
 	run, ok := d.running[slotKey(requestID, shotID)]
 	terminal := ok && run.terminal
 	if ok {
+		run.exited = true
 		delete(d.running, slotKey(requestID, shotID))
 	}
 	d.mu.Unlock()
 	if !terminal {
 		d.release(requestID, shotID)
+	}
+}
+
+// CancelGrace bounds how long a cancelled Station gets between SIGTERM and SIGKILL.
+const CancelGrace = 2 * time.Second
+
+// cancel stops one Shot, or every Shot of a request when shotID is empty. The Station is
+// asked first and killed only if it does not go: its own cancel path stops the agent, which
+// is the half that lives in Odin.
+func (d *dispatcher) cancel(requestID, shotID string) {
+	d.mu.Lock()
+	targets := make([]*stationRun, 0, len(d.running))
+	for _, run := range d.running {
+		if run.requestID != requestID {
+			continue
+		}
+		if shotID == "" || run.shotID == shotID {
+			targets = append(targets, run)
+		}
+	}
+	d.mu.Unlock()
+
+	if len(targets) == 0 {
+		if shotID == "" {
+			d.w.emit(proto.Event{Type: "cancelled", RequestID: requestID, Reason: "no Stations are running"})
+		} else {
+			d.w.emit(proto.Event{Type: "cancelled", RequestID: requestID, ShotID: shotID, Reason: "no Station is running for that shot"})
+		}
+		return
+	}
+	for _, run := range targets {
+		run := run
+		d.w.emit(proto.Event{Type: "cancelled", RequestID: run.requestID, ShotID: run.shotID})
+		_ = killProcessGroup(run.cmd)
+		// Escalate once, and only for a Station that is still there: the flag is written
+		// under the same mutex that the exit path takes, so this cannot kill a reaped pid.
+		go func() {
+			time.Sleep(CancelGrace)
+			d.mu.Lock()
+			gone := run.exited
+			d.mu.Unlock()
+			if !gone {
+				_ = killProcessGroupHard(run.cmd)
+			}
+		}()
 	}
 }
 

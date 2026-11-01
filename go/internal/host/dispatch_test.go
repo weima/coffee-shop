@@ -1,10 +1,13 @@
 package host
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -44,14 +47,21 @@ func fakeCLI(argv []string) {
 		if kind == "" {
 			kind = "execute"
 		}
-		// A Station reports, then exits, which is all dispatch needs to observe.
+		// A Station reports, then exits, which is all dispatch needs to observe. With
+		// CS_FAKE_ECHO it first waits for one line on stdin and reports it, so a reply can
+		// be observed crossing the process boundary.
+		description := "fake"
+		if os.Getenv("CS_FAKE_ECHO") == "1" {
+			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+			description = strings.TrimSpace(line)
+		}
 		conn, err := net.Dial("unix", socket)
 		if err != nil {
 			os.Exit(1)
 		}
 		report := map[string]any{
 			"brew_id": request, "shot_id": shot, "kind": "pulled",
-			"description": "fake", "timestamp_ns": time.Now().UnixNano(),
+			"description": description, "timestamp_ns": time.Now().UnixNano(),
 		}
 		data, _ := json.Marshal(report)
 		_, _ = conn.Write(append(data, '\n'))
@@ -82,10 +92,25 @@ func dummyExtension(t *testing.T, root string) string {
 
 // dispatchHost starts a host with a state root and the fake CLI, and returns it.
 func dispatchHost(t *testing.T) (root string, out *syncBuilder, stop func()) {
+	root, out, _, stop = dispatchHostWithInput(t)
+	return
+}
+
+// dispatchHostWithInput also returns the host's stdin, so a test can send real requests.
+func dispatchHostWithInput(t *testing.T) (root string, out *syncBuilder, input io.WriteCloser, stop func()) {
 	t.Helper()
 	t.Setenv(fakeCLIEnv, "1")
 	root = shortRoot(t)
 	out = &syncBuilder{}
+	// The Odin host installs the Pi extension at start; a fake Station does not read it,
+	// but dispatch refuses to launch without it.
+	extensionDir := filepath.Join(root, "host", "extensions")
+	if err := os.MkdirAll(extensionDir, 0o700); err != nil {
+		t.Fatalf("extension dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(extensionDir, "coffee-shop.ts"), []byte("// stand-in"), 0o600); err != nil {
+		t.Fatalf("extension file: %v", err)
+	}
 	in, writeIn, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
@@ -102,7 +127,7 @@ func dispatchHost(t *testing.T) (root string, out *syncBuilder, stop func()) {
 		})
 	}()
 	waitForSocketNoErr(t, state.ActivitySocket(root))
-	return root, out, func() {
+	return root, out, writeIn, func() {
 		_ = writeIn.Close()
 		<-done
 	}
