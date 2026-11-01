@@ -64,6 +64,12 @@ Two things to know:
 
 **Current implementation:** two paths exist. `brew` accepts a prepared JSON Recipe, starts non-interactive `pi --mode json --print --no-session` Workers, waits for terminal Shots, then exits — the one-shot foundation, retained for compatibility. The interactive path is the foreground host and its Stations, described in [the architecture](docs/architecture.md), with the tab lifecycle specified in [docs/tab-lifecycle.md](docs/tab-lifecycle.md).
 
+### Go host (v0.6, in progress)
+
+`csd` is a second, in-progress implementation of the foreground host, written in Go. It speaks the same wire contract as the Odin host — the same request stream, stdout event shapes, socket paths, and spool and history files — so the same conformance suite runs against both. Today it serves the request stream, receives Station reports over the activity socket with a durable spool and per-request history, and dispatches Shots by driving the Odin CLI's `prepare` and `station` commands. It runs five Slots per host and queues the sixth.
+
+It does not have the request socket yet, so `coffee-shop reply` cannot answer a Station through it, and it does not have cancel escalation, so a dispatched Shot cannot be cancelled through it. It is not wired up: the Odin binary neither extracts nor starts `csd`, so there is no `coffee-shop host --impl=go`. It also does not write the Pi extension, which the Odin host writes at start; a dispatch without that file fails with that reason instead of starting a Station that cannot load its tools. `csd` has no pane backend, and the machine-wide Slot files are the Odin host's, so two hosts do not share one concurrency budget.
+
 Oreo and Rachel are improvement tracks, not core dependencies: the Coffee Shop workflow must be usable with Pi alone. See [the architecture](docs/architecture.md) for target and current diagrams and boundaries. See [the plan](PLAN.md) for the next implementation phases. See the [vocabulary](specs/UBIQUITOUS_LANGUAGE_LATEST.md) for the coffee-shop terms.
 
 ## Target scope

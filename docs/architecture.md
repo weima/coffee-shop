@@ -160,6 +160,10 @@ stateDiagram-v2
     running --> interrupted: exit not seen, or not confirmed after cancel
 ```
 
+### Two host implementations
+
+Two implementations exist for the foreground host, and the seam between them is the wire contract in [the v0.6 Go subsystem design](plans/2026-10-31-v0-6-go-subsystem-design.md). Orchestration moves to Go as `csd`: the host loop, the request and activity sockets, dispatch acceptance, the dispatch queue and Slot accounting, the Station process and its bounded log pump, the relay, the spool and the history. The work stays in Odin: a Station's own labour — the agent, its RPC lines and dialogs, the turn deadline, cancel propagation, the Taste and the commit — and the repository work, which is worktrees, Blend, `pr` and cleanup. Go reaches the Odin side through command lines, `prepare` and `release` for the worktree and the unchanged `station` for the Station, so orchestrating one Shot costs one process per call and the two halves share no memory.
+
 ## Components
 
 | Component | Responsibility |
