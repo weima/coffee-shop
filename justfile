@@ -1,7 +1,18 @@
 # Wrappers around the documented Odin commands; the Filter discovers `test`.
 
-build:
-    odin build src -out:coffee-shop
+# The Go host is embedded so one command carries both implementations. `odin check` and
+# `odin test` do not pass the define, so they keep working without the Go artifact.
+build: build-go
+    odin build src -define:CSD_EMBEDDED=true -out:coffee-shop
+
+build-go:
+    cd go && go build -o ../src/csd.bin ./cmd/csd
+
+# Run the built host with the Go implementation embedded. A recipe, not a bare binary, so
+# the binary is always built from the current source first.
+host-go:
+    just build
+    ./coffee-shop host --impl=go
 
 check:
     odin check src
