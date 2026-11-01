@@ -18,6 +18,7 @@ progress_ledger_mutex: sync.Mutex
 
 // Initialize the progress ledger and rebuild it from saved history.
 progress_supervision_init :: proc(host_history_dir: string) -> bool {
+	progress_ledger_destroy(&progress_ledger_global)
 	progress_ledger_global = progress_ledger_new()
 	return progress_supervision_rebuild_from_history(host_history_dir)
 }

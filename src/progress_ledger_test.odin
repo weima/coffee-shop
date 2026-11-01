@@ -1,5 +1,6 @@
 package main
 
+import "core:strings"
 import "core:testing"
 import "core:time"
 
@@ -190,4 +191,29 @@ test_progress_ledger_pending :: proc(t: ^testing.T) {
 	progress_ledger_report(&ledger, "req1", "shot-b", "blended")
 	pending = progress_ledger_pending(ledger)
 	testing.expect(t, len(pending) == 2, "Should have 2 pending after one terminal")
+}
+
+// The host frees its temporary allocator at the end of every turn, and the ledger
+// must keep working across that. The key and ids are built and stored in a temp
+// allocator scope that is then freed, as a host turn does; a lookup afterwards must
+// still find the Station and must not read freed memory.
+@(test)
+test_progress_ledger_survives_its_callers_temp_allocator :: proc(t: ^testing.T) {
+	ledger := progress_ledger_new()
+	defer progress_ledger_destroy(&ledger)
+	{
+		req := strings.clone("gate-req-temp", context.temp_allocator)
+		shot := strings.clone("gate-s1", context.temp_allocator)
+		pane := strings.clone("gate-req-temp/gate-s1", context.temp_allocator)
+		progress_ledger_add_station(&ledger, req, shot, pane)
+	}
+	free_all(context.temp_allocator)
+
+	progress_ledger_update(&ledger, "gate-req-temp", "gate-s1", "running")
+	station, found := ledger.stations["gate-req-temp/gate-s1"]
+	testing.expect(t, found, "the Station is still in the ledger after its caller's temp memory is freed")
+	testing.expect_value(t, station.phase, "running")
+	testing.expect_value(t, station.request_id, "gate-req-temp")
+	testing.expect_value(t, station.pane_id, "gate-req-temp/gate-s1")
+	free_all(context.temp_allocator)
 }

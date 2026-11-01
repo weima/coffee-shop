@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:os"
 import "core:slice"
 import "core:strings"
+import "core:time"
 
 NM :: "not measured"
 
@@ -146,7 +147,62 @@ resource_rows :: proc(b: ^strings.Builder, id: string, rec: json.Value) -> (rss_
 
 // ---- 5.10 sixth Shot ---------------------------------------------------------
 Event :: struct {
-	type, shot_id, reason: string,
+	type, shot_id, reason, kind, at: string,
+}
+
+// Event timestamps use the shared Coffee Shop RFC 3339 UTC millisecond format.
+event_time :: proc(event: Event) -> (time.Time, bool) {
+	// Odin's RFC 3339 parser rounds fractional precision. Parse the whole-second
+	// timestamp, then add the exact three milliseconds written by log_timestamp.
+	if len(event.at) != len("2026-10-31T19:20:01.123Z") || event.at[19] != '.' || event.at[23] != 'Z' {
+		return {}, false
+	}
+	whole := strings.concatenate({event.at[:19], "Z"}, context.temp_allocator)
+	parsed, consumed := time.rfc3339_to_time_utc(whole)
+	if consumed != len(whole) { return {}, false }
+	for i in 20..<23 {
+		if event.at[i] < '0' || event.at[i] > '9' { return {}, false }
+	}
+	millis := int(event.at[20]-'0')*100 + int(event.at[21]-'0')*10 + int(event.at[22]-'0')
+	parsed._nsec += i64(millis) * i64(time.Millisecond)
+	return parsed, true
+}
+
+event_terminal :: proc(event: Event) -> bool {
+	return event.type == "station_report" && (event.kind == "pulled" || event.kind == "taste_passed" || event.kind == "taste_failed" || event.kind == "incomplete" || event.kind == "session_failed")
+}
+
+shot_elapsed :: proc(events: []Event, shot: string) -> (text: string, ok: bool) {
+	start := -1
+	finish := -1
+	for event, i in events {
+		if event.shot_id != shot { continue }
+		if event.type == "session_started" && start < 0 { start = i }
+		if event_terminal(event) { finish = i }
+	}
+	if start < 0 || finish < 0 { return NM, false }
+	began, began_ok := event_time(events[start])
+	ended, ended_ok := event_time(events[finish])
+	if !began_ok || !ended_ok { return NM, false }
+	delta := time.diff(began, ended)
+	if delta < 0 { return NM, false }
+	return tprint("%.3f", f64(delta) / f64(time.Second)), true
+}
+
+request_elapsed :: proc(events: []Event) -> (start, finish: f64, ok: bool) {
+	first_start := -1
+	last_finish := -1
+	for event, i in events {
+		if event.type == "session_started" && first_start < 0 { first_start = i }
+		if event_terminal(event) { last_finish = i }
+	}
+	if first_start < 0 || last_finish < 0 { return 0, 0, false }
+	began, began_ok := event_time(events[first_start])
+	ended, ended_ok := event_time(events[last_finish])
+	if !began_ok || !ended_ok { return 0, 0, false }
+	delta := time.diff(began, ended)
+	if delta < 0 { return 0, 0, false }
+	return 0, f64(delta) / f64(time.Second), true
 }
 
 load_events :: proc(path: string) -> (ev: [dynamic]Event, skipped: int, err: string) {
@@ -165,7 +221,7 @@ load_events :: proc(path: string) -> (ev: [dynamic]Event, skipped: int, err: str
 			skipped += 1
 			continue
 		}
-		append(&ev, Event{get_str(v, "type"), get_str(v, "shot_id"), get_str(v, "reason")})
+		append(&ev, Event{get_str(v, "type"), get_str(v, "shot_id"), get_str(v, "reason"), get_str(v, "kind"), get_str(v, "at")})
 	}
 	return
 }
@@ -208,6 +264,16 @@ events_section :: proc(b: ^strings.Builder, path: string, ids: []string, slots: 
 	}
 	line(b, "- Sixth Shot: %s", sixth_verdict(ev[:], sixth))
 	line(b, "- Stations started before the sixth was queued: %d", before)
+	line(b, "- Per-Shot elapsed from session_started to terminal station_report:")
+	for id in ids {
+		elapsed, ok := shot_elapsed(ev[:], id)
+		line(b, "  - %s: %s s", id, elapsed if ok else NM)
+	}
+	if start, finish, ok := request_elapsed(ev[:]); ok {
+		line(b, "- Request elapsed (first session_started to last terminal report): %s s", tprint("%.3f", finish - start))
+	} else {
+		line(b, "- Request elapsed: %s (no valid start/terminal timestamp pair)", NM)
+	}
 	fmt.sbprintf(b, "- session_failed/error/warning events: %d", len(bad))
 	for e in bad {
 		fmt.sbprintf(b, "\n  - %s %s: %s", e.type, e.shot_id, e.reason)

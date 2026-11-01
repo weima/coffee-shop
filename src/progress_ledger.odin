@@ -62,17 +62,34 @@ progress_station_key_with :: proc(
 }
 
 // Add a dispatched Station to the ledger.
+// The ledger outlives every host turn, and the host frees its temporary allocator at the
+// end of each one. The key and the ids are therefore copied onto the heap here. Without
+// the copy, a lookup after the next turn compared against freed memory and crashed the
+// host in string_eq (both .ips reports in the v0.5 headless gate).
 progress_ledger_add_station :: proc(
 	ledger: ^Progress_Ledger,
 	request_id, shot_id, pane_id: string,
 ) {
-	key := progress_station_key(request_id, shot_id)
-	ledger.stations[key] = Progress_Station{
-		request_id = request_id,
-		shot_id = shot_id,
-		pane_id = pane_id,
+	probe := progress_station_key(request_id, shot_id)
+	if old, found := ledger.stations[probe]; found {
+		// Replacing a Station: keep the stored key, free the old ids, store fresh ones.
+		delete(old.request_id)
+		delete(old.shot_id)
+		delete(old.pane_id)
+		ledger.stations[probe] = progress_station_fresh(request_id, shot_id, pane_id, ledger.now)
+		return
+	}
+	key := progress_station_key_with(request_id, shot_id, context.allocator)
+	ledger.stations[key] = progress_station_fresh(request_id, shot_id, pane_id, ledger.now)
+}
+
+progress_station_fresh :: proc(request_id, shot_id, pane_id: string, now: time.Time) -> Progress_Station {
+	return Progress_Station{
+		request_id = strings.clone(request_id),
+		shot_id = strings.clone(shot_id),
+		pane_id = strings.clone(pane_id),
 		phase = "dispatched",
-		last_progress = ledger.now,
+		last_progress = now,
 		terminal = false,
 		stale_warned = false,
 	}
@@ -184,9 +201,18 @@ progress_ledger_remove_station :: proc(
 	_ = key
 }
 
-// Destroy the ledger and free all allocated resources.
+// Destroy the ledger and free all allocated resources: each Station's ids, its key, and
+// the map. The ledger owns these, since add_station copies them off the caller's temp
+// allocator. Safe on a ledger that was never filled.
 progress_ledger_destroy :: proc(ledger: ^Progress_Ledger) {
+	for key, station in ledger.stations {
+		delete(key)
+		delete(station.request_id)
+		delete(station.shot_id)
+		delete(station.pane_id)
+	}
 	delete(ledger.stations)
+	ledger.stations = nil
 }
 
 // For testing: set the "current time" in the ledger.

@@ -2,9 +2,9 @@
 
 ![Coffee Shop mascot: Coffee and Oreo](assets/coffee-shop.svg)
 
-Coffee Shop is a local Odin orchestrator for work initiated from a long-lived main-agent session. Pi is the first user-facing **Barista**: it receives a natural-language **Order**, prepares an explicit **Recipe**, and asks a foreground Coffee Shop host to manage Herdr workspaces, isolated Git worktrees, and worker sessions. The first usable workflow uses Pi for both main and Herdr worker sessions. Oreo may take either agent role once stable; Oreo and Rachel are optional improvements, not prerequisites.
+Coffee Shop is a local Odin orchestrator for work initiated from a long-lived main-agent session. Pi is the first user-facing **Barista**: it receives a natural-language **Order**, prepares an explicit **Recipe**, and asks a foreground Coffee Shop host to manage isolated Git worktrees and worker sessions. The first usable workflow uses Pi for both main and worker sessions. Oreo may take either agent role once stable; Oreo and Rachel are optional improvements, not prerequisites.
 
-> **Current status:** The interactive workflow is implemented — a foreground host dispatches interactive Pi **Stations** into Herdr panes, one isolated Git worktree each, and relays their reports. The `brew`/`status`/`cancel`/`collect` CLI remains as the one-shot compatibility foundation, whose Pi Workers run one fixed prompt and exit. The automated vertical-slice suite passes on Linux, WSL and macOS, and a real Pi/Herdr smoke Brew passed on macOS with Pi `1.1.0` and Herdr `0.9.3`. The long-lived host, interactive worker sessions, and live completion/needs-input relay are **implemented**; `PLAN.md` records what shipped and what is still live.
+> **Current status:** The interactive workflow is implemented — a foreground host dispatches interactive Pi **Stations** as headless child processes, one isolated Git worktree each, and relays their reports. The `brew`/`status`/`cancel`/`collect` CLI remains as the one-shot compatibility foundation, whose Pi Workers run one fixed prompt and exit. The automated vertical-slice suite passes on Linux, WSL and macOS, and a real Pi/Herdr smoke Brew passed on macOS with Pi `1.1.0` and Herdr `0.9.3`. The long-lived host, interactive worker sessions, and live completion/needs-input relay are **implemented**; `PLAN.md` records what shipped and what is still live.
 
 ## The story behind the names
 
@@ -55,14 +55,20 @@ Two things to know:
 1. For the first usable path, start Pi from `~/work/coffee-shop` and keep its main session open. Pi is the user-facing Barista; Oreo may take this role later once stable.
 2. The active main-agent harness starts Coffee Shop from the `coffee-shop` executable or `odin run src`. The foreground host stays ready for structured dispatch and control requests; it is not a detached daemon or a second natural-language agent.
 3. The user gives the main agent a repository task. The Barista interprets the Order, prepares an explicit Recipe, and sends Coffee Shop a dispatch request.
-4. Coffee Shop creates a Herdr workspace and isolated Git worktree(s), then starts an interactive Pi worker session. Oreo may be evaluated as an alternative only after the Pi-based Coffee Shop flow is usable.
-5. The user can give follow-up instructions in the Herdr worker pane. All project edits stay in the isolated worktree.
+4. Coffee Shop creates isolated Git worktrees, then starts an interactive Pi worker session. Oreo may be evaluated as an alternative only after the Pi-based Coffee Shop flow is usable.
+5. The user sends follow-up instructions to a running worker session through a routed reply; all project edits stay in the isolated worktree.
 6. The worker sends `needs_input`, progress, or completion to Coffee Shop. Coffee Shop notifies the main agent; the Barista brings the question or result to the user and routes replies back to the same session.
 7. The Barista reports completion. A person reviews and decides whether to integrate; Coffee Shop does not merge or publish automatically.
 
 **Input boundary:** “Coffee Shop waits for input” means the foreground host waits for structured requests from the active main-agent harness. Raw user text goes to that harness; Coffee Shop does not interpret it.
 
-**Current implementation:** two paths exist. `brew` accepts a prepared JSON Recipe, starts non-interactive `pi --mode json --print --no-session` Workers, waits for terminal Shots, then exits — the one-shot foundation, retained for compatibility. The interactive path is the foreground host and its Stations, described in [the architecture](docs/architecture.md), with the tab lifecycle specified in [docs/tab-lifecycle.md](docs/tab-lifecycle.md).
+**Current implementation:** two paths exist. `brew` accepts a prepared JSON Recipe, starts non-interactive `pi --mode json --print --no-session` Workers, waits for terminal Shots, then exits — the one-shot foundation, retained for compatibility. The interactive path is the foreground host and its Stations, described in [the architecture](docs/architecture.md). A Station runs as a headless child process (`CS_PANE_BACKEND=headless` selects it, and it is now the supported path); its output goes to a bounded per-Shot log under `<state>/host/<request>/logs/<shot>.log`, and the old Herdr pane pool and tab lifecycle no longer exist.
+
+### Go host (v0.6, in progress)
+
+`csd` is a second, in-progress implementation of the foreground host, written in Go. It speaks the same wire contract as the Odin host — the same request stream, stdout event shapes, socket paths, and spool and history files — so the same conformance suite runs against both. Today it serves the request stream, receives Station reports over the activity socket with a durable spool and per-request history, and dispatches Shots by driving the Odin CLI's `prepare` and `station` commands. It runs five Slots per host and queues the sixth.
+
+It takes the same host lock as the Odin host, serves the request socket, and escalates a cancel from SIGTERM to SIGKILL, so `coffee-shop status --stations` and `coffee-shop reply` work against it unchanged; the machine-wide Slot files are shared, so a Go host and an Odin Brew cannot together exceed the budget. It does not write the Pi extension, which the Odin host writes at start: a dispatch without that file fails with that reason instead of starting a Station that cannot load its tools. `csd` has no pane backend. The Odin binary can hand the host role to it with `coffee-shop host --impl=go`, but that flag does not extract a `csd` binary; the binary has to be on `PATH` or named by `CS_CSD`.
 
 Oreo and Rachel are improvement tracks, not core dependencies: the Coffee Shop workflow must be usable with Pi alone. See [the architecture](docs/architecture.md) for target and current diagrams and boundaries. See [the plan](PLAN.md) for the next implementation phases. See the [vocabulary](specs/UBIQUITOUS_LANGUAGE_LATEST.md) for the coffee-shop terms.
 

@@ -74,6 +74,7 @@ Host_Event :: struct {
 	reason:      string `json:"reason,omitempty"`,
 	branch:      string `json:"branch,omitempty"`,
 	commit:      string `json:"commit,omitempty"`,
+	at:          string `json:"at"`,
 }
 
 // Foreground host: reads one JSON request per line from stdin and answers on
@@ -94,34 +95,14 @@ run_host :: proc() -> int {
 		host_emit(Host_Event{type = "error", reason = backend_err})
 		return 1
 	}
-	host_dir, _ := filepath.join({state_root, "host"}, context.temp_allocator)
-	if !os.is_directory(host_dir) && os.make_directory_all(host_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
-		host_write_line(`{"type":"error","reason":"could not create the host directory"}`)
+	prepared, prepare_err := host_prepare_environment(state_root, context.allocator)
+	if prepare_err != "" {
+		host_write_line(fmt.tprintf(`{{"type":"error","reason":"%s"}}`, prepare_err))
 		return 1
 	}
-	extension_dir, _ := filepath.join({host_dir, "extensions"}, context.allocator)
-	if !os.is_directory(extension_dir) && os.make_directory_all(extension_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
-		host_write_line(`{"type":"error","reason":"could not create the extension directory"}`)
-		return 1
-	}
-	extension_path, _ := filepath.join({extension_dir, "coffee-shop.ts"}, context.allocator)
-	if os.write_entire_file(extension_path, HOST_EXTENSION_SOURCE, os.Permissions{.Read_User, .Write_User}) != nil {
-		host_write_line(`{"type":"error","reason":"could not write the Coffee Shop extension"}`)
-		return 1
-	}
-	oreo_dir, _ := filepath.join({extension_dir, "oreo"}, context.temp_allocator)
-	if os.make_directory_all(oreo_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil && !os.is_directory(oreo_dir) {
-		host_write_line(`{"type":"error","reason":"could not create the Oreo extension directory"}`)
-		return 1
-	}
-	host_oreo_extension_path, _ = filepath.join({oreo_dir, "index.ts"}, context.allocator)
-	oreo_protocol_path, _ := filepath.join({oreo_dir, "protocol.ts"}, context.temp_allocator)
-	if os.write_entire_file(host_oreo_extension_path, HOST_OREO_EXTENSION_SOURCE, os.Permissions{.Read_User, .Write_User}) != nil ||
-		os.write_entire_file(oreo_protocol_path, HOST_OREO_PROTOCOL_SOURCE, os.Permissions{.Read_User, .Write_User}) != nil {
-		host_write_line(`{"type":"error","reason":"could not write the Oreo extension"}`)
-		return 1
-	}
-	host_extension_path = extension_path
+	host_dir := prepared.host_dir
+	host_extension_path = prepared.extension_path
+	host_oreo_extension_path = prepared.oreo_extension_path
 	host_history_root = strings.clone(host_dir, context.allocator)
 	spool_dir, _ := filepath.join({host_dir, STATION_SPOOL_DIR_NAME}, context.temp_allocator)
 	if !os.is_directory(spool_dir) && os.make_directory_all(spool_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
@@ -144,6 +125,12 @@ run_host :: proc() -> int {
 		return 1
 	}
 	defer activity_listener_close(&listener)
+	requests, requests_ok := host_request_listener_open(host_dir)
+	if !requests_ok {
+		host_write_line(`{"type":"error","reason":"could not open the host request socket"}`)
+		return 1
+	}
+	defer activity_listener_close(&requests)
 	executable_info, info_err := os.current_process_info({.Executable_Path}, context.allocator)
 	if info_err != nil || executable_info.executable_path == "" {
 		host_write_line(`{"type":"error","reason":"could not locate the Coffee Shop executable"}`)
@@ -179,7 +166,7 @@ run_host :: proc() -> int {
 		_, _ = host_pool_persist(state_root)
 		_ = host_dispatch_cleanup("herdr")
 	}
-	host_loop(&listener)
+	host_loop(&listener, &requests)
 	return 0
 }
 
@@ -195,15 +182,18 @@ Host_Line :: struct {
 // Serves stdin requests and Station reports from one poll over two descriptors on
 // one thread. stdin keeps the blocking default and is read only after poll reports
 // it ready; the listener is non-blocking and is drained every turn.
-host_loop :: proc(listener: ^Activity_Listener) {
+host_loop :: proc(listener, requests: ^Activity_Listener) {
 	line: Host_Line
 	chunk: [4096]u8
 	for {
-		fds := [2]posix.pollfd{
+		fds := [3]posix.pollfd{
 			{fd = posix.STDIN_FILENO, events = {.IN}},
 			{fd = listener.fd, events = {.IN}},
+			{fd = requests.fd, events = {.IN}},
 		}
 		_ = posix.poll(raw_data(fds[:]), posix.nfds_t(len(fds)), HOST_LOOP_POLL_MS)
+		host_serve_requests(requests)
+		free_all(context.temp_allocator)
 
 		// Reports arrive on accepted clients, which poll on the listener cannot
 		// signal, so drain every turn instead of only on a new connection.
@@ -595,6 +585,34 @@ host_handle_stdin_line :: proc(text: string) -> bool {
 	return stop
 }
 
+// Request-socket intake. Only `reply` with exactly its four fields is accepted, so
+// nothing in a socket request can name a repo, command, path or shell. It reaches
+// the same host_reply as the stdin path; "" means delivered, else the reason.
+host_handle_request_line :: proc(text: string) -> string {
+	host_emit_received(text)
+	value, parse_err := json.parse_string(text, .JSON, false, context.temp_allocator)
+	if parse_err != .None {
+		return "invalid json"
+	}
+	root, is_object := value.(json.Object)
+	if !is_object {
+		return "request must be an object"
+	}
+	if type_name, _ := root["type"].(json.String); type_name != "reply" {
+		return "the request socket accepts only reply requests"
+	}
+	for key in root {
+		if key != "type" && key != "request_id" && key != "shot_id" && key != "message" {
+			return fmt.tprintf("unexpected field %q", key)
+		}
+	}
+	request_id := host_request_id(root)
+	if request_id == "" {
+		return "request_id must be a valid shot-style identifier (letters, digits, - or _, up to 64)"
+	}
+	return host_reply(root, request_id)
+}
+
 // The line limit is a protocol guard, not a fatal error: name the limit and the
 // byte count, drop the rest of the line, and keep serving.
 host_emit_overlong :: proc(bytes: int) {
@@ -817,6 +835,9 @@ host_dispatch :: proc(root: json.Object, request_id: string) {
 			return
 		}
 
+		if runtime == SHOT_RUNTIME_PI && model == "" {
+			model = DEFAULT_PI_STATION_MODEL
+		}
 		append(&options, shot_options)
 		append(&ids, id)
 		append(&prompts, prompt)
@@ -1199,30 +1220,35 @@ host_pane_identity :: proc(herdr, pane_id: string) -> Process_Identity {
 
 // Types a reply into a Station's pane. The Station reads it from stdin and either
 // answers the agent's pending dialog or sends it as a follow-up prompt.
-host_reply :: proc(root: json.Object, request_id: string) {
+host_reply :: proc(root: json.Object, request_id: string) -> (reason: string) {
 	shot_id, shot_ok := host_string(root, "shot_id")
 	message, message_ok := host_string(root, "message")
 	if !shot_ok || !valid_shot_id(shot_id) {
-		host_emit(Host_Event{type = "error", request_id = request_id, reason = "reply needs a valid shot_id"})
-		return
+		reason = "reply needs a valid shot_id"
+		host_emit(Host_Event{type = "error", request_id = request_id, reason = reason})
+		return reason
 	}
 	message = strings.trim_space(message)
 	if !message_ok || message == "" || len(message) > HOST_REPLY_MAX || strings.contains_any(message, "\r\n") {
-		host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = "reply must be one non-empty line"})
-		return
+		reason = "reply must be one non-empty line"
+		host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = reason})
+		return reason
 	}
 	for session in host_sessions {
 		if session.request_id == request_id && session.shot_id == shot_id {
-			surface := session_surface_open("herdr")
+			surface := session_surface_open(host_herdr_exe)
 			if err := surface.ops.pane_run(surface, session.pane_id, message); err != "" {
-				host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = fmt.tprintf("could not send the reply: %s", err)})
-				return
+				reason = fmt.tprintf("could not send the reply: %s", err)
+				host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = reason})
+				return reason
 			}
 			host_emit(Host_Event{type = "reply_sent", request_id = request_id, shot_id = shot_id})
-			return
+			return ""
 		}
 	}
-	host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = "no Station is running for that shot"})
+	reason = "no Station is running for that shot"
+	host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = reason})
+	return reason
 }
 
 // Herdr's command argument is ASCII-only; checking the encoded bytes also catches
@@ -1341,6 +1367,7 @@ SHOT_KIND_EXECUTE :: "execute"
 SHOT_KIND_RESEARCH :: "research"
 SHOT_RUNTIME_PI :: "pi"
 SHOT_RUNTIME_OREO :: "oreo"
+DEFAULT_PI_STATION_MODEL :: "opencode-go/deepseek-v4.1-flash"
 // Research and review may write scratch files and run codemode; the Station or review checks the source.
 SCRATCH_WRITE_TOOLS :: "read,grep,find,ls,write,codemode"
 
@@ -1394,7 +1421,9 @@ valid_host_model :: proc(model: string) -> bool {
 // Every caller runs on the one loop thread, so stdout writes cannot interleave and
 // need no lock.
 host_emit :: proc(event: Host_Event) -> bool {
-	data, err := json.marshal(event, {}, context.temp_allocator)
+	stamped := event
+	stamped.at = log_timestamp(time.now())
+	data, err := json.marshal(stamped, {}, context.temp_allocator)
 	if err != nil {
 		host_write_line(`{"type":"error","reason":"could not encode event"}`)
 		return false
@@ -1408,6 +1437,11 @@ host_emit :: proc(event: Host_Event) -> bool {
 }
 
 host_write_line :: proc(line: string) {
+	// Raw host events (ready, error, sessions) preserve all existing field order.
+	if strings.has_prefix(line, "{") && strings.has_suffix(line, "}") && !strings.contains(line, `"at":"`) {
+		fmt.printfln("%s,\"at\":\"%s\"}", line[:len(line)-1], log_timestamp(time.now()))
+		return
+	}
 	fmt.println(line)
 }
 

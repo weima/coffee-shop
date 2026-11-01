@@ -1,6 +1,6 @@
 # Coffee Shop Architecture
 
-The target is an interactive, foreground control loop around the user's main-agent session. Pi is the first Barista; Oreo may take the main-agent or worker role once stable. The Barista is the natural-language interface and owns task decomposition. Coffee Shop owns Herdr workspace, worktree, and worker-session lifecycle, then relays worker events and user replies. The first usable path uses Pi for both agent roles. Oreo and Rachel are optional improvements, not core dependencies.
+The target is an interactive, foreground control loop around the user's main-agent session. Pi is the first Barista; Oreo may take the main-agent or worker role once stable. The Barista is the natural-language interface and owns task decomposition. Coffee Shop owns worktree and worker-session lifecycle, then relays worker events and user replies. The first usable path uses Pi for both agent roles. Oreo and Rachel are optional improvements, not core dependencies.
 
 ## Target interaction flow
 
@@ -20,11 +20,9 @@ flowchart TD
     CLI --> Register[Register<br/>current Brew and Shot status]
     CLI --> Receipt[Receipt<br/>append-only event history]
     CLI --> Scale[Scale<br/>concurrency limit]
-    CLI --> HERDR[Herdr workspace<br/>one per Brew]
-    HERDR --> Tab1[Shot A tab]
-    HERDR --> TabN[Shot N tab]
-    Tab1 --> Worker1[Worker A<br/>Pi event adapter]
-    TabN --> WorkerN[Worker N<br/>Pi event adapter]
+    CLI --> Stations[Station process per Shot<br/>headless child, log-bounded output]
+    Stations --> Worker1[Worker A<br/>Pi event adapter]
+    Stations --> WorkerN[Worker N<br/>Pi event adapter]
     Worker1 --> Station1[Station A<br/>isolated Git worktree]
     WorkerN --> StationN[Station N<br/>isolated Git worktree]
     Worker1 --> Pi1[Pi CLI<br/>JSON mode]
@@ -58,7 +56,7 @@ flowchart TD
 
 ## Current implementation internals
 
-The views below document the one-shot CLI foundation. The repository-server views match the current implementation (PLAN.md item 8); the Shot view lists the current one-shot states.
+The views below document the one-shot CLI foundation. The repository-server views match the current implementation (PLAN.md item 8); the Shot view lists the current one-shot states. The one-shot `brew` command still creates Herdr workspaces and tabs for its Workers today (the compatibility foundation), while the interactive host path runs Stations headless.
 
 ### Processes
 
@@ -151,7 +149,7 @@ These Register states describe the one-shot `brew` path. The interactive path ha
 stateDiagram-v2
     [*] --> queued
     queued --> running: Worker started
-    queued --> failed: no tab or launch failed
+    queued --> failed: launch failed
     queued --> cancelled: cancelled before start
     running --> completed: CS-DONE, or exit 0 in a v0.1 Brew
     running --> incomplete: no marker, or CS-BLOCKED
@@ -159,6 +157,10 @@ stateDiagram-v2
     running --> cancelled: exited after a cancel request
     running --> interrupted: exit not seen, or not confirmed after cancel
 ```
+
+### Two host implementations
+
+Two implementations exist for the foreground host, and the seam between them is the wire contract in [the v0.6 Go subsystem design](plans/2026-10-31-v0-6-go-subsystem-design.md). Orchestration moves to Go as `csd`: the host loop, the request and activity sockets, dispatch acceptance, the dispatch queue and Slot accounting, the Station process and its bounded log pump, the relay, the spool and the history. The work stays in Odin: a Station's own labour — the agent, its RPC lines and dialogs, the turn deadline, cancel propagation, the Taste and the commit — and the repository work, which is worktrees, Blend, `pr` and cleanup. Go reaches the Odin side through command lines, `prepare` and `release` for the worktree and the unchanged `station` for the Station, so orchestrating one Shot costs one process per call and the two halves share no memory.
 
 ## Components
 
@@ -171,9 +173,9 @@ stateDiagram-v2
 | **Recipe** | An Order and its explicit list of Shots. The Barista owns task decomposition. |
 | **Shot** | One unit of work with one prompt and one Worker. |
 | **Station** | A Git worktree isolated to one Shot. |
-| **Worker** | Implemented: an interactive Pi session in a Herdr pane, driven by a Station. The one-shot path uses a non-interactive Pi JSON/print process per Shot. Oreo is a later optional alternative, not a prerequisite. |
+| **Worker** | Implemented: an interactive Pi session driven by a Station. The Station runs as a headless child process (`CS_PANE_BACKEND=headless` selects it, and it is now the supported path); its output goes to a bounded per-Shot log under `<state>/host/<request>/logs/<shot>.log`, and the old pane pool and tab lifecycle no longer exist. The one-shot path uses a non-interactive Pi JSON/print process per Shot. Oreo is a later optional alternative, not a prerequisite. |
 | **Activity channel** | Current per-Brew Unix-domain socket for best-effort progress summaries. It does not deliver `needs_input` or completion to the main Pi and does not establish liveness. |
-| **Session bridge** | Implemented: the activity socket carries Station reports (`turn_done`, usage, outcome) to the host, and lines typed into a Station's pane are forwarded to its agent as replies. |
+| **Session bridge** | Implemented: the activity socket carries Station reports (`turn_done`, usage, outcome) to the host, and a routed `reply` request is forwarded to the Station and its agent as input. |
 | **Register** | Durable current status for each Brew and Shot. |
 | **Receipt** | Append-only events that explain status changes. |
 | **Server** | Current per-repository state server. It starts on demand, holds the Register in memory, and is the only writer of Brew state. It exits when the repository has no active Brew; it is distinct from the target foreground Coffee Shop host. See the Server section below. |
@@ -186,7 +188,7 @@ stateDiagram-v2
 
 Recipes are strict JSON objects described by the root `recipe.schema.json`. They have exactly one of `order`/`order_file`, a non-empty `shots` array, optional `share`, optional model/thinking defaults, and optional `preamble`/`preamble_file`. A Shot has exactly one of `prompt`/`prompt_file`, a unique safe `id`, optional model/thinking overrides, and optional `expect_changes`. File inputs resolve relative to the Recipe, reject absolute/traversal paths, and are read before Stations are created. Text is snapshotted in Brew state. Scale defaults to two; `workers` opts into 1–5.
 
-The foreground host's dispatch request carries the same per-Shot `model` and `thinking` fields. A dispatched Shot therefore chooses its own cost profile, and a Shot that omits `thinking` runs at Pi's own default, which the developer cannot see from the request. The thinking level is a cost control, not a cosmetic setting: it drives how many turns a Station takes, and turn count is what dominates a Station's token spend.
+The foreground host's dispatch request carries the per-Shot `model` and `thinking` fields. A Pi Station defaults to `opencode-go/deepseek-v4.1-flash`; an explicit Shot model overrides it. An Oreo Shot still requires its own provider/model route. A Shot that omits `thinking` runs at Pi's own default, which the developer cannot see from the request. The thinking level is a cost control, not a cosmetic setting: it drives how many turns a Station takes, and turn count is what dominates a Station's token spend.
 
 ## Shared paths
 
@@ -307,4 +309,4 @@ This workflow is for worktrees used by a human or coding agent to develop Coffee
 
 ## Target boundaries
 
-Target one machine, a user-facing main-agent/Barista session (Pi first), a foreground Coffee Shop host, and Herdr. Pi is required for the first usable path. Oreo may take the main or worker agent role after the Pi-based workflow is usable and Oreo is stable; Rachel is a developer aid outside the runtime. Keep task decomposition with the Barista and integration decisions with the developer. A detached daemon, remote execution, unrelated agent/session backends, automatic task decomposition, automatic merge, PR creation, and publishing remain out of scope.
+Target one machine, a user-facing main-agent/Barista session (Pi first), and a foreground Coffee Shop host. Pi is required for the first usable path. Oreo may take the main or worker agent role after the Pi-based workflow is usable and Oreo is stable; Rachel is a developer aid outside the runtime. Keep task decomposition with the Barista and integration decisions with the developer. A detached daemon, remote execution, unrelated agent/session backends, automatic task decomposition, automatic merge, PR creation, and publishing remain out of scope.

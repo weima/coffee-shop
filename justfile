@@ -1,18 +1,30 @@
 # Wrappers around the documented Odin commands; the Filter discovers `test`.
 
-build:
-    odin build src -out:coffee-shop
+# The Go host is embedded so one command carries both implementations. `odin check` and
+# `odin test` do not pass the define, so they keep working without the Go artifact.
+build: build-go
+    odin build src -define:CSD_EMBEDDED=true -out:coffee-shop
+
+build-go:
+    cd go && go build -o ../src/csd.bin ./cmd/csd
+
+# Run the built host with the Go implementation embedded. A recipe, not a bare binary, so
+# the binary is always built from the current source first.
+host-go:
+    just build
+    ./coffee-shop host --impl=go
 
 check:
     odin check src
+    cd go && go vet ./...
 
 # ODIN_TEST_FAIL_ON_BAD_MEMORY makes the runner count leaks and bad frees as test
 # failures, so a memory error can no longer ride along with "All tests were successful."
 # The test binary and its dSYM bundle are written to a private temporary directory so
 # nothing lands in the repository for `git add -A` to stage.
 test:
-    go -C go test ./suitelock
-    go -C go run ./suitelock ..
+    cd go && go test -race ./...
+    cd go && go run ./suitelock ..
 
 # Five-Station gates 5.8-5.10: see scripts/five-station-gates.md.
 gates-selftest:

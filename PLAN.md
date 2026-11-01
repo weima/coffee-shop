@@ -20,7 +20,7 @@
 
 The one-shot `brew`/`status`/`cancel`/`collect` CLI remains as the **compatibility foundation**: it runs `pi --mode json --print --no-session` Workers and exits, and its contracts in the appendix must not regress.
 
-What remains is in **v0.4**: Oreo as the runtime, the code mode's token measurement, the profiling, and the Station tab pool whose design is in [docs/tab-lifecycle.md](docs/tab-lifecycle.md). Oreo's separate Host/Session work may take either agent role, but Coffee Shop's first usable path works with Pi alone and does not depend on Oreo or Rachel.
+What remains is in **v0.4**: Oreo as the runtime, the code mode's token measurement, the profiling, and the Station tab pool. Oreo's separate Host/Session work may take either agent role, but Coffee Shop's first usable path works with Pi alone and does not depend on Oreo or Rachel.
 
 ## Next interactive-workflow phases
 
@@ -471,7 +471,7 @@ Two defects, both found by verification rather than by a failing test, and both 
 
 ### 3. Station tabs are a pool, not a leak
 
-The design is [the Station tab lifecycle](docs/tab-lifecycle.md): a tab is an **allocated resource**, drawn from a bounded pool and returned for reuse rather than abandoned. This exists because every dispatch created a tab and nothing owned its lifetime: one session left 21 stale panes in the Station workspace, enough that the developer could feel the rendering drag, and the cleanup that followed had to guess from the process list — and closed a pane inside the developer's own workspace while guessing. Lifetime belongs to the **dispatcher**, which knows what an outside script cannot: it allocated the pane, it holds the session table, it receives every report, and it can run a command in an existing pane.
+The design (retired with v0.5 Wave 3): a tab is an **allocated resource**, drawn from a bounded pool and returned for reuse rather than abandoned. This exists because every dispatch created a tab and nothing owned its lifetime: one session left 21 stale panes in the Station workspace, enough that the developer could feel the rendering drag, and the cleanup that followed had to guess from the process list — and closed a pane inside the developer's own workspace while guessing. Lifetime belongs to the **dispatcher**, which knows what an outside script cannot: it allocated the pane, it holds the session table, it receives every report, and it can run a command in an existing pane.
 
 1. **Durable reports first — the prerequisite, not a companion.** Reclaiming a tab assumes the report channel survived the run, and today it does not: when the host died mid-session, four Stations kept working and committing while their terminal reports were never relayed, and two completions were found only by inspecting branches by hand. Panes were the accidental backup. Write each report durably before relaying it, and recover unrelayed ones on restart. **Gate.** Kill the host mid-run; every completion is still reported or recoverable after restart, without reading a pane.
 2. **The pool.** Dispatch acquires a tab; a terminal report, or a process gone with no report, makes it reclaimable; the pool is bounded by the concurrency limit and emptied when the host exits. **Gate.** Dispatch more Shots than the limit; the workspace never holds more than the limit of tabs, every Shot still runs, and the run ends with no manual cleanup.
@@ -548,10 +548,33 @@ Each wave is chosen so that the Shots in it own disjoint files. A Pull that need
 
 **Wave 3.**
 
-6. **Delete the pane paths** once nothing uses them, retire `docs/tab-lifecycle.md`, and amend the guardrail line that names Herdr as in scope — deliberately, in its own commit, saying which guarantee is being traded.
+6. **Delete the pane paths** once nothing uses them, and amend the guardrail line that names Herdr as in scope — deliberately, in its own commit, saying which guarantee is being traded.
 7. **Measure the removal.** The same five-Shot run on WSL2 and on macOS, wall-clock per Shot and host CPU, so the before and after is a number rather than a claim.
 
 **Deliberately out of scope for v0.5:** reintroducing a multiplexer. If live multi-pane watching turns out to be essential, that is a new requirement with its own decision, not a fallback built into this one.
+
+## v0.5 completion record (2026-10-31)
+
+**Closed partially, and the record says so.** Five defects were found and fixed, two gates passed, and the release's headline item — deleting the Herdr dependency — **did not happen**. It is carried into v0.6 rather than claimed here.
+
+**Shipped.**
+
+- **Reply delivery without a pane (#142).** The host listens on `<state>/host/requests.sock` (0700 directory, 0600 socket) and accepts only `reply` with exactly its four fields, so a separate `coffee-shop reply` process can answer a Station and no socket request can name a repo, command or path. Exit codes: 0 delivered, 1 no host, 4 socket unreachable, 5 refused. The same change fixed two gaps between #138 and #139: `status --stations` and `log` named `<request>/<shot>.log` while the headless backend wrote `<request>/logs/<shot>.log`, and the headless log kept the **first** bytes of an oversized read instead of the newest, so a run under load lost the tail it was read for.
+- **A cancel reaches a turn in flight (#143).** The cancel flag was only read by the typed-input reader; the main flow sits in a blocking read on the agent's stdout, so a Station waiting on a provider reply ignored a cancel until the agent answered or the 30-minute deadline fired. The watchdog thread now stops the agent for a cancel as well as a deadline, and the main flow reaps in bounded steps and escalates SIGTERM → SIGKILL, so a Station can neither block forever on an agent that will not go nor exit and leave it running.
+- **The progress ledger owns its keys (#144).** The ledger stored each Station's map key and ids from `context.temp_allocator`, which the host frees every turn, so the first report after a turn compared against freed memory and crashed the host in `string_eq`. This is what ended both v0.5 gate attempts. The ledger now copies its keys and ids and frees them on destroy.
+- **One timestamp format, and elapsed-time reporting (#145).** Every host event carries `at` (appended last, so existing field order is preserved) and permanent Station log lines are stamped: RFC 3339 UTC, exactly three millisecond digits. The Five-Station report now prints per-Shot elapsed time from `session_started` to the terminal report, plus the request span.
+- **Pi Stations default to `opencode-go/deepseek-v4.1-flash` (#146).** An explicit Shot model still overrides it; Oreo still requires its own provider/model route; one-shot Brew Workers are unchanged.
+
+**Gates.**
+
+- **Headless five-plus-one run: PASS on its own terms.** With `herdr` absent from `PATH` and `CS_PANE_BACKEND=headless`, six Shots reached terminal reports, `gate-s6` went `dispatch_queued` → `dispatch_dequeued` → `session_started`, and 5 Stations started before it. A separate Shot raised `needs_input`, `coffee-shop reply` returned 0, `reply_sent` was recorded, and that Station then reached `taste_passed`. Host exit 0, no error events, request elapsed **145.970 s**, Station memory peaks 283–521 MiB.
+- **Sustained-overlap evidence: NOT PROVEN, and one attempt hung.** In the timed run the agents moved their `sleep` into background tasks and exited early, so the five Slots were not held for the intended period. A rerun that put `sleep 90` in the Shot's Taste queued the sixth Shot correctly but never produced its terminal report within 30 minutes: two Stations reported `agent_exited` and then nothing, three logged only their first prompt. The cause is unconfirmed. Treat "five Shots genuinely overlap and the sixth waits for a real slot" as unproven.
+- **WSL2/macOS before-and-after measurement: NOT DONE.** It needs the WSL2 machine.
+- **Suite:** 395 tests green, no memory failures, at `991612a`.
+
+**Defects found by running the gates rather than by tests:** the ledger use-after-free above; the headless log keeping the wrong end of an oversized read; `status`/`log` pointing at a path the headless backend never wrote; and the hostile load test's request-timeout flake under a 10-thread runner.
+
+**Carried into v0.6:** deleting the Herdr/pane paths (Wave 3 items 6–7 above, still open), the WSL2 measurement, and the unproven sustained-overlap gate.
 
 ## v0.4 completion record (2026-10-26)
 
@@ -569,6 +592,49 @@ Each wave is chosen so that the Shots in it own disjoint files. A Pull that need
 
 **Still open after this release:** the suite lock's dead-holder reclamation, and — per the section below — removing Herdr.
 
+## Roadmap: v0.6.0 — the Barista-to-Station subsystem moves to Go
+
+**Decision, 2026-10-31.** The developer decided to move **orchestration** from Odin to Go: the foreground host loop, the request and activity sockets, dispatch acceptance, the queue and slot accounting, Station process spawning and watching, the per-Shot bounded log, the relay, spool, history and progress ledger. **Odin keeps the actual work**: the CLI, Recipe parsing, Git worktrees, Blend, `pr` and `cleanup`, and the Station's own labour — the agent, its RPC lines and dialogs, the turn deadline, cancel propagation, the Taste and the commit. The reason given is direct: the orchestration substrate has proven hard to get right in raw Odin. The v0.5 record is the evidence: a map key allocated on a temporary allocator crashed the host after its first turn; a cancel could not reach a turn blocked on a model reply; the reap of an agent could block forever; and a bounded log kept the wrong end of an oversized read.
+
+**Decided with it:** `csd` is built from source and embedded in the Odin binary, then written to `<state>/host/bin/` and exec'd, so there is still one user-facing command; the dispatch queue stays in memory and a restart drops it, as v0.5 had it; Go is assumed on the build machine and no Go binary is committed.
+
+**What this is not.** Not a rewrite of Coffee Shop. Recipe parsing, Git worktrees, station directories, Register/Receipt, Taste, Blend, the `pr`/`cleanup` commands, the machine-wide slot files and the one-shot `brew` path stay where they are. This release moves the *orchestration substrate*, because that is where the host-side defects were, and it keeps the wire contract byte-identical so both implementations can run against the same tests.
+
+**Design:** [v0.6 Go subsystem design](docs/plans/2026-10-31-v0-6-go-subsystem-design.md).
+
+**Carried in from v0.5, and part of this release:**
+
+- **Delete the Herdr/pane paths** (v0.5 Wave 3 items 6–7): remove `pane_pool.odin`, `host_pane_pool.odin`'s pool half, `pane_clear.odin`, `pane_backend_herdr.odin`, `host_pool_persistence.odin`'s pane recovery half, the pane branches in `host.odin`, `pr.odin`'s pane discovery, `settle.odin`'s tab close; amend the guardrail that names Herdr as required. Retiring the pane-lifecycle document from that list is already done. The code deletions above remain open. This becomes moot for the moved code and must not be re-implemented in Go: the Go host has **no pane backend**.
+- **The sustained-overlap gate** that v0.5 did not prove: five Shots genuinely holding five Slots, with a sixth waiting for a freed one.
+- **The WSL2/macOS measurement** of the removal.
+
+**Phases.**
+
+1. **Freeze the wire contract as data.** Turn the host's stdout event shapes, request shapes, socket paths, exit codes, spool and history formats into a written contract plus a black-box conformance test that any implementation can be run against. No behaviour change. **Done (#147, #148).** `go/internal/proto` holds the types with the contract's field order and timestamp shape, `go/internal/conformance` holds the harness, `go/internal/conformance/testdata/recorded-v05-gate.ndjson` plus its golden stream are a real v0.5 gate run, and `CS_CONFORMANCE_CMD='odin run src -- host'` passes against the live Odin host.
+2. **The Odin seam.** Add the subcommands Go needs — `prepare` and `release`, alongside the existing `station`, `pr` and `cleanup` — with a JSON failure shape and non-zero exit, so orchestration can drive the work without linking it. **Done (#149).** Both exist (`src/seam.odin`); they validate every path and branch before any Git call, print `{"type":"error","reason":"…"}` on stdout with exit 1, print nothing on success, and `prepare` then `release` is a tested round trip.
+3. **The Go orchestrator.** `csd` runs the host: loop, listeners, dispatch, queue, slots, Station spawn and watch, log pump, relay, spool, history, ledger, cancel escalation, behind `coffee-shop host --impl=go`, headless only. The Odin Station keeps the turn deadline and the #143 cancel path; its regression tests must stay green, because that fix is now in the other language. **Partially done (#151, #152, #153, #154, #156, #157, #158, #160, #162; #150 superseded by #151).** `csd` exists and passes the conformance suite alongside the Odin host; it serves the activity socket — reports written to history, announced on stdout, spooled copy removed only after relay, and spool entries from a previous host replayed at start; it dispatches through the `prepare` seam, starts Stations with an argv, pumps output into a bounded log, queues Shots beyond five Slots, and releases a Slot on a terminal report; the machine-wide slot budget is shared with the Brew; `host --impl=go` selects it, with the host lock, the request socket (`reply`), cancel escalation SIGTERM→SIGKILL, state-directory preparation and `CS_CLI` at handover, and `csd` embedded in the Odin binary. Not in the merged list: the progress ledger, so the phase is not closed.
+4. **Cut over, then delete.** Default to the Go host, remove the Odin host loop and Station supervisor, then do the v0.5 Wave 3 deletions in the same release. **Not started.** `--impl=go` is still opt-in and no pane path is deleted; the Pi extension is still written by the Odin binary at start, so `csd` cannot install it yet (see below).
+5. **Measure.** The same five-Shot run on macOS and WSL2, wall-clock per Shot, host CPU and resident memory, before and after. **Not started.** It waits on the cutover (a before/after of the same host would not measure the move) and on the WSL2 machine.
+
+**Gates.**
+
+- **Conformance: Done (#148, #162).** One black-box suite passes against the Odin host and the Go host on identical request streams, byte-for-byte on every event field except timing, with #159's event-sequence pin and #162's golden dispatch stream as the byte-level proof.
+- **Lifecycle: Done (#157).** A cancel stops a Station blocked on a model reply with SIGTERM→SIGKILL escalation in the Go host; the Odin path carries #143's fix forward. Orphan-agent sweep beyond the kill path is covered by the Odin station tests staying green.
+- **Durability: Done (#152, #164).** Kill the host mid-run and every terminal report is still relayed or recoverable after restart without reading a log. #164 is the crash proof, not the unit-level replay: a host is SIGKILLed after relaying one report and leaving another spooled-but-unannounced, the spool is provably non-empty, and a fresh host on the same state root relays the surviving report and empties the spool.
+- **Concurrency: Open.** Five Stations holding five Slots with a sixth waiting, sustained, is exactly the v0.5 unproven gate; both attempts failed and it is listed as still open above.
+- **Parity: Open.** Suite-green-so-far holds (#155–#162 were landed with tests), but the gate is only closed when the cutover and deletions complete without weakening a test.
+
+### Still open for the cutover
+
+Nothing below is claimed done; each item is listed with why it is still open.
+
+- **The Wave-3 code deletion is not done.** `pane_pool.odin`, `host_pane_pool.odin`'s pool half, `pane_clear.odin`, `pane_backend_herdr.odin`, the pane branches in `host.odin`, `pr.odin`'s pane discovery, `settle.odin`'s tab close, `docs/tab-lifecycle.md` and the six tests that fake Herdr all remain. It is the highest-integration-risk step — deleting the plane the Odin host still serves — so it waits for the Go host to be the default, and goes in its own commit naming the guarantee traded, as v0.5's Wave 3 prescribed. The coupling is concrete: the one-shot `brew` path — `run_brew_with`/`dispatch_workers` in `src/dispatch.odin` and `settle_brew`/`close_shot_tab` in `src/settle.odin` — still opens Herdr workspaces and tabs for its Workers, so the Wave-3 deletion is not just deleting pane files: it either ports `brew` to the headless backend first or deletes the `brew` path outright, which is a breaking change to the compatibility foundation the plan says must not regress. Who decides — the developer, separately — is open, because those two options are in tension and the plan does not currently say which.
+- **The sustained five-Slot overlap gate is unproven.** v0.5's two attempts both failed (agents backgrounded their sleeps, then a rerun hung), and the cause is unconfirmed. It needs a run where five Shots genuinely hold their Slots for a measured duration with a sixth waiting on a real free, not a synthetic queue check.
+- **The WSL2/macOS measurement is not done.** It needs the WSL2 machine, and it must run after the cutover to measure the same five-Shot run before and after the move. The tooling is written and ready: `docs/measurement-plan.md` describes what to record, `scripts/measure-host.sh` is a thin launcher for the Go tool (`go/cmd/measure`) that drives a five-Shot run and writes `report.md`, `per-shot.csv`, `machine.txt`, `host-peaks.csv` and the raw event stream into one output directory.
+- **The Go host is not the default.** `host --impl=go` is opt-in today, and the Pi extension is still written by the Odin binary at start — `csd` cannot install it — so the default flip needs that installer/handover piece first.
+
+**Deliberately out of scope for v0.6:** a second agent runtime, a multiplexer, a detached daemon, remote workers, and rewriting the Git, Recipe, Taste or Blend paths.
+
 ## Scope guardrails
 
-The target is one machine, a main-agent/Barista session (Pi first), a foreground Coffee Shop host, and Herdr. Pi is required for the first usable path. Oreo may take the main or worker agent role after the Pi-based flow is usable and Oreo is stable; Rachel is an optional developer aid. Neither is a core dependency. Keep task decomposition with the Barista and integration decisions with the developer. The foreground host is in scope; a detached daemon is not. Do not add remote workers, unrelated agent harnesses, tmux or zmx backends, Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.
+The target is one machine, a main-agent/Barista session (Pi first), a foreground Coffee Shop host, and Herdr. Pi is required for the first usable path. The host and Station supervisor may be implemented in Go from v0.6, behind the same wire contract, and the v0.6 decision to delete Herdr and the pane paths stands: do not add a pane backend, tmux or zmx to the Go host without a separately approved requirement. Oreo may take the main or worker agent role after the Pi-based flow is usable and Oreo is stable; Rachel is an optional developer aid. Neither is a core dependency. Keep task decomposition with the Barista and integration decisions with the developer. The foreground host is in scope; a detached daemon is not. Do not add remote workers, unrelated agent harnesses, tmux or zmx backends, Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.

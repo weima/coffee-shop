@@ -1,3 +1,3 @@
-module coffee-shop
+module github.com/weima/coffee-shop/go
 
-go 1.24
+go 1.27

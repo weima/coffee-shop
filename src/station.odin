@@ -107,14 +107,47 @@ Station_Watchdog :: struct {
 	deadline_seconds: int,
 }
 
-// Kills the agent when a turn has had no output past the deadline. A pending dialog
-// is waiting on a person, so it is exempt.
+// How long the agent gets to exit on its own after its input closes, before it is
+// signalled. A cooperative agent exits at once; one waiting on a provider reply does not.
+STATION_AGENT_STOP_GRACE_MS :: 2000
+
+// Stops the agent after a cancel or a deadline: close its input first, as the orderly
+// path does, so a cooperative agent exits on its own; then give it the grace and send
+// SIGTERM. The main flow never reaps the child before this thread has been joined, so
+// the pid cannot belong to another process and the signal lands on our own child.
+// Anything that survives is ended by station_reap_agent, which escalates to SIGKILL.
+station_stop_agent :: proc(relay: ^Station_Relay, process: os.Process) {
+	station_close_file(&relay.agent)
+	waited := 0
+	for waited < STATION_AGENT_STOP_GRACE_MS {
+		if sync.atomic_load(&relay.watchdog_stop) {
+			return // the relay's read loop ended, so the agent has gone
+		}
+		time.sleep(STATION_RELAY_POLL_MS * time.Millisecond)
+		waited += STATION_RELAY_POLL_MS
+	}
+	_ = os.process_kill(process)
+}
+
+// Stops the agent when a turn has had no output past the deadline, or when a routed
+// cancel asks the Station to stop. A pending dialog is waiting on a person, so it is
+// exempt from the deadline — but not from a cancel.
+//
+// The agent's output is read by a blocking read on the main thread, so nothing else
+// can end a turn that is waiting on a model reply: closing the agent's input leaves
+// such an agent alive, and the reader thread stops after the typed-input loop while
+// the main thread stays in that read. This thread is the one place that wakes
+// regardless, so it starts the stopping.
 station_watchdog :: proc(data: rawptr) {
 	watchdog := (^Station_Watchdog)(data)
 	relay := watchdog.relay
 	limit := i64(watchdog.deadline_seconds) * i64(time.Second)
 	for !sync.atomic_load(&relay.watchdog_stop) {
 		time.sleep(STATION_RELAY_POLL_MS * time.Millisecond)
+		if sync.atomic_load(&station_cancel_requested) {
+			station_stop_agent(relay, watchdog.process)
+			return
+		}
 		if !sync.atomic_load(&relay.turn_active) {
 			continue
 		}
@@ -128,9 +161,29 @@ station_watchdog :: proc(data: rawptr) {
 			continue
 		}
 		sync.atomic_store(&relay.deadline_expired, true)
-		_ = os.process_kill(watchdog.process)
+		station_stop_agent(relay, watchdog.process)
 		return
 	}
+}
+
+// Waits for the agent, ending it if it will not go: a cancel or a deadline can leave an
+// agent blocked on a provider reply, and the Station must neither block on it nor exit
+// and leave it running. Each step is bounded, so the Station's own exit is too.
+STATION_AGENT_REAP_GRACE_MS :: 2000
+
+station_reap_agent :: proc(process: os.Process) -> (state: os.Process_State, err: os.Error) {
+	grace := STATION_AGENT_REAP_GRACE_MS * time.Millisecond
+	state, err = os.process_wait(process, grace)
+	if err != .Timeout {
+		return
+	}
+	_ = os.process_kill(process)
+	state, err = os.process_wait(process, grace)
+	if err != .Timeout {
+		return
+	}
+	_ = posix.kill(posix.pid_t(process.pid), .SIGKILL)
+	return os.process_wait(process, grace)
 }
 
 station_turn_started :: proc(relay: ^Station_Relay) {
@@ -335,10 +388,10 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 		thread.destroy(watchdog_thread)
 	}
 	deadline_expired := sync.atomic_load(&relay.deadline_expired)
-	state, wait_err := process_reap(process)
+	state, wait_err := station_reap_agent(process)
 	shutdown_status := station_orderly_shutdown(&relay, reader_thread)
 	station_close_file(&agent_out_read)
-	fmt.println("Agent exited.")
+	fmt.printfln("%s Agent exited.", log_timestamp(time.now()))
 	station_report(&sender, brew_id, station_id, "agent_exited", "Agent exited")
 	if shutdown_status == STATION_CANCELLED_EXIT_CODE {
 		return shutdown_status

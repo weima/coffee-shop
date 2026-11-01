@@ -71,9 +71,9 @@ test_host_history_survives_restart_without_replaying_herdr :: proc(t: ^testing.T
 	defer delete(first_out)
 	defer delete(first_err)
 	testing.expect(t, first_ok, first_err)
-	testing.expect(t, strings.contains(first_out, `{"type":"dispatch_accepted","request_id":"order-1"}`), first_out)
-	testing.expect(t, strings.contains(first_out, `{"type":"session_started","request_id":"order-1"`), first_out)
-	testing.expect(t, strings.contains(first_out, `{"type":"reply_sent","request_id":"order-1","shot_id":"shot-a"}`), first_out)
+	testing.expect(t, host_output_contains(first_out, `{"type":"dispatch_accepted","request_id":"order-1"}`), first_out)
+	testing.expect(t, host_output_contains(first_out, `{"type":"session_started","request_id":"order-1"`), first_out)
+	testing.expect(t, host_output_contains(first_out, `{"type":"reply_sent","request_id":"order-1","shot_id":"shot-a"}`), first_out)
 
 	history_path := fmt.aprintf("%s/host/order-1/history.ndjson", state)
 	defer delete(history_path)

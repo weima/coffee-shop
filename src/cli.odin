@@ -1,6 +1,13 @@
 package main
 
 import "core:flags"
+import "core:fmt"
+
+// Which host implementation `host` runs. The Go host is a separate binary.
+Host_Impl :: enum {
+	Odin,
+	Go,
+}
 
 Command_Kind :: enum {
 	Help,
@@ -16,6 +23,8 @@ Command_Kind :: enum {
 	Cleanup,
 	Log,
 	Reply,
+	Prepare,
+	Release,
 }
 
 Command :: struct {
@@ -41,9 +50,11 @@ Command :: struct {
 	workspace: string,
 	blend: bool,
 	stations: bool,
+	host_impl: Host_Impl,
 	tail: int,
 	dump: bool,
 	print_only: bool,
+	worktree_dir: string,
 }
 
 Brew_Arguments :: struct {
@@ -67,6 +78,23 @@ Pr_Arguments :: struct {
 	remote:  string `usage:"Git remote to push to (default origin)."`,
 	blend:   bool `usage:"Combine the run's 2 to 20 Pull commits into one commit before opening the PR."`,
 	message: string `usage:"Commit message for --blend."`,
+}
+
+// The seam Go's orchestrator drives. Both take absolute paths; validation happens
+// before any Git call, so a rejected command changes nothing.
+Seam_Arguments :: struct {
+	repo:   string `args:"required" usage:"Beans Git repository path (absolute)."`,
+	branch: string `args:"required" usage:"New branch for the Shot's worktree."`,
+	dir:    string `args:"required" usage:"Worktree directory to create (absolute)."`,
+}
+
+Release_Arguments :: struct {
+	repo: string `args:"required" usage:"Beans Git repository path (absolute)."`,
+	dir:  string `args:"required" usage:"Worktree directory to remove (absolute)."`,
+}
+
+Host_Arguments :: struct {
+	impl: string `usage:"Host implementation: odin (default) or go."`,
 }
 
 Log_Arguments :: struct {
@@ -121,7 +149,9 @@ Usage:
   coffee-shop collect <brew-id>
   coffee-shop pr <run-id> <shot-id> [--branch <name>] [--blend --message <text>]
   coffee-shop cleanup <run-id> [--branch <name>]
-  coffee-shop host
+  coffee-shop prepare --repo <path> --branch <name> --dir <path>
+  coffee-shop release --repo <path> --dir <path>
+  coffee-shop host [--impl=odin|go]
   coffee-shop --help
 `
 
@@ -143,7 +173,17 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 		}
 		return Command{kind = .Brew, repo = options.repo, recipe = options.recipe}, ""
 	case "host":
-		return Command{kind = .Host}, ""
+		options: Host_Arguments
+		if flags.parse(&options, args[1:], .Unix) != nil {
+			return Command{kind = .Help}, "invalid host arguments"
+		}
+		switch options.impl {
+		case "", "odin":
+			return Command{kind = .Host}, ""
+		case "go":
+			return Command{kind = .Host, host_impl = .Go}, ""
+		}
+		return Command{kind = .Help}, fmt.tprintf("unknown host implementation %q: use odin or go", options.impl)
 	case "station":
 		return parse_station_args(args[1:])
 	case "__server":
@@ -170,6 +210,18 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 			return Command{kind = .Help}, "invalid cleanup arguments"
 		}
 		return Command{kind = .Cleanup, run_id = options.run_id, branch = options.branch, workspace = options.workspace}, ""
+	case "prepare":
+		options: Seam_Arguments
+		if flags.parse(&options, args[1:], .Unix) != nil {
+			return Command{kind = .Help}, "invalid prepare arguments"
+		}
+		return Command{kind = .Prepare, repo = options.repo, branch = options.branch, worktree_dir = options.dir}, ""
+	case "release":
+		options: Release_Arguments
+		if flags.parse(&options, args[1:], .Unix) != nil {
+			return Command{kind = .Help}, "invalid release arguments"
+		}
+		return Command{kind = .Release, repo = options.repo, worktree_dir = options.dir}, ""
 	case "log":
 		options: Log_Arguments
 		if flags.parse(&options, args[1:], .Unix) != nil || options.tail < 0 || options.cat && options.tail > 0 {

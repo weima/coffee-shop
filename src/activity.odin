@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:os"
 import "core:strconv"
 import "core:strings"
+import "core:sys/posix"
 
 ACTIVITY_QUIET_AFTER_NS :: i64(12 * 60 * 1_000_000_000)
 
@@ -161,4 +162,133 @@ parse_station_pid :: proc(description: string) -> (station: Process_Identity, ag
 		return
 	}
 	return Process_Identity{pid = pid, start_time = start}, agent, true
+}
+
+// ---- Request socket ---------------------------------------------------------
+// A separate CLI process delivers a host request here: <state root>/host/requests.sock
+// (state root is CS_STATE_DIR, else the default shown by `coffee-shop` state paths).
+// Protocol: connect, send ONE JSON line, read ONE JSON line back:
+//   {"ok":true}  or  {"ok":false,"reason":"..."}
+// It is a different socket from activity.sock so a Station report can never be taken
+// for a request. Only `reply` is accepted; see host_handle_request_line.
+
+HOST_REQUEST_SOCKET_NAME :: "requests.sock"
+HOST_REQUEST_MAX_BYTES :: ACTIVITY_MAX_PAYLOAD * 4
+HOST_REQUEST_READ_MS :: 200   // a client that sends no full line in this time is dropped
+HOST_REQUEST_ACK_WAIT_MS :: 5000
+
+Host_Request_Ack :: struct {
+	ok:     bool,
+	reason: string `json:"reason,omitempty"`,
+}
+
+host_request_socket_path :: proc(host_dir: string, allocator := context.allocator) -> string {
+	return state_file_path(host_dir, HOST_REQUEST_SOCKET_NAME, allocator)
+}
+
+// Makes the directory 0700 so no other user can reach the socket, then binds it 0600.
+host_dir_make_private :: proc(directory: string) -> bool {
+	return posix.chmod(strings.clone_to_cstring(directory, context.temp_allocator), {.IRUSR, .IWUSR, .IXUSR}) == .OK
+}
+
+host_request_listener_open :: proc(host_dir: string) -> (listener: Activity_Listener, ok: bool) {
+	path := host_request_socket_path(host_dir, context.temp_allocator)
+	activity_unlink(path) // the host lock proves a leftover socket is stale
+	listener, ok = activity_listener_open(path)
+	if !ok {
+		return
+	}
+	if posix.chmod(strings.clone_to_cstring(path, context.temp_allocator), {.IRUSR, .IWUSR}) != .OK {
+		activity_listener_close(&listener)
+		return Activity_Listener{fd = -1}, false
+	}
+	return
+}
+
+// Handles every waiting connection, one at a time.
+// shortcut: a connection that stalls holds the loop for HOST_REQUEST_READ_MS, upgrade to per-client buffers if requests ever come from untrusted-speed peers.
+host_serve_requests :: proc(listener: ^Activity_Listener) {
+	for {
+		fd := posix.accept(listener.fd, nil, nil)
+		if fd < 0 {
+			return
+		}
+		host_serve_request_conn(fd)
+		posix.close(fd)
+	}
+}
+
+host_serve_request_conn :: proc(fd: posix.FD) {
+	line, got := host_request_read_line(fd)
+	ack := Host_Request_Ack{ok = false, reason = "no complete request line received"}
+	if got {
+		reason := host_handle_request_line(line)
+		ack = Host_Request_Ack{ok = reason == "", reason = reason}
+	}
+	data, err := json.marshal(ack, {}, context.temp_allocator)
+	if err != nil {
+		return
+	}
+	out := strings.concatenate({string(data), "\n"}, context.temp_allocator)
+	_ = posix.send(fd, raw_data(out), len(out), {})
+}
+
+host_request_read_line :: proc(fd: posix.FD) -> (line: string, ok: bool) {
+	buf := make([dynamic]u8, context.temp_allocator)
+	for len(buf) <= HOST_REQUEST_MAX_BYTES {
+		pfd := posix.pollfd{fd = fd, events = {.IN}}
+		if posix.poll(&pfd, 1, HOST_REQUEST_READ_MS) <= 0 {
+			return
+		}
+		b: u8
+		if posix.recv(fd, rawptr(&b), 1, {}) != 1 {
+			return
+		}
+		if b == '\n' {
+			return string(buf[:]), true
+		}
+		append(&buf, b)
+	}
+	return
+}
+
+Host_Send_Result :: enum {
+	Delivered,
+	Unreachable, // could not connect or got no answer
+	Refused,     // the host answered and said no
+}
+
+// Client side: one request line to the host's socket. `reason` explains a failure.
+host_request_send :: proc(host_dir, line: string) -> (result: Host_Send_Result, reason: string) {
+	path := host_request_socket_path(host_dir, context.temp_allocator)
+	if !activity_valid_socket_path(path) {
+		return .Unreachable, "the host request socket path is too long"
+	}
+	fd := posix.socket(.UNIX, .STREAM)
+	if fd < 0 {
+		return .Unreachable, "could not create a socket"
+	}
+	defer posix.close(fd)
+	address := activity_socket_address(path)
+	if posix.connect(fd, (^posix.sockaddr)(&address), activity_socket_address_len(path)) != .OK {
+		return .Unreachable, fmt.tprintf("could not connect to %s", path)
+	}
+	out := strings.concatenate({line, "\n"}, context.temp_allocator)
+	if posix.send(fd, raw_data(out), len(out), {}) != len(out) {
+		return .Unreachable, "could not send the request"
+	}
+	pfd := posix.pollfd{fd = fd, events = {.IN}}
+	if posix.poll(&pfd, 1, HOST_REQUEST_ACK_WAIT_MS) <= 0 {
+		return .Unreachable, "the host did not answer"
+	}
+	reply: [1024]u8
+	count := posix.recv(fd, raw_data(reply[:]), len(reply), {})
+	ack: Host_Request_Ack
+	if count <= 0 || json.unmarshal_string(string(reply[:count]), &ack, .JSON, context.temp_allocator) != nil {
+		return .Unreachable, "the host's answer was unreadable"
+	}
+	if !ack.ok {
+		return .Refused, ack.reason
+	}
+	return .Delivered, ""
 }
