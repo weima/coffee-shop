@@ -620,7 +620,7 @@ Each wave is chosen so that the Shots in it own disjoint files. A Pull that need
 
 - **Conformance: Done (#148, #162).** One black-box suite passes against the Odin host and the Go host on identical request streams, byte-for-byte on every event field except timing, with #159's event-sequence pin and #162's golden dispatch stream as the byte-level proof.
 - **Lifecycle: Done (#157).** A cancel stops a Station blocked on a model reply with SIGTERM→SIGKILL escalation in the Go host; the Odin path carries #143's fix forward. Orphan-agent sweep beyond the kill path is covered by the Odin station tests staying green.
-- **Durability: Done (#152).** Kill the host mid-run and every terminal report is still relayed or recoverable after restart without reading a log; spooled reports replay oldest first.
+- **Durability: Done (#152, #164).** Kill the host mid-run and every terminal report is still relayed or recoverable after restart without reading a log. #164 is the crash proof, not the unit-level replay: a host is SIGKILLed after relaying one report and leaving another spooled-but-unannounced, the spool is provably non-empty, and a fresh host on the same state root relays the surviving report and empties the spool.
 - **Concurrency: Open.** Five Stations holding five Slots with a sixth waiting, sustained, is exactly the v0.5 unproven gate; both attempts failed and it is listed as still open above.
 - **Parity: Open.** Suite-green-so-far holds (#155–#162 were landed with tests), but the gate is only closed when the cutover and deletions complete without weakening a test.
 
