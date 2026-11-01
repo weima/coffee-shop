@@ -95,39 +95,14 @@ run_host :: proc() -> int {
 		host_emit(Host_Event{type = "error", reason = backend_err})
 		return 1
 	}
-	host_dir, _ := filepath.join({state_root, "host"}, context.temp_allocator)
-	if !os.is_directory(host_dir) && os.make_directory_all(host_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
-		host_write_line(`{"type":"error","reason":"could not create the host directory"}`)
+	prepared, prepare_err := host_prepare_environment(state_root, context.allocator)
+	if prepare_err != "" {
+		host_write_line(fmt.tprintf(`{{"type":"error","reason":"%s"}}`, prepare_err))
 		return 1
 	}
-	// The request socket lives here, so only the user may enter it, whatever the umask or an older install left.
-	if !host_dir_make_private(host_dir) {
-		host_write_line(`{"type":"error","reason":"could not make the host directory private"}`)
-		return 1
-	}
-	extension_dir, _ := filepath.join({host_dir, "extensions"}, context.allocator)
-	if !os.is_directory(extension_dir) && os.make_directory_all(extension_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {
-		host_write_line(`{"type":"error","reason":"could not create the extension directory"}`)
-		return 1
-	}
-	extension_path, _ := filepath.join({extension_dir, "coffee-shop.ts"}, context.allocator)
-	if os.write_entire_file(extension_path, HOST_EXTENSION_SOURCE, os.Permissions{.Read_User, .Write_User}) != nil {
-		host_write_line(`{"type":"error","reason":"could not write the Coffee Shop extension"}`)
-		return 1
-	}
-	oreo_dir, _ := filepath.join({extension_dir, "oreo"}, context.temp_allocator)
-	if os.make_directory_all(oreo_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil && !os.is_directory(oreo_dir) {
-		host_write_line(`{"type":"error","reason":"could not create the Oreo extension directory"}`)
-		return 1
-	}
-	host_oreo_extension_path, _ = filepath.join({oreo_dir, "index.ts"}, context.allocator)
-	oreo_protocol_path, _ := filepath.join({oreo_dir, "protocol.ts"}, context.temp_allocator)
-	if os.write_entire_file(host_oreo_extension_path, HOST_OREO_EXTENSION_SOURCE, os.Permissions{.Read_User, .Write_User}) != nil ||
-		os.write_entire_file(oreo_protocol_path, HOST_OREO_PROTOCOL_SOURCE, os.Permissions{.Read_User, .Write_User}) != nil {
-		host_write_line(`{"type":"error","reason":"could not write the Oreo extension"}`)
-		return 1
-	}
-	host_extension_path = extension_path
+	host_dir := prepared.host_dir
+	host_extension_path = prepared.extension_path
+	host_oreo_extension_path = prepared.oreo_extension_path
 	host_history_root = strings.clone(host_dir, context.allocator)
 	spool_dir, _ := filepath.join({host_dir, STATION_SPOOL_DIR_NAME}, context.temp_allocator)
 	if !os.is_directory(spool_dir) && os.make_directory_all(spool_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil {

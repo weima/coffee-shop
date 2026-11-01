@@ -132,6 +132,18 @@ run_host_go :: proc(csd_env, path_env: string) -> int {
 		write_error(GO_HOST_MISSING)
 		return 1
 	}
+	// The Go host does not carry the Pi extensions: they are compiled into this binary, so
+	// install them here or a fresh state directory gives a host that cannot launch a
+	// Station. This is the same preparation the Odin host does, before the handover.
+	state_root, state_err := default_state_root(context.temp_allocator)
+	if state_err != "" {
+		write_error(state_err)
+		return 1
+	}
+	if _, prepare_err := host_prepare_environment(state_root, context.allocator); prepare_err != "" {
+		write_error(prepare_err)
+		return 1
+	}
 	write_error(exec_go_host(path))
 	return 1
 }
