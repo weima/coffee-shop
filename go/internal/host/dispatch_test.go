@@ -24,6 +24,11 @@ func TestMain(m *testing.M) {
 		fakeCLI(os.Args[1:])
 		return
 	}
+	// The durability test's fake Station is the same re-exec seam, under its own mode.
+	if os.Getenv(fakeDurabilityStationEnv) != "" {
+		fakeDurabilityStation(os.Args[1:])
+		return
+	}
 	os.Exit(m.Run())
 }
 
