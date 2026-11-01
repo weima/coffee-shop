@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 // Negative timestamps must not crash the per-Shot derivation; a malformed `at` is a real
 // shape a future event could produce.

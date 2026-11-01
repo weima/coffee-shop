@@ -53,7 +53,7 @@ const fakeDurabilityStationEnv = "CS_DURABILITY_FAKE_STATION"
 // writeFakeCLI writes the seam the dispatcher drives: a 0700 shell script that
 // re-executes this test binary in fake-station mode. The socket logic lives in Go
 // because netcat and python3 cannot be assumed on every platform the suite runs on.
-func writeFakeCLI(t *testing.T) string {
+func writeDurabilityFakeCLI(t *testing.T) string {
 	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
@@ -152,7 +152,7 @@ func TestDurabilityGateSpoolCarriesReportsAcrossAHostCrash(t *testing.T) {
 
 	// The replay reads the spool oldest first, so entry names sort by timestamp, as the
 	// real Station names them.
-	cliPath := writeFakeCLI(t)
+	cliPath := writeDurabilityFakeCLI(t)
 	repo := shortRoot(t)
 
 	// The state root is the killed host's state and the restarted host's state: the gate
