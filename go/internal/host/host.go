@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/weima/coffee-shop/go/internal/proto"
@@ -35,6 +36,9 @@ type Options struct {
 	// per-request history. Empty keeps the host a pure stdin/stdout loop, which is what
 	// the contract tests use.
 	StateRoot string
+	// CLI is the argv prefix for the Odin CLI: the seam dispatch drives. Empty derives it
+	// from CS_CLI, and a host without one refuses a dispatch rather than guessing.
+	CLI []string
 }
 
 // Run serves one foreground host until shutdown or the end of input.
@@ -70,6 +74,19 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 
+	cli := opts.CLI
+	if len(cli) == 0 {
+		if value := os.Getenv("CS_CLI"); value != "" {
+			cli = []string{value}
+		}
+	}
+	var dispatch *dispatcher
+	if opts.StateRoot != "" && len(cli) > 0 {
+		extension := filepath.Join(state.HostDir(opts.StateRoot), "extensions", "coffee-shop.ts")
+		dispatch = newDispatcher(opts.StateRoot, cli, state.ActivitySocket(opts.StateRoot), extension, os.Getenv("CS_STATION_MODEL"), w)
+		w.onTerminal = dispatch.terminalReport
+	}
+
 	if server != nil {
 		// Reports a previous host spooled but never announced are relayed before this
 		// host accepts a new one, so recovery cannot race a live report.
@@ -87,7 +104,7 @@ func Run(ctx context.Context, opts Options) error {
 		if line == "" {
 			continue
 		}
-		stop, err := w.handle(line)
+		stop, err := w.handleWith(line, dispatch)
 		if err != nil {
 			return err
 		}
@@ -110,6 +127,19 @@ type writer struct {
 	out  io.Writer
 	now  func() time.Time
 	root string
+	// onTerminal frees a Shot's Slot as soon as its terminal report arrives, without
+	// waiting for the process to exit, so a queued Shot can start sooner.
+	onTerminal func(requestID, shotID string)
+}
+
+// terminalReportKinds mirrors the Odin host's is_terminal_report. taste_passed is not
+// here: a Station that passed its Taste is released when its process exits.
+func terminalReportKinds(kind string) bool {
+	switch kind {
+	case "pulled", "taste_failed", "incomplete", "session_failed":
+		return true
+	}
+	return false
 }
 
 // relayReport records a report and announces it, in that order. A report that cannot be
@@ -120,6 +150,9 @@ func (w *writer) relayReport(message proto.Message) {
 		return
 	}
 	_ = w.appendHistory(message)
+	if w.onTerminal != nil && terminalReportKinds(message.Kind) {
+		w.onTerminal(message.BrewID, message.ShotID)
+	}
 	_ = w.emit(proto.Event{
 		Type:        "station_report",
 		RequestID:   message.BrewID,
@@ -161,7 +194,7 @@ func (w *writer) appendHistory(message proto.Message) error {
 
 // handle acknowledges one line and then acts on it. Every line is acknowledged before it
 // is handled, so a caller can tell an unanswered request from one never read.
-func (w *writer) handle(line string) (stop bool, err error) {
+func (w *writer) handleWith(line string, dispatch *dispatcher) (stop bool, err error) {
 	var request struct {
 		Type      string `json:"type"`
 		RequestID string `json:"request_id"`
@@ -181,6 +214,12 @@ func (w *writer) handle(line string) (stop bool, err error) {
 	}
 
 	switch request.Type {
+	case "dispatch":
+		if dispatch == nil {
+			return false, w.emit(proto.Event{Type: "error", RequestID: requestID, Reason: "this host has no CLI seam configured, so it cannot dispatch"})
+		}
+		dispatch.dispatch(context.Background(), request.RequestID, json.RawMessage(line))
+		return false, nil
 	case "shutdown":
 		id := requestID
 		if id == "" {
