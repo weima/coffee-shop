@@ -12,11 +12,7 @@ Host_Impl :: enum {
 Command_Kind :: enum {
 	Help,
 	Server,
-	Brew,
 	Status,
-	Cancel,
-	Collect,
-	Worker,
 	Host,
 	Station,
 	Pr,
@@ -34,7 +30,6 @@ Command :: struct {
 	brew_id: string,
 	shot_id: string,
 	state_root: string,
-	token: string,
 	report_path: string,
 	prompt: string,
 	prompt_file: string,
@@ -57,13 +52,8 @@ Command :: struct {
 	worktree_dir: string,
 }
 
-Brew_Arguments :: struct {
-	repo:   string `args:"required" usage:"Beans Git repository path."`,
-	recipe: string `args:"required" usage:"Recipe JSON file path."`,
-}
-
-Brew_ID_Arguments :: struct {
-	brew_id: string `args:"pos=0,required" usage:"Brew identifier."`,
+Request_ID_Arguments :: struct {
+	request_id: string `args:"pos=0,required" usage:"Host request identifier."`,
 }
 
 Server_Arguments :: struct {
@@ -130,23 +120,13 @@ Station_Arguments :: struct {
 	codemode:    string `usage:"true (default) or false: whether an execute Shot gets codemode."`,
 }
 
-Worker_Arguments :: struct {
-	state_root: string `args:"required" usage:"Coffee Shop state directory."`,
-	brew_id: string `args:"required" usage:"Brew identifier."`,
-	shot_id: string `args:"required" usage:"Shot identifier."`,
-	token: string `args:"required" usage:"Brew token from the Register."`,
-}
-
 USAGE :: `Coffee Shop - local Pi Workers for isolated repository changes
 
 Usage:
-  coffee-shop brew --repo <path> --recipe <recipe.json>
-  coffee-shop status <brew-id>
+  coffee-shop status <request-id>
   coffee-shop status --stations
   coffee-shop log <request-id> <shot-id> [--tail <n> | --cat]
   coffee-shop reply <request-id> <shot-id> <text> [--print]
-  coffee-shop cancel <brew-id>
-  coffee-shop collect <brew-id>
   coffee-shop pr <run-id> <shot-id> [--branch <name>] [--blend --message <text>]
   coffee-shop cleanup <run-id> [--branch <name>]
   coffee-shop prepare --repo <path> --branch <name> --dir <path>
@@ -166,12 +146,6 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 	}
 
 	switch name {
-	case "brew":
-		options: Brew_Arguments
-		if flags.parse(&options, args[1:], .Unix) != nil {
-			return Command{kind = .Help}, "invalid brew arguments"
-		}
-		return Command{kind = .Brew, repo = options.repo, recipe = options.recipe}, ""
 	case "host":
 		options: Host_Arguments
 		if flags.parse(&options, args[1:], .Unix) != nil {
@@ -192,12 +166,6 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 			return Command{kind = .Help}, "invalid server arguments"
 		}
 		return Command{kind = .Server, state_root = options.state_root, repo = options.repository}, ""
-	case "__worker":
-		options: Worker_Arguments
-		if flags.parse(&options, args[1:], .Unix) != nil {
-			return Command{kind = .Help}, "invalid Worker arguments"
-		}
-		return Command{kind = .Worker, brew_id = options.brew_id, shot_id = options.shot_id, state_root = options.state_root, token = options.token}, ""
 	case "pr":
 		options: Pr_Arguments
 		if flags.parse(&options, args[1:], .Unix) != nil {
@@ -234,23 +202,16 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 			return Command{kind = .Help}, "invalid reply arguments"
 		}
 		return Command{kind = .Reply, brew_id = options.request_id, shot_id = options.shot_id, message = options.message, print_only = options.print}, ""
-	case "status", "cancel", "collect":
+	case "status":
 		if name == "status" && len(args) == 2 && args[1] == "--stations" {
 			return Command{kind = .Status, stations = true}, ""
 		}
-		options: Brew_ID_Arguments
+		options: Request_ID_Arguments
 		if flags.parse(&options, args[1:], .Unix) != nil {
-			return Command{kind = .Help}, "expected exactly one Brew ID"
+			return Command{kind = .Help}, "expected exactly one host request ID"
 		}
 
-		kind := Command_Kind.Status
-		switch name {
-		case "cancel":
-			kind = .Cancel
-		case "collect":
-			kind = .Collect
-		}
-		return Command{kind = kind, brew_id = options.brew_id}, ""
+		return Command{kind = .Status, brew_id = options.request_id}, ""
 	case:
 		return Command{kind = .Help}, "unknown command"
 	}

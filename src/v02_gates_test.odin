@@ -98,39 +98,6 @@ test_recipe_text_refuses_to_traverse_a_symbolic_link :: proc(t: ^testing.T) {
 
 // Each Worker prompt names each root rule file it has, once, and nothing else.
 @(test)
-test_worker_guidance_names_each_root_rule_file_once :: proc(t: ^testing.T) {
-	station, make_err := os.make_directory_temp(TEMP_DIR, "cs-guidance-*", context.allocator)
-	testing.expect(t, make_err == nil, "a temporary directory is needed")
-	defer {
-		_ = os.remove_all(station)
-		delete(station)
-	}
-	rw := os.Permissions{.Read_User, .Write_User}
-
-	neither := worker_guidance(station)
-	defer delete(neither)
-	testing.expect_value(t, neither, "")
-
-	workers_path := strings.concatenate({station, "/workers.md"})
-	defer delete(workers_path)
-	_ = os.write_entire_file_from_string(workers_path, "x", rw)
-	only_workers := worker_guidance(station)
-	defer delete(only_workers)
-	testing.expect_value(t, strings.count(only_workers, "workers.md"), 1)
-	testing.expect_value(t, strings.count(only_workers, "standards.md"), 0)
-
-	standards_path := strings.concatenate({station, "/standards.md"})
-	defer delete(standards_path)
-	_ = os.write_entire_file_from_string(standards_path, "y", rw)
-	both := worker_guidance(station)
-	defer delete(both)
-	testing.expect_value(t, strings.count(both, "workers.md"), 1)
-	testing.expect_value(t, strings.count(both, "standards.md"), 1)
-}
-
-// Repository names come from the final path component, cleaned so that they are
-// safe in branch names and bounded in length.
-@(test)
 test_repository_names_are_sanitized_and_bounded :: proc(t: ^testing.T) {
 	cases := [][2]string{
 		{"/work/gac/app", "app"},
@@ -154,15 +121,3 @@ test_repository_names_are_sanitized_and_bounded :: proc(t: ^testing.T) {
 }
 
 // A Register written before repository names existed still shows a name.
-@(test)
-test_old_register_without_a_name_shows_the_derived_name :: proc(t: ^testing.T) {
-	old := Register{beans_path = "/work/old-app"}
-	name, derived := report_repository(old)
-	defer delete(derived)
-	testing.expect_value(t, name, "old-app")
-
-	named := Register{beans_path = "/work/old-app", repository_name = "stored"}
-	stored, no_derived := report_repository(named)
-	testing.expect_value(t, stored, "stored")
-	testing.expect_value(t, no_derived, "")
-}

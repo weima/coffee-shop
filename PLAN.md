@@ -18,7 +18,7 @@
 
 **The interactive workflow is implemented.** A foreground host reads one JSON request per line and creates a Herdr workspace with an isolated Git worktree per Shot; each Shot runs in an interactive Pi **Station** in a pane, reporting every turn over the activity socket and accepting lines typed into its pane as replies to its agent. `needs_input` reaches the main agent, and completion is reported with the commit and hash, the failure, or the reason.
 
-The one-shot `brew`/`status`/`cancel`/`collect` CLI remains as the **compatibility foundation**: it runs `pi --mode json --print --no-session` Workers and exits, and its contracts in the appendix must not regress.
+The one-shot `brew`/Worker CLI was retired in Wave 3 by decision A1. The foreground host is the supported execution path; `status` lists live host Stations and `log`/`reply` are its controls.
 
 What remains is in **v0.4**: Oreo as the runtime, the code mode's token measurement, the profiling, and the Station tab pool. Oreo's separate Host/Session work may take either agent role, but Coffee Shop's first usable path works with Pi alone and does not depend on Oreo or Rachel.
 
@@ -563,7 +563,7 @@ Each wave is chosen so that the Shots in it own disjoint files. A Pull that need
 - **A cancel reaches a turn in flight (#143).** The cancel flag was only read by the typed-input reader; the main flow sits in a blocking read on the agent's stdout, so a Station waiting on a provider reply ignored a cancel until the agent answered or the 30-minute deadline fired. The watchdog thread now stops the agent for a cancel as well as a deadline, and the main flow reaps in bounded steps and escalates SIGTERM → SIGKILL, so a Station can neither block forever on an agent that will not go nor exit and leave it running.
 - **The progress ledger owns its keys (#144).** The ledger stored each Station's map key and ids from `context.temp_allocator`, which the host frees every turn, so the first report after a turn compared against freed memory and crashed the host in `string_eq`. This is what ended both v0.5 gate attempts. The ledger now copies its keys and ids and frees them on destroy.
 - **One timestamp format, and elapsed-time reporting (#145).** Every host event carries `at` (appended last, so existing field order is preserved) and permanent Station log lines are stamped: RFC 3339 UTC, exactly three millisecond digits. The Five-Station report now prints per-Shot elapsed time from `session_started` to the terminal report, plus the request span.
-- **Pi Stations default to `opencode-go/deepseek-v4.1-flash` (#146).** An explicit Shot model still overrides it; Oreo still requires its own provider/model route; one-shot Brew Workers are unchanged.
+- **Pi Stations default to `opencode-go/deepseek-v4.1-flash` (#146).** An explicit Shot model still overrides it; Oreo still requires its own provider/model route.
 
 **Gates.**
 
@@ -574,7 +574,7 @@ Each wave is chosen so that the Shots in it own disjoint files. A Pull that need
 
 **Defects found by running the gates rather than by tests:** the ledger use-after-free above; the headless log keeping the wrong end of an oversized read; `status`/`log` pointing at a path the headless backend never wrote; and the hostile load test's request-timeout flake under a 10-thread runner.
 
-**Carried into v0.6:** deleting the Herdr/pane paths (Wave 3 items 6–7 above, still open), the WSL2 measurement, and the unproven sustained-overlap gate.
+**Carried into v0.6:** deleting the remaining Herdr/pane paths (Wave 3 items 6–7 above), the WSL2 measurement, and the unproven sustained-overlap gate. The one-shot Brew/Worker execution path was retired in Wave 3 (A1).
 
 ## v0.4 completion record (2026-10-26)
 
@@ -628,7 +628,7 @@ Each wave is chosen so that the Shots in it own disjoint files. A Pull that need
 
 Nothing below is claimed done; each item is listed with why it is still open.
 
-- **The Wave-3 code deletion is not done.** `pane_pool.odin`, `host_pane_pool.odin`'s pool half, `pane_clear.odin`, `pane_backend_herdr.odin`, the pane branches in `host.odin`, `pr.odin`'s pane discovery, `settle.odin`'s tab close, `docs/tab-lifecycle.md` and the six tests that fake Herdr all remain. It is the highest-integration-risk step — deleting the plane the Odin host still serves — so it waits for the Go host to be the default, and goes in its own commit naming the guarantee traded, as v0.5's Wave 3 prescribed. The coupling is concrete: the one-shot `brew` path — `run_brew_with`/`dispatch_workers` in `src/dispatch.odin` and `settle_brew`/`close_shot_tab` in `src/settle.odin` — still opens Herdr workspaces and tabs for its Workers, so the Wave-3 deletion is not just deleting pane files: it either ports `brew` to the headless backend first or deletes the `brew` path outright, which is a breaking change to the compatibility foundation the plan says must not regress. Who decides — the developer, separately — is open, because those two options are in tension and the plan does not currently say which.
+- **The remaining Wave-3 pane deletion is not done.** `pane_pool.odin`, `host_pane_pool.odin`'s pool half, `pane_clear.odin`, `pane_backend_herdr.odin`, pane branches in `host.odin`, `pr.odin` pane discovery, and the six tests that fake Herdr remain. The one-shot Brew/Worker dependency was removed in Wave 3 (A1), so this deletion no longer needs to preserve the Brew path. It still needs the Go host cutover and verification before deleting the Odin host's pane backend.
 - **The sustained five-Slot overlap gate is unproven.** v0.5's two attempts both failed (agents backgrounded their sleeps, then a rerun hung), and the cause is unconfirmed. It needs a run where five Shots genuinely hold their Slots for a measured duration with a sixth waiting on a real free, not a synthetic queue check.
 - **The WSL2/macOS measurement is not done.** It needs the WSL2 machine, and it must run after the cutover to measure the same five-Shot run before and after the move. The tooling is written and ready: `docs/measurement-plan.md` describes what to record, `scripts/measure-host.sh` is a thin launcher for the Go tool (`go/cmd/measure`) that drives a five-Shot run and writes `report.md`, `per-shot.csv`, `machine.txt`, `host-peaks.csv` and the raw event stream into one output directory.
 - **The Go host is not the default.** `host --impl=go` is opt-in today, and the Pi extension is still written by the Odin binary at start — `csd` cannot install it — so the default flip needs that installer/handover piece first.

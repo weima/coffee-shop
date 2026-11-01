@@ -7,7 +7,7 @@ The target is an interactive, foreground control loop around the user's main-age
 ![Target Coffee Shop interactive workflow](diagrams/interactive-workflow.png)<br>
 Source: [`diagrams/interactive-workflow.html`](diagrams/interactive-workflow.html).
 
-The active main-agent session receives raw user input. The foreground Coffee Shop host waits for structured dispatch and control requests from the Barista; it does not parse natural language and is not a detached daemon. The initial target worker session is interactive Pi: it can receive follow-up instructions and return `needs_input` or `completed` events to the main agent. Oreo may be evaluated for either agent role only after the Pi-based flow is usable and Oreo is stable; Rachel is outside the runtime. The exact local transport is not fixed. This loop is **implemented**: the foreground host, interactive Stations, the activity-socket relay and `needs_input` routing all exist. The one-shot `brew` CLI remains as the compatibility foundation, and `PLAN.md` records what shipped (v0.3) and what is still live (v0.4).
+The active main-agent session receives raw user input. The foreground Coffee Shop host waits for structured dispatch and control requests from the Barista; it does not parse natural language and is not a detached daemon. The initial target worker session is interactive Pi: it can receive follow-up instructions and return `needs_input` or `completed` events to the main agent. Oreo may be evaluated for either agent role only after the Pi-based flow is usable and Oreo is stable; Rachel is outside the runtime. The exact local transport is not fixed. This loop is **implemented**: the foreground host, interactive Stations, the activity-socket relay and `needs_input` routing all exist. The one-shot `brew`/Worker path has been retired; `PLAN.md` records the decision and remaining v0.6 work.
 
 ## Current one-shot architecture diagram
 The diagram below documents the `brew` pipeline; the interactive host and its Stations are described under *Current implementation internals*.
@@ -56,7 +56,7 @@ flowchart TD
 
 ## Current implementation internals
 
-The views below document the one-shot CLI foundation. The repository-server views match the current implementation (PLAN.md item 8); the Shot view lists the current one-shot states. The one-shot `brew` command still creates Herdr workspaces and tabs for its Workers today (the compatibility foundation), while the interactive host path runs Stations headless.
+The views below document the retired one-shot CLI foundation and repository server. Its execution path has been removed; the interactive host path runs Stations headless.
 
 ### Processes
 
@@ -180,7 +180,7 @@ Two implementations exist for the foreground host, and the seam between them is 
 | **Receipt** | Append-only events that explain status changes. |
 | **Server** | Current per-repository state server. It starts on demand, holds the Register in memory, and is the only writer of Brew state. It exits when the repository has no active Brew; it is distinct from the target foreground Coffee Shop host. See the Server section below. |
 | **Scale** | The maximum number of concurrent Workers. |
-| **Filter** | Uses a separate one-shot Pi reviewer to check selected changes against the Beans repository's root `standards.md`, then discovers and runs unit/component and end-to-end test commands from existing manifests and test configuration. It reports evidence without fixing code or changing test setup. |
+
 | **Tray** | The final review packet with the outcome, evidence, and any decision for the developer. |
 | **Blend (proposed)** | An explicit post-review operation that gathers a Brew's Shot changes into one commit in a retained integration worktree, then removes the per-Shot worktrees after success. |
 
