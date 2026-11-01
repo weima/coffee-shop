@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/weima/coffee-shop/go/internal/extension"
 )
 
 // The fake CLI seam below is a POSIX shell script the test writes into a temporary
@@ -94,13 +96,9 @@ func TestGoldenDispatchStream(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 
-	extensionDir := filepath.Join(root, "host", "extensions")
-	if err := os.MkdirAll(extensionDir, 0o700); err != nil {
-		t.Fatalf("extension dir: %v", err)
-	}
-	// Dispatch refuses to launch without the extension the Odin host writes at start.
-	if err := os.WriteFile(filepath.Join(extensionDir, "coffee-shop.ts"), []byte("// stand-in\n"), 0o600); err != nil {
-		t.Fatalf("extension file: %v", err)
+	// Dispatch refuses to launch without the extension csd installs before host.Run.
+	if _, err := extension.Install(root); err != nil {
+		t.Fatalf("install extension: %v", err)
 	}
 
 	cli := filepath.Join(root, "fake-cli")

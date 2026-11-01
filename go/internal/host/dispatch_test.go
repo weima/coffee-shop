@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weima/coffee-shop/go/internal/extension"
 	"github.com/weima/coffee-shop/go/internal/state"
 )
 
@@ -85,12 +86,13 @@ func flagValue(argv []string, flag string) string {
 	return ""
 }
 
-// dummyExtension writes a stand-in for the Pi extension, which the Odin host installs.
-func dummyExtension(t *testing.T, root string) string {
+// installedExtension installs the real Pi extension through csd's install path, so the
+// dispatcher tests use the file the production install writes.
+func installedExtension(t *testing.T, root string) string {
 	t.Helper()
-	path := root + "/coffee-shop.ts"
-	if err := os.WriteFile(path, []byte("// stand-in"), 0o600); err != nil {
-		t.Fatalf("write extension: %v", err)
+	path, err := extension.Install(root)
+	if err != nil {
+		t.Fatalf("install extension: %v", err)
 	}
 	return path
 }
@@ -164,7 +166,7 @@ func TestDispatchPreparesPromptAndLogAndStartsStation(t *testing.T) {
 	defer stop()
 	repo := shortRoot(t)
 
-	d := newDispatcher(root, []string{os.Args[0]}, state.ActivitySocket(root), dummyExtension(t, root), "", &writer{out: &syncBuilder{}, now: fixedClock(), root: root})
+	d := newDispatcher(root, []string{os.Args[0]}, state.ActivitySocket(root), installedExtension(t, root), "", &writer{out: &syncBuilder{}, now: fixedClock(), root: root})
 	d.dispatch(t.Context(), "req-1", json.RawMessage(dispatchRequestJSON(repo, "shot-a")))
 
 	station := state.StationDir(root, "req-1", "shot-a")
@@ -190,7 +192,7 @@ func TestDispatchQueuesBeyondCapacityAndStartsOnRelease(t *testing.T) {
 	defer stop()
 	repo := shortRoot(t)
 
-	d := newDispatcher(root, []string{os.Args[0]}, state.ActivitySocket(root), dummyExtension(t, root), "", &writer{out: out, now: fixedClock(), root: root})
+	d := newDispatcher(root, []string{os.Args[0]}, state.ActivitySocket(root), installedExtension(t, root), "", &writer{out: out, now: fixedClock(), root: root})
 	for i := 0; i < SlotCapacity; i++ {
 		if !d.slots.acquire("busy", fmt.Sprintf("shot-%d", i)) {
 			t.Fatalf("filling slot %d should succeed", i)
@@ -214,7 +216,7 @@ func TestDispatchRejectsInvalidRequestsBeforeAnyWork(t *testing.T) {
 	root, out, stop := dispatchHost(t)
 	defer stop()
 
-	d := newDispatcher(root, []string{os.Args[0]}, state.ActivitySocket(root), dummyExtension(t, root), "", &writer{out: out, now: fixedClock(), root: root})
+	d := newDispatcher(root, []string{os.Args[0]}, state.ActivitySocket(root), installedExtension(t, root), "", &writer{out: out, now: fixedClock(), root: root})
 	cases := []struct{ name, request, want string }{
 		{"relative repo", `{"repo":"beans","recipe":{"shots":[{"id":"a","prompt":"p"}]}}`, `"reason":"repo must be an absolute path"`},
 		{"no shots", `{"repo":"/tmp/beans","recipe":{"shots":[]}}`, `"reason":"recipe needs at least one shot"`},

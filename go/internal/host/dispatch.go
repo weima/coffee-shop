@@ -242,12 +242,13 @@ func (d *dispatcher) launch(ctx context.Context, requestID string, shot ShotRequ
 		return fmt.Errorf("open Shot log: %w", err)
 	}
 
-	// The Pi extension is written by the Odin host at start, because it is embedded in
-	// that binary. Without it a Station starts and immediately fails to load its tools, so
-	// say so here instead of logging a mysterious exit.
+	// The Pi extension is installed at startup by csd (extension.Install) or, for the Odin
+	// host, by the Odin binary's own prepare step; it is not created here. Without it a
+	// Station starts and immediately fails to load its tools, so refuse here instead of
+	// logging a mysterious exit.
 	if d.extension != "" {
 		if _, err := os.Stat(d.extension); err != nil {
-			return fmt.Errorf("the Pi extension is missing at %s; the Odin host writes it at start", d.extension)
+			return fmt.Errorf("the Pi extension is missing at %s; csd installs it at startup (extension.Install)", d.extension)
 		}
 	}
 
