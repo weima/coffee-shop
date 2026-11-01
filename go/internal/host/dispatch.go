@@ -86,7 +86,7 @@ func newDispatcher(root string, cli []string, socket, extension, model string, w
 		socket:    socket,
 		extension: extension,
 		model:     model,
-		slots:     newSlots(SlotCapacity),
+		slots:     newSlots(SlotCapacity).withMachineLimit(root),
 		w:         w,
 		running:   make(map[string]*stationRun),
 	}
@@ -183,7 +183,10 @@ func (d *dispatcher) dispatch(ctx context.Context, requestID string, raw json.Ra
 
 // startOrQueue starts a Shot when a Slot is free, otherwise queues it.
 func (d *dispatcher) startOrQueue(ctx context.Context, requestID, repo string, shot ShotRequest) {
-	if !d.slots.acquire(requestID, shot.ID) {
+	if reason, ok := d.slots.acquireWithReason(requestID, shot.ID); !ok {
+		if reason != "" {
+			d.w.emit(proto.Event{Type: "warning", RequestID: requestID, ShotID: shot.ID, Reason: reason})
+		}
 		d.mu.Lock()
 		d.queue = append(d.queue, queuedShot{requestID: requestID, shot: shot})
 		d.mu.Unlock()
@@ -368,6 +371,10 @@ func (d *dispatcher) drainQueue() {
 		}
 	}
 }
+
+// shutdown returns every machine slot this host holds, so a restart is never blocked by
+// a host that exited while holding them.
+func (d *dispatcher) shutdown() { d.slots.releaseAll() }
 
 // repoFor remembers the repository of each request so a queued Shot can be started later.
 func (d *dispatcher) repoFor(requestID string) string { return d.repo }
