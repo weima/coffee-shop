@@ -20,7 +20,7 @@
 
 The one-shot `brew`/`status`/`cancel`/`collect` CLI remains as the **compatibility foundation**: it runs `pi --mode json --print --no-session` Workers and exits, and its contracts in the appendix must not regress.
 
-What remains is in **v0.4**: Oreo as the runtime, the code mode's token measurement, the profiling, and the Station tab pool whose design is in [docs/tab-lifecycle.md](docs/tab-lifecycle.md). Oreo's separate Host/Session work may take either agent role, but Coffee Shop's first usable path works with Pi alone and does not depend on Oreo or Rachel.
+What remains is in **v0.4**: Oreo as the runtime, the code mode's token measurement, the profiling, and the Station tab pool. Oreo's separate Host/Session work may take either agent role, but Coffee Shop's first usable path works with Pi alone and does not depend on Oreo or Rachel.
 
 ## Next interactive-workflow phases
 
@@ -471,7 +471,7 @@ Two defects, both found by verification rather than by a failing test, and both 
 
 ### 3. Station tabs are a pool, not a leak
 
-The design is [the Station tab lifecycle](docs/tab-lifecycle.md): a tab is an **allocated resource**, drawn from a bounded pool and returned for reuse rather than abandoned. This exists because every dispatch created a tab and nothing owned its lifetime: one session left 21 stale panes in the Station workspace, enough that the developer could feel the rendering drag, and the cleanup that followed had to guess from the process list — and closed a pane inside the developer's own workspace while guessing. Lifetime belongs to the **dispatcher**, which knows what an outside script cannot: it allocated the pane, it holds the session table, it receives every report, and it can run a command in an existing pane.
+The design (retired with v0.5 Wave 3): a tab is an **allocated resource**, drawn from a bounded pool and returned for reuse rather than abandoned. This exists because every dispatch created a tab and nothing owned its lifetime: one session left 21 stale panes in the Station workspace, enough that the developer could feel the rendering drag, and the cleanup that followed had to guess from the process list — and closed a pane inside the developer's own workspace while guessing. Lifetime belongs to the **dispatcher**, which knows what an outside script cannot: it allocated the pane, it holds the session table, it receives every report, and it can run a command in an existing pane.
 
 1. **Durable reports first — the prerequisite, not a companion.** Reclaiming a tab assumes the report channel survived the run, and today it does not: when the host died mid-session, four Stations kept working and committing while their terminal reports were never relayed, and two completions were found only by inspecting branches by hand. Panes were the accidental backup. Write each report durably before relaying it, and recover unrelayed ones on restart. **Gate.** Kill the host mid-run; every completion is still reported or recoverable after restart, without reading a pane.
 2. **The pool.** Dispatch acquires a tab; a terminal report, or a process gone with no report, makes it reclaimable; the pool is bounded by the concurrency limit and emptied when the host exits. **Gate.** Dispatch more Shots than the limit; the workspace never holds more than the limit of tabs, every Shot still runs, and the run ends with no manual cleanup.
@@ -548,7 +548,7 @@ Each wave is chosen so that the Shots in it own disjoint files. A Pull that need
 
 **Wave 3.**
 
-6. **Delete the pane paths** once nothing uses them, retire `docs/tab-lifecycle.md`, and amend the guardrail line that names Herdr as in scope — deliberately, in its own commit, saying which guarantee is being traded.
+6. **Delete the pane paths** once nothing uses them, and amend the guardrail line that names Herdr as in scope — deliberately, in its own commit, saying which guarantee is being traded.
 7. **Measure the removal.** The same five-Shot run on WSL2 and on macOS, wall-clock per Shot and host CPU, so the before and after is a number rather than a claim.
 
 **Deliberately out of scope for v0.5:** reintroducing a multiplexer. If live multi-pane watching turns out to be essential, that is a new requirement with its own decision, not a fallback built into this one.
@@ -604,7 +604,7 @@ Each wave is chosen so that the Shots in it own disjoint files. A Pull that need
 
 **Carried in from v0.5, and part of this release:**
 
-- **Delete the Herdr/pane paths** (v0.5 Wave 3 items 6–7): remove `pane_pool.odin`, `host_pane_pool.odin`'s pool half, `pane_clear.odin`, `pane_backend_herdr.odin`, `host_pool_persistence.odin`'s pane recovery half, the pane branches in `host.odin`, `pr.odin`'s pane discovery, `settle.odin`'s tab close; retire `docs/tab-lifecycle.md`; amend the guardrail that names Herdr as required. This becomes moot for the moved code and must not be re-implemented in Go: the Go host has **no pane backend**.
+- **Delete the Herdr/pane paths** (v0.5 Wave 3 items 6–7): remove `pane_pool.odin`, `host_pane_pool.odin`'s pool half, `pane_clear.odin`, `pane_backend_herdr.odin`, `host_pool_persistence.odin`'s pane recovery half, the pane branches in `host.odin`, `pr.odin`'s pane discovery, `settle.odin`'s tab close; amend the guardrail that names Herdr as required. Retiring the pane-lifecycle document from that list is already done. The code deletions above remain open. This becomes moot for the moved code and must not be re-implemented in Go: the Go host has **no pane backend**.
 - **The sustained-overlap gate** that v0.5 did not prove: five Shots genuinely holding five Slots, with a sixth waiting for a freed one.
 - **The WSL2/macOS measurement** of the removal.
 
