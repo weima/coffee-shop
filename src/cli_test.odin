@@ -71,12 +71,12 @@ test_parse_reply_arguments :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_parse_host_defaults_to_the_odin_implementation :: proc(t: ^testing.T) {
+test_parse_host_defaults_to_the_go_implementation :: proc(t: ^testing.T) {
 	parsed, err := parse_args([]string{"host"})
 
 	testing.expect_value(t, err, "")
 	testing.expect_value(t, parsed.kind, Command_Kind.Host)
-	testing.expect_value(t, parsed.host_impl, Host_Impl.Odin)
+	testing.expect_value(t, parsed.host_impl, Host_Impl.Go)
 }
 
 @(test)
@@ -106,11 +106,11 @@ test_rejects_unknown_host_impl_naming_the_value :: proc(t: ^testing.T) {
 
 @(test)
 test_resolve_go_host_prefers_cs_csd :: proc(t: ^testing.T) {
-	path, found := resolve_go_host("/bin/sh", "/nowhere")
+	path, found := resolve_go_host("/bin/sh", "/embedded/csd", "/nowhere")
 
 	testing.expect(t, found)
 	testing.expect_value(t, path, "/bin/sh")
-	_, missing := resolve_go_host("/nowhere/csd", "/bin")
+	_, missing := resolve_go_host("/nowhere/csd", "/embedded/csd", "/bin")
 	testing.expect(t, !missing)
 }
 
@@ -123,10 +123,12 @@ test_resolve_go_host_finds_csd_on_path :: proc(t: ^testing.T) {
 	csd, _ := filepath.join({directory, GO_HOST_NAME}, context.temp_allocator)
 	testing.expect(t, os.write_entire_file(csd, "go host") == nil)
 
-	path, found := resolve_go_host("", fmt.tprintf("/nowhere:%s", directory))
+	path, found := resolve_go_host("", "", fmt.tprintf("/nowhere:%s", directory))
 	testing.expect(t, found)
 	testing.expect_value(t, path, csd)
-	_, empty := resolve_go_host("", "")
+	_, embedded := resolve_go_host("", csd, fmt.tprintf("/nowhere:%s", directory))
+	testing.expect(t, embedded)
+	_, empty := resolve_go_host("", "", "")
 	testing.expect(t, !empty)
 }
 

@@ -59,7 +59,7 @@ test_foreground_host_accepts_dispatches_and_starts_sessions :: proc(t: ^testing.
 	binary := build_test_binary(t, root)
 	defer delete(binary)
 	state_run, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `export PATH="$2:$PATH" CS_STATE_DIR="$3" FAKE_HERDR_DIR="$4"; cat "$1" | "$5" host`, "host-test", input_path, bin, state, root, binary},
+		command = {"sh", "-c", `export PATH="$2:$PATH" CS_STATE_DIR="$3" FAKE_HERDR_DIR="$4"; cat "$1" | "$5" host --impl=odin`, "host-test", input_path, bin, state, root, binary},
 	}, context.allocator)
 	defer delete(stdout)
 	defer delete(stderr)
@@ -160,7 +160,7 @@ test_foreground_host_passes_shot_kind_and_rejects_unknown_kind :: proc(t: ^testi
 	binary := build_test_binary(t, root)
 	defer delete(binary)
 	state_run, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `export PATH="$2:$PATH" CS_STATE_DIR="$3" FAKE_HERDR_DIR="$4"; cat "$1" | "$5" host`, "host-kind-test", input_path, bin, state, root, binary},
+		command = {"sh", "-c", `export PATH="$2:$PATH" CS_STATE_DIR="$3" FAKE_HERDR_DIR="$4"; cat "$1" | "$5" host --impl=odin`, "host-kind-test", input_path, bin, state, root, binary},
 	}, context.allocator)
 	defer delete(stdout)
 	defer delete(stderr)
@@ -291,7 +291,7 @@ run_host_requests :: proc(t: ^testing.T, prefix, requests: string, saved_workspa
 	binary := build_test_binary(t, root)
 	defer delete(binary)
 	state_run, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `export PATH="$2:$PATH" CS_STATE_DIR="$3" FAKE_HERDR_DIR="$4"; cat "$1" | "$5" host`, "host-pull-test", input_path, bin, run.state, root, binary},
+		command = {"sh", "-c", `export PATH="$2:$PATH" CS_STATE_DIR="$3" FAKE_HERDR_DIR="$4"; cat "$1" | "$5" host --impl=odin`, "host-pull-test", input_path, bin, run.state, root, binary},
 	}, context.allocator)
 	defer delete(stderr)
 	testing.expect_value(t, exec_err, os.Error(nil))

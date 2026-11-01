@@ -8,7 +8,7 @@ import "core:testing"
 
 HOST_PERSISTENCE_SCRIPT :: `set -u
 export PATH="$2:$PATH" CS_STATE_DIR="$3" FAKE_HERDR_DIR="$4"
-cat "$1" | "$5" host
+cat "$1" | "$5" host --impl=odin
 `
 
 host_persistence_run :: proc(root, binary, bin, state, input_path: string) -> (stdout, stderr: string, ok: bool) {
