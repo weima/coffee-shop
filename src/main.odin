@@ -98,8 +98,9 @@ GO_HOST_NAME :: "csd"
 
 GO_HOST_MISSING :: "--impl=go needs the Go host binary: set CS_CSD to its path, or put csd on PATH"
 
-// The Go host is selected by env or PATH rather than embedded, so a missing binary
-// is reported here instead of surfacing as a failed exec.
+// The Go host comes from CS_CSD, then PATH, then this build's embedded copy, which is
+// written under the state directory. A missing binary is reported here instead of
+// surfacing as a failed exec.
 resolve_go_host :: proc(csd_env, path_env: string) -> (path: string, found: bool) {
 	if csd_env != "" {
 		return csd_env, os.is_file(csd_env)
@@ -128,16 +129,25 @@ exec_go_host :: proc(path: string) -> string {
 
 run_host_go :: proc(csd_env, path_env: string) -> int {
 	path, found := resolve_go_host(csd_env, path_env)
-	if !found {
-		write_error(GO_HOST_MISSING)
-		return 1
-	}
 	// The Go host does not carry the Pi extensions: they are compiled into this binary, so
 	// install them here or a fresh state directory gives a host that cannot launch a
 	// Station. This is the same preparation the Odin host does, before the handover.
 	state_root, state_err := default_state_root(context.temp_allocator)
 	if state_err != "" {
 		write_error(state_err)
+		return 1
+	}
+	if !found && csd_embedded() {
+		// A normal build carries the Go host, so there is nothing to install by hand.
+		extracted, extract_reason := csd_extract(state_root, context.allocator)
+		if extract_reason != "" {
+			write_error(extract_reason)
+			return 1
+		}
+		path, found = extracted, true
+	}
+	if !found {
+		write_error(GO_HOST_MISSING)
 		return 1
 	}
 	if _, prepare_err := host_prepare_environment(state_root, context.allocator); prepare_err != "" {
