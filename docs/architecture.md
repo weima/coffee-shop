@@ -56,7 +56,7 @@ flowchart TD
 
 ## Current implementation internals
 
-The views below document the one-shot CLI foundation. The repository-server views match the current implementation (PLAN.md item 8); the Shot view lists the current one-shot states.
+The views below document the one-shot CLI foundation. The repository-server views match the current implementation (PLAN.md item 8); the Shot view lists the current one-shot states. The one-shot `brew` command still creates Herdr workspaces and tabs for its Workers today (the compatibility foundation), while the interactive host path runs Stations headless.
 
 ### Processes
 
