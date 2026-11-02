@@ -1,0 +1,8 @@
+{
+  "name": "coffee-shop-tools",
+  "private": true,
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}

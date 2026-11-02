@@ -111,6 +111,47 @@ stripped, duplicates removed and the list capped.
 `odin run src -- verify .` on this repository reports `check ok (1 checked)` and
 `test ok (24 tests)` in under two seconds.
 
+## Project commands
+
+Rachel does not need to know a project's language. A project can name its own
+stages in `.rachel.json` at its root; Rachel runs them, normalizes the output into
+the same verdict, and writes the same evidence:
+
+```json
+{
+  "version": 1,
+  "stages": {
+    "check": {
+      "command": ["sh", "-c", "odin check src && (cd go && go vet ./...) && ./node_modules/.bin/tsc --noEmit -p tsconfig.json"],
+      "filters": ["*.odin", "*.go", "*.ts", "*.json", "justfile"]
+    },
+    "test":  { "command": ["sh", "-c", "odin test src && bun run guard/selftest.ts"], "filters": ["*.odin", "*.ts"] },
+    "e2e":   { "command": ["sh", "-c", "odin test e2e && (cd go && go test ./...)"], "filters": ["*.odin", "*.go"] }
+  }
+}
+```
+
+- `command` is an argv array, so no shell is implied; use `["sh","-c","..."]` when
+  a stage needs a pipeline.
+- `filters` are watchexec patterns used by `rachel watch`.
+- `working_dir` is optional, relative to the project.
+- A stage with a command replaces the justfile path entirely: no package
+  narrowing, and no starter justfile is written.
+
+`rachel watch <dir>` is a thin watchexec launcher: it builds
+
+```
+watchexec -q -d 500ms -w <dir> -f <filter>... -- <rachel> verify --from-env <dir>
+```
+
+and runs it. The trigger is watchexec; Rachel stays the checker, verdict and
+evidence. A project with no `.rachel.json` falls back to its justfile recipes,
+which is what every existing Odin project uses.
+
+The configuration at this repository's root is the worked example: Odin, Go and
+TypeScript in one project, with the fast stages in the loop and the slow Go suite
+in `e2e`.
+
 ## Languages
 
 Rachel runs the project's `check` and `test` recipes, so any toolchain works when

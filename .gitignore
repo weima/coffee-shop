@@ -17,3 +17,6 @@ probe-bin
 /.*/
 /oreo/.*/
 !/.github/
+
+# Project-local tooling installed by bun (see package.json).
+/node_modules/

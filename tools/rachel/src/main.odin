@@ -14,6 +14,8 @@ CLI_Options :: struct {
 	paths:      [dynamic]string,
 	check_once: bool,
 	verify:     bool,
+	watch:      bool,
+	debounce:   string,
 	evidence_last: bool,
 	from_env:   bool,
 	stage_check: bool,
@@ -61,6 +63,23 @@ parse_cli_args :: proc(args: []string, allocator := context.allocator) -> (optio
 		return CLI_Options{root = root, evidence_last = true}, nil
 	}
 	rest := args[1:]
+	if len(rest) > 0 && rest[0] == "watch" {
+		options.watch = true
+		options.debounce = RACHEL_WATCH_DEBOUNCE
+		rest = rest[1:]
+		if len(rest) >= 2 && rest[0] == "--debounce" {
+			options.debounce = rest[1]
+			rest = rest[2:]
+		}
+		if len(rest) != 1 || !os.is_dir(rest[0]) {
+			return {}, os.Error(.Invalid_Dir)
+		}
+		root, clone_err := strings.clone(rest[0], allocator)
+		if clone_err != nil {
+			return {}, os.Error(clone_err)
+		}
+		return CLI_Options{root = root, watch = true, debounce = options.debounce}, nil
+	}
 	if len(rest) > 0 && (rest[0] == "check" || rest[0] == "verify") {
 		options.check_once = rest[0] == "check"
 		options.verify = rest[0] == "verify"
@@ -299,7 +318,8 @@ run_cli :: proc(args: []string) -> int {
 	options, parse_err := parse_cli_args(args)
 	if parse_err != nil {
 		fmt.eprintln("Usage: rachel <odin-project-directory>")
-		fmt.eprintln("       rachel check <odin-project-directory> [path ...]")
+		fmt.eprintln("       rachel check <project-directory> [path ...]")
+		fmt.eprintln("       rachel watch [--debounce 500ms] <project-directory>")
 		fmt.eprintln("       rachel verify <odin-project-directory> [path ...]")
 		fmt.eprintln("       rachel evidence last <odin-project-directory>")
 		fmt.eprintfln("[ERROR] %s", os.error_string(parse_err))
@@ -308,6 +328,9 @@ run_cli :: proc(args: []string) -> int {
 	defer options_destroy(&options)
 	if options.evidence_last {
 		return print_evidence_last(options)
+	}
+	if options.watch {
+		return run_watcher(options)
 	}
 	if options.check_once {
 		return check_once(options)
@@ -852,7 +875,9 @@ collect_diagnostics :: proc(
 			trimmed := strings.trim_space(raw)
 			// Odin prints both "Error:" and "Syntax Error:"; a snippet and caret line
 			// contains neither.
-			if !strings.contains(trimmed, "Error:") && !strings.contains(trimmed, "error TS") {
+			// Odin's compiler uses "Error:"/"Syntax Error:", its tooling uses
+			// "ERROR:", tsc uses "error TS", and generic tools use "error:".
+			if !strings.contains(trimmed, "Error:") && !strings.contains(trimmed, "ERROR:") && !strings.contains(trimmed, "error TS") && !strings.contains(trimmed, "error:") {
 				continue
 			}
 			display := trimmed
@@ -959,6 +984,25 @@ check_summary_destroy :: proc(summary: ^Check_Summary, allocator := context.allo
 // with the stage name. Only operational errors are printed here.
 run_checks :: proc(options: CLI_Options, allocator := context.allocator) -> (summary: Check_Summary, fatal: bool) {
 	root := options.root
+	// A configured command replaces the Odin discovery path entirely: the project
+	// decides its own scope, so no package narrowing and no starter justfile.
+	if config, has_config := load_config(root); has_config {
+		if entry, found := config.stages["check"]; found && len(entry.command) > 0 {
+			stage_summary, stage_fatal := run_config_stage("check", entry, root, options.max_errors, allocator)
+			if stage_fatal {
+				return summary, true
+			}
+			summary.ok = stage_summary.ok
+			summary.checked = 1
+			summary.failures = stage_summary.failure_count
+			summary.error_count = stage_summary.failure_count
+			for line in stage_summary.failures {
+				_ = append(&summary.diagnostics, line)
+			}
+			delete(stage_summary.failures)
+			return summary, false
+		}
+	}
 	current, scan_err := scan_odin_project(root, allocator)
 	if scan_err != nil {
 		fmt.eprintfln("[ERROR] cannot scan %s: %s", root, os.error_string(scan_err))
@@ -1314,6 +1358,11 @@ run_recipe_stage :: proc(
 	allocator := context.allocator,
 ) -> (summary: Test_Summary, fatal: bool) {
 	summary.ok = true
+	if config, has_config := load_config(root); has_config {
+		if entry, found := config.stages[recipe]; found && len(entry.command) > 0 {
+			return run_config_stage(recipe, entry, root, max_errors, allocator)
+		}
+	}
 	current, scan_err := scan_odin_project(root, allocator)
 	if scan_err != nil {
 		fmt.eprintfln("[ERROR] cannot scan %s: %s", root, os.error_string(scan_err))
