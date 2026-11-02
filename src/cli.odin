@@ -15,6 +15,7 @@ Command_Kind :: enum {
 	Reply,
 	Prepare,
 	Release,
+	Blend,
 }
 
 Command :: struct {
@@ -42,6 +43,7 @@ Command :: struct {
 	dump: bool,
 	print_only: bool,
 	worktree_dir: string,
+	request_file: string,
 }
 
 Request_ID_Arguments :: struct {
@@ -68,6 +70,12 @@ Seam_Arguments :: struct {
 	repo:   string `args:"required" usage:"Beans Git repository path (absolute)."`,
 	branch: string `args:"required" usage:"New branch for the Shot's worktree."`,
 	dir:    string `args:"required" usage:"Worktree directory to create (absolute)."`,
+}
+
+// Blend reads one request object from a file: the same request the host accepts, kept
+// out of argv so no shell can see it.
+Blend_Arguments :: struct {
+	request: string `args:"required" usage:"File holding the blend request (one JSON object)."`,
 }
 
 Release_Arguments :: struct {
@@ -118,7 +126,8 @@ Usage:
   coffee-shop cleanup <run-id> [--branch <name>]
   coffee-shop prepare --repo <path> --branch <name> --dir <path>
   coffee-shop release --repo <path> --dir <path>
-  coffee-shop host [--impl=go|odin]
+  coffee-shop blend --request <file>
+  coffee-shop host
   coffee-shop --help
 `
 
@@ -173,6 +182,12 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 			return Command{kind = .Help}, "invalid prepare arguments"
 		}
 		return Command{kind = .Prepare, repo = options.repo, branch = options.branch, worktree_dir = options.dir}, ""
+	case "blend":
+		options: Blend_Arguments
+		if flags.parse(&options, args[1:], .Unix) != nil {
+			return Command{kind = .Help}, "invalid blend arguments"
+		}
+		return Command{kind = .Blend, request_file = options.request}, ""
 	case "release":
 		options: Release_Arguments
 		if flags.parse(&options, args[1:], .Unix) != nil {

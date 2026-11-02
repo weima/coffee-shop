@@ -44,6 +44,9 @@ run_cli :: proc(args: []string) -> int {
 	if command.kind == .Prepare {
 		return run_prepare(command.repo, command.branch, command.worktree_dir)
 	}
+	if command.kind == .Blend {
+		return run_blend_command(command.request_file)
+	}
 	if command.kind == .Release {
 		return run_release(command.repo, command.worktree_dir)
 	}

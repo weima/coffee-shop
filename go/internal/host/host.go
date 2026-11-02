@@ -262,6 +262,12 @@ func (w *writer) handleWith(line string, dispatch *dispatcher) (stop bool, err e
 		}
 		dispatch.dispatch(context.Background(), request.RequestID, json.RawMessage(line))
 		return false, nil
+	case "blend":
+		if dispatch == nil {
+			return false, w.emit(proto.Event{Type: "error", RequestID: requestID, Reason: "this host has no CLI seam configured, so it cannot blend"})
+		}
+		dispatch.blend(request.RequestID, json.RawMessage(line))
+		return false, nil
 	case "cancel":
 		if dispatch == nil {
 			return false, w.emit(proto.Event{Type: "error", RequestID: requestID, Reason: "this host has no CLI seam configured, so it cannot cancel"})

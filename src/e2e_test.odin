@@ -97,23 +97,30 @@ test_e2e_two_simultaneous_server_starts_leave_one_server :: proc(t: ^testing.T) 
 	testing.expect_value(t, first_err, os.Error(nil))
 	testing.expect_value(t, second_err, os.Error(nil))
 
-	// The loser exits at once; the winner keeps running for the idle timeout. The bound is
-	// generous because a full suite runs ten tests at once: under that load the loser's
-	// exit has taken longer than three seconds, which failed this test while single runs
-	// were stable. The invariant is one survivor, not how fast the loser gets there.
-	_, first_wait := os.process_wait(first, 10 * time.Second)
-	_, second_wait := os.process_wait(second, 10 * time.Second)
-	winner := first
-	survivors := 0
-	if first_wait != nil {
-		survivors += 1
-	} else {
-		winner = second
+	// The loser exits at once; the winner keeps running for the idle timeout. Poll instead
+	// of waiting a fixed time per child: under a ten-thread suite both children may be slow
+	// to be scheduled, and a fixed budget then measured the machine rather than the
+	// election. The invariant is that exactly one exits.
+	first_done: bool
+	second_done: bool
+	started := time.tick_now()
+	for time.tick_since(started) < 60 * time.Second && !first_done && !second_done {
+		if _, err := os.process_wait(first, 0); err == nil {
+			first_done = true
+		}
+		if _, err := os.process_wait(second, 0); err == nil {
+			second_done = true
+		}
+		if !first_done && !second_done {
+			time.sleep(20 * time.Millisecond)
+		}
 	}
-	if second_wait != nil {
-		survivors += 1
-		winner = second
+	testing.expect(t, first_done || second_done, "one of the two servers must exit")
+	survivors := 1
+	if first_done && second_done {
+		survivors = 2
 	}
+	winner := second if first_done else first
 	testing.expect_value(t, survivors, 1)
 	_ = os.process_kill(winner)
 	_, _ = os.process_wait(winner)
