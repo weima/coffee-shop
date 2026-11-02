@@ -15,6 +15,10 @@ CLI_Options :: struct {
 	check_once: bool,
 	verify:     bool,
 	from_env:   bool,
+	stage_check: bool,
+	stage_test:  bool,
+	stage_e2e:   bool,
+	all_stages:  bool,
 	max_errors: int, // 0 means every error; a human reading a terminal usually wants 1
 }
 
@@ -41,10 +45,18 @@ parse_cli_args :: proc(args: []string, allocator := context.allocator) -> (optio
 		options.check_once = rest[0] == "check"
 		options.verify = rest[0] == "verify"
 		options.max_errors = CHECK_DEFAULT_MAX_ERRORS
+		// verify defaults to the cheap ladder; check ignores the stage flags.
+		options.stage_check = true
+		options.stage_test = true
 		rest = rest[1:]
 		for len(rest) > 0 && strings.has_prefix(rest[0], "--") {
 			if rest[0] == "--from-env" {
 				options.from_env = true
+				rest = rest[1:]
+				continue
+			}
+			if rest[0] == "--all" {
+				options.all_stages = true
 				rest = rest[1:]
 				continue
 			}
@@ -54,6 +66,13 @@ parse_cli_args :: proc(args: []string, allocator := context.allocator) -> (optio
 					return {}, os.Error(.Invalid_Command)
 				}
 				options.max_errors = value
+				rest = rest[2:]
+				continue
+			}
+			if rest[0] == "--stages" && len(rest) >= 2 {
+				if !parse_stages(rest[1], &options) {
+					return {}, os.Error(.Invalid_Command)
+				}
 				rest = rest[2:]
 				continue
 			}
@@ -164,11 +183,26 @@ run_just_recipe :: proc(
 	working_dir, recipe, package_dir: string,
 	allocator := context.allocator,
 ) -> Odin_Command_Result {
+	return run_just_recipe_with(justfile, working_dir, recipe, package_dir, false, allocator)
+}
+
+// no_deps is for verify: the check stage already ran, so a recipe declared as
+// `test: check` must not run it a second time.
+run_just_recipe_with :: proc(
+	justfile: Rachel_Justfile,
+	working_dir, recipe, package_dir: string,
+	no_deps: bool,
+	allocator := context.allocator,
+) -> Odin_Command_Result {
 	command := make([dynamic]string, 0, allocator)
 	defer delete(command)
-	for arg in ([]string{"just", "--justfile", justfile.path, "--working-directory", working_dir, recipe}) {
+	for arg in ([]string{"just", "--justfile", justfile.path, "--working-directory", working_dir}) {
 		_, _ = append(&command, arg)
 	}
+	if no_deps {
+		_, _ = append(&command, "--no-deps")
+	}
+	_, _ = append(&command, recipe)
 	if justfile.generated {
 		_, _ = append(&command, package_dir)
 	}
@@ -984,6 +1018,7 @@ check_once :: proc(options: CLI_Options, allocator := context.allocator) -> int 
 
 Test_Summary :: struct {
 	ok:            bool,
+	skipped:       bool,
 	packages:      int,
 	tests:         int,
 	failure_count: int,
@@ -1091,9 +1126,93 @@ collect_test_failures :: proc(
 	return failures, total
 }
 
-// run_tests is the test stage: every package with a test file, or the whole
-// project once when the justfile is hand-written.
-run_tests :: proc(root: string, max_errors: int, allocator := context.allocator) -> (summary: Test_Summary, fatal: bool) {
+// parse_stages turns "check,test,e2e" into the stage flags.
+@(private)
+parse_stages :: proc(list: string, options: ^CLI_Options) -> bool {
+	options.stage_check = false
+	options.stage_test = false
+	options.stage_e2e = false
+	names, split_err := strings.split(list, ",", context.temp_allocator)
+	if split_err != nil {
+		return false
+	}
+	selected := 0
+	for raw in names {
+		switch strings.trim_space(raw) {
+		case "check":
+			options.stage_check = true
+			selected += 1
+		case "test":
+			options.stage_test = true
+			selected += 1
+		case "e2e":
+			options.stage_e2e = true
+			selected += 1
+		case:
+			return false
+		}
+	}
+	return selected > 0
+}
+
+// capture_command runs a short command and returns its stdout. A file is used
+// instead of a pipe so a chatty child cannot block on a full pipe.
+@(private)
+capture_command :: proc(argv: []string, allocator := context.allocator) -> (stdout: string, ok: bool) {
+	dir, dir_err := os.make_directory_temp("", "rachel-capture-*", allocator)
+	if dir_err != nil {
+		return "", false
+	}
+	defer {
+		_ = os.remove_all(dir)
+		delete(dir, allocator)
+	}
+	out_path := fmt.aprintf("%s/stdout", dir, allocator = allocator)
+	defer delete(out_path, allocator)
+	file, open_err := os.open(out_path, {.Write, .Create, .Trunc})
+	if open_err != nil {
+		return "", false
+	}
+	process, start_err := os.process_start(os.Process_Desc{command = argv, stdout = file, stderr = os.stderr})
+	os.close(file)
+	if start_err != nil {
+		return "", false
+	}
+	state, wait_err := os.process_wait(process, 30_000 * time.Millisecond)
+	if wait_err != nil || !state.exited || state.exit_code != 0 {
+		return "", false
+	}
+	data, read_err := os.read_entire_file(out_path, allocator)
+	if read_err != nil {
+		return "", false
+	}
+	return transmute(string)data, true
+}
+
+@(private)
+justfile_has_recipe :: proc(justfile_path, recipe: string, allocator := context.allocator) -> bool {
+	stdout, ok := capture_command([]string{"just", "--summary", "--justfile", justfile_path}, allocator)
+	if !ok {
+		return false
+	}
+	defer delete(stdout, allocator)
+	for name in strings.split(stdout, " ", context.temp_allocator) {
+		if strings.trim_space(name) == recipe {
+			return true
+		}
+	}
+	return false
+}
+
+// run_recipe_stage runs one project recipe as a stage. `test` runs per package
+// that has a test file; `e2e` is a single project-wide call. A missing recipe is
+// reported as a skip, not a failure: not every project has one.
+run_recipe_stage :: proc(
+	recipe, root: string,
+	max_errors: int,
+	per_package, no_deps: bool,
+	allocator := context.allocator,
+) -> (summary: Test_Summary, fatal: bool) {
 	summary.ok = true
 	current, scan_err := scan_odin_project(root, allocator)
 	if scan_err != nil {
@@ -1107,6 +1226,10 @@ run_tests :: proc(root: string, max_errors: int, allocator := context.allocator)
 		return summary, true
 	}
 	defer justfile_destroy(&justfile, allocator)
+	if !justfile_has_recipe(justfile.path, recipe, allocator) {
+		summary.skipped = true
+		return summary, false
+	}
 
 	display_root := root
 	display_owned: string
@@ -1118,7 +1241,8 @@ run_tests :: proc(root: string, max_errors: int, allocator := context.allocator)
 
 	directories := make([dynamic]string, 0, allocator)
 	defer delete_string_slice(directories, allocator)
-	if justfile.generated {
+	per_package_run := per_package && justfile.generated
+	if per_package_run {
 		package_dirs, package_err := project_package_dirs(current, allocator)
 		if package_err != nil {
 			fmt.eprintfln("[ERROR] cannot list Odin packages: %s", os.error_string(package_err))
@@ -1137,15 +1261,15 @@ run_tests :: proc(root: string, max_errors: int, allocator := context.allocator)
 	}
 
 	whole_project_call := []string{""}
-	to_test: []string = whole_project_call
-	if justfile.generated {
-		to_test = directories[:]
+	to_run: []string = whole_project_call
+	if per_package_run {
+		to_run = directories[:]
 	}
-	for package_dir in to_test {
+	for package_dir in to_run {
 		summary.packages += 1
-		result := run_just_recipe(justfile, root, "test", package_dir, allocator)
+		result := run_just_recipe_with(justfile, root, recipe, package_dir, no_deps, allocator)
 		if result.process_error != nil {
-			fmt.eprintfln("[ERROR] could not run the test stage: %s", os.error_string(result.process_error))
+			fmt.eprintfln("[ERROR] could not run the %s stage: %s", recipe, os.error_string(result.process_error))
 			odin_command_result_destroy(&result, allocator)
 			summary.ok = false
 			continue
@@ -1176,11 +1300,15 @@ run_tests :: proc(root: string, max_errors: int, allocator := context.allocator)
 	return summary, false
 }
 
-print_test_verdict :: proc(summary: Test_Summary, tag: string) {
+print_stage_verdict :: proc(summary: Test_Summary, tag: string) {
+	if summary.skipped {
+		fmt.printfln("%sskip (no recipe)", tag)
+		return
+	}
 	if summary.ok {
 		switch summary.tests {
 		case 0:
-			fmt.printfln("%sok (no tests)", tag)
+			fmt.printfln("%sok", tag)
 		case 1:
 			fmt.printfln("%sok (1 test)", tag)
 		case:
@@ -1209,24 +1337,49 @@ print_test_verdict :: proc(summary: Test_Summary, tag: string) {
 	}
 }
 
+// verify_stage runs one recipe stage and reports whether verify should continue.
+@(private)
+verify_stage :: proc(
+	recipe: string,
+	per_package: bool,
+	options: CLI_Options,
+	failed: ^bool,
+	allocator := context.allocator,
+) -> bool {
+	summary, fatal := run_recipe_stage(recipe, options.root, options.max_errors, per_package, true, allocator)
+	defer test_summary_destroy(&summary, allocator)
+	if fatal {
+		return false
+	}
+	print_stage_verdict(summary, fmt.tprintf("rachel: %s ", recipe))
+	if summary.ok {
+		return true
+	}
+	failed^ = true
+	return options.all_stages
+}
+
 verify_once :: proc(options: CLI_Options, allocator := context.allocator) -> int {
-	check_summary, check_fatal := run_checks(options, allocator)
-	defer check_summary_destroy(&check_summary, allocator)
-	if check_fatal {
+	failed := false
+	if options.stage_check {
+		check_summary, check_fatal := run_checks(options, allocator)
+		defer check_summary_destroy(&check_summary, allocator)
+		if check_fatal {
+			return 1
+		}
+		print_check_verdict(check_summary, "rachel: check ")
+		if !check_summary.ok {
+			failed = true
+			if !options.all_stages {
+				return 1
+			}
+		}
+	}
+	if options.stage_test && !verify_stage("test", true, options, &failed, allocator) {
 		return 1
 	}
-	print_check_verdict(check_summary, "rachel: check ")
-	if !check_summary.ok {
+	if options.stage_e2e && !verify_stage("e2e", false, options, &failed, allocator) {
 		return 1
 	}
-	test_summary, test_fatal := run_tests(options.root, options.max_errors, allocator)
-	defer test_summary_destroy(&test_summary, allocator)
-	if test_fatal {
-		return 1
-	}
-	print_test_verdict(test_summary, "rachel: test ")
-	if !test_summary.ok {
-		return 1
-	}
-	return 0
+	return failed ? 1 : 0
 }
