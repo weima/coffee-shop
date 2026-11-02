@@ -135,10 +135,19 @@ reports only check; `--stages e2e` runs this repository's e2e recipe and reports
 the check twice (`--no-deps`), taking verify from 1.85 s to 1.58 s; a stage with no
 recipe prints `skip (no recipe)` and still exits 0.
 
-**3. Evidence on failure.**
-Scope: run directory, manifest, stdout capture, retention, `rachel evidence last`.
+**3. Evidence on failure. — implemented**
+Scope: run directory, manifest, retention, `rachel evidence last`.
 Tests: failing stage writes a manifest whose fields match the verdict; a passing
 stage writes nothing; retention prunes to 10.
+
+Evidence: a failing test stage prints
+`rachel: evidence .rachel/evidence/<id>-test`, writes `manifest.json` and
+`verdict.txt`, keeps 10 run directories and deletes older ones, and
+`evidence last` prints the newest. A passing verify leaves no `.rachel` directory.
+
+Deferred: `stdout.log` and `artifacts/`. The manifest carries the verdict lines,
+which is what an agent reads; the raw stage output is printed on failure and not
+retained yet.
 
 **4. Browser stage as a recipe.**
 Scope: a stage name a project can wire to Playwright; `rachel:`-prefixed passthrough;
@@ -201,6 +210,18 @@ Recorded as they were found, because each one changed the design.
   is the worst failure mode for a verifier, because the run looks green.
 - **`just --summary` is a reliable recipe probe.** It prints space-separated recipe
   names and exits 0, which is cheaper and more stable than matching an error string.
+
+- **`make_directory_all` reports `Exist` for a directory that is already there.**
+  Every evidence write after the first one silently failed until `ensure_directory`
+  treated `Exist` as success. The unit test caught it; a single failing run would
+  not have.
+- **A passing stage must not dump its raw output.** `verify` in the dogfood loop
+  printed the whole test log on success, burying the two verdict lines a reader
+  came for. Raw output is now printed only when a stage fails.
+- **A check-only dogfood loop is not enough.** With `check` in the loop I still ran
+  the tests myself, which is exactly the redundancy the loop is supposed to remove.
+  Running `verify` in the loop (check + tests, ~1.6 s per save) made one read
+  sufficient.
 
 ## Open questions
 

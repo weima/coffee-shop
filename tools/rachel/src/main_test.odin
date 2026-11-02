@@ -764,3 +764,51 @@ test_parse_stages_selects_and_rejects :: proc(t: ^testing.T) {
 	testing.expect(t, !parse_stages("", &options))
 	testing.expect(t, !options.stage_check)
 }
+
+@(test)
+test_evidence_writes_manifest_prunes_and_finds_last :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp("", "rachel-evidence-*", context.allocator)
+	testing.expect(t, make_err == nil)
+	defer {
+		_ = os.remove_all(root)
+		delete(root)
+	}
+	verdict := []string{"rachel: test fail (1 of 1 tests)", "rachel: error module.odin:12:t() boom"}
+	base := time.now()
+	for i in 0 ..< EVIDENCE_KEEP + 2 {
+		started := time.Time{_nsec = base._nsec + i64(i) * 1_000_000}
+		dir, ok := evidence_write(root, "test", "test", 1, started, 5 * time.Millisecond, 1, 1, verdict, nil, context.allocator)
+		testing.expect(t, ok)
+		if i == EVIDENCE_KEEP + 1 {
+			manifest_path := fmt.tprintf("%s/manifest.json", dir)
+			testing.expect(t, os.is_file(manifest_path))
+			data, read_err := os.read_entire_file(manifest_path, context.allocator)
+			testing.expect_value(t, read_err, os.Error(nil))
+			defer delete(data)
+			text := transmute(string)data
+			testing.expect(t, strings.contains(text, `"stage":"test"`))
+			testing.expect(t, strings.contains(text, "test fail (1 of 1 tests)"))
+			testing.expect(t, os.is_file(fmt.tprintf("%s/verdict.txt", dir)))
+		}
+		delete(dir, context.allocator)
+	}
+
+	base_dir, join_err := filepath.join({root, EVIDENCE_ROOT}, context.allocator)
+	testing.expect(t, join_err == nil)
+	defer delete(base_dir)
+	entries, read_err := os.read_all_directory_by_path(base_dir, context.allocator)
+	testing.expect_value(t, read_err, os.Error(nil))
+	defer os.file_info_slice_delete(entries, context.allocator)
+	kept := 0
+	for entry in entries {
+		if entry.type == .Directory {
+			kept += 1
+		}
+	}
+	testing.expect_value(t, kept, EVIDENCE_KEEP)
+
+	last, last_ok := evidence_last(root, context.allocator)
+	testing.expect(t, last_ok)
+	defer delete(last, context.allocator)
+	testing.expect(t, strings.contains(last, "test"))
+}
