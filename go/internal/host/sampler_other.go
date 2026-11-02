@@ -1,11 +1,11 @@
-//go:build !linux
+//go:build !linux && !(darwin && cgo)
 
 package host
 
-// Outside Linux there is no dependency-free per-process reading: Darwin needs the
-// `kern.proc.pid` sysctl, which the standard library does not expose. Every field is
-// reported unknown, so the gates say `not measured` with a reason instead of a zero that
-// would read as a real measurement. The Linux run — WSL2 is one — is what closes gate 5.9.
+// Where no per-process reading is available — anything but Linux, or a macOS build without
+// cgo — every field is reported unknown, so the gates say `not measured` with a reason
+// instead of a zero that would read as a real measurement. The Linux run — WSL2 is one —
+// is what currently closes gate 5.9.
 
 func sampleTree(pid int) (station, tree ProcSample, alive bool) {
 	return ProcSample{}, ProcSample{}, false

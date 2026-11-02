@@ -47,7 +47,7 @@ func TestSamplerWritesTheRecordGateFiveNineReads(t *testing.T) {
 		t.Fatalf("a live Station must be sampled at least once: %s", data)
 	}
 	// The field names the report reads: a rename here would silently blank the table.
-	for _, field := range []string{"station_start", "station_peak", "tree_start", "tree_peak", `"known"`, `"value"`, `"cpu_ms"`, `"rss"`, `"fds"`, `"children"`} {
+	for _, field := range []string{"station_start", "station_peak", "tree_start", "tree_peak", "known", "value", "cpu_ms", "rss", "fds", "children"} {
 		if !jsonFieldPresent(data, field) {
 			t.Fatalf("record is missing %s: %s", field, data)
 		}
@@ -60,21 +60,33 @@ func TestSamplerWritesTheRecordGateFiveNineReads(t *testing.T) {
 	}
 }
 
+// jsonFieldPresent finds a key at any depth: the metrics sit three levels down, under
+// station_peak.cpu_ms.known.
 func jsonFieldPresent(data []byte, field string) bool {
 	var value any
 	if json.Unmarshal(data, &value) != nil {
 		return false
 	}
-	object, ok := value.(map[string]any)
-	if !ok {
+	return keyExists(value, field, 0)
+}
+
+func keyExists(value any, field string, depth int) bool {
+	if depth > 4 {
 		return false
 	}
-	if _, found := object[field]; found {
-		return true
-	}
-	for _, nested := range object {
-		if inner, isObject := nested.(map[string]any); isObject {
-			if _, found := inner[field]; found {
+	switch node := value.(type) {
+	case map[string]any:
+		if _, found := node[field]; found {
+			return true
+		}
+		for _, nested := range node {
+			if keyExists(nested, field, depth+1) {
+				return true
+			}
+		}
+	case []any:
+		for _, nested := range node {
+			if keyExists(nested, field, depth+1) {
 				return true
 			}
 		}

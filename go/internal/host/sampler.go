@@ -148,6 +148,16 @@ func peakOf(peak, later ProcSample) ProcSample {
 	}
 }
 
+func addMetric(a, b Metric) Metric {
+	if !b.Known {
+		return a
+	}
+	if !a.Known {
+		return b
+	}
+	return Metric{Known: true, Value: a.Value + b.Value}
+}
+
 func maxMetric(a, b Metric) Metric {
 	if !b.Known {
 		return a

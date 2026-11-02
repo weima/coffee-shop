@@ -37,16 +37,6 @@ func sampleTree(pid int) (station, tree ProcSample, alive bool) {
 	return station, tree, true
 }
 
-func addMetric(a, b Metric) Metric {
-	if !b.Known {
-		return a
-	}
-	if !a.Known {
-		return b
-	}
-	return Metric{Known: true, Value: a.Value + b.Value}
-}
-
 // readProcess parses /proc/<pid>/stat for cpu time, resident pages and descriptors.
 func readProcess(pid int) (sample ProcSample, alive bool) {
 	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
