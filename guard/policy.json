@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "mode": "annotate",
+  "escape": "CS_RAW=1",
+  "rules": [
+    {
+      "id": "no-raw-build",
+      "tool": "bash",
+      "command": "(^|[;&|]\\s*)(odin|go|cargo|bun|npm|pnpm|yarn)\\s+(build|check|test)",
+      "mode": "block",
+      "message": "use `rachel verify <dir>` for checks and tests, or the project's `just check` / `just test` recipes, and read the verdict it prints"
+    },
+    {
+      "id": "worktree-via-wt",
+      "tool": "bash",
+      "command": "git\\s+worktree\\s+(add|remove|list|prune)",
+      "mode": "block",
+      "message": "use `wt` for worktrees (AGENTS.md)"
+    }
+  ]
+}
