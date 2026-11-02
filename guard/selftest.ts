@@ -1,4 +1,5 @@
 // Self-test for the guard's pure logic. Run with: bun run guard/selftest.ts
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +17,13 @@ import {
   shouldAnnotate,
   shouldPush,
   lastSignal,
+  newestSourceMtime,
+  pickPush,
+  commitGate,
+  currentBranch,
+  prState,
   verdictNote,
+  type Signal,
 } from "./coffee-shop-guard.ts";
 
 let failures = 0;
@@ -179,6 +186,71 @@ check("raw check is annotated", shouldAnnotate(policy, "odin check src"), true);
 check("just check is not annotated", shouldAnnotate(policy, "just check"), false);
 check("ls is not annotated", shouldAnnotate(policy, "ls src"), false);
 check("rachel invocation is not annotated", shouldAnnotate(policy, "rachel verify ."), false);
+
+// Staleness: a verdict older than the newest source file describes code that no
+// longer exists.
+const staleProject = mkdtempSync(join(tmpdir(), "guard-stale-"));
+try {
+  mkdirSync(join(staleProject, ".rachel"), { recursive: true });
+  writeFileSync(join(staleProject, "justfile"), "check:\n    odin check .\n");
+  writeFileSync(join(staleProject, "a.odin"), "package a\n");
+  const nowMs = Date.now();
+  const signalFile = join(staleProject, ".rachel", "last.json");
+  writeFileSync(signalFile, JSON.stringify({ started_ns: (nowMs - 60_000) * 1e6, ok: true, verdict: ["rachel: check ok (1 checked)"] }));
+  check("a verdict older than the source is stale", lastSignal(staleProject, nowMs)?.stale, true);
+  writeFileSync(signalFile, JSON.stringify({ started_ns: (nowMs + 60_000) * 1e6, ok: true, verdict: ["rachel: check ok (1 checked)"] }));
+  check("a verdict newer than the source is fresh", lastSignal(staleProject, nowMs)?.stale, false);
+  check("newest source mtime is found", newestSourceMtime(staleProject) > 0, true);
+} finally {
+  rmSync(staleProject, { recursive: true, force: true });
+}
+
+// Push across projects: only the newest unseen verdict is pushed.
+const signal = (id: string): Signal => ({ id, line: `verdict ${id}`, ageMs: 0, ok: true, stages: ["check"], stale: false });
+check("pickPush chooses the newest", pickPush([{ project: "a", signal: signal("10") }, { project: "b", signal: signal("20") }], {})?.project, "b");
+check("pickPush skips what was pushed", pickPush([{ project: "a", signal: signal("10") }, { project: "b", signal: signal("20") }], { b: "20" })?.project, "a");
+check("pickPush returns null when everything was pushed", pickPush([{ project: "a", signal: signal("10") }], { a: "10" }), null);
+check("pickPush ignores projects without a signal", pickPush([{ project: "a", signal: null }], {}), null);
+
+// The commit gate: the guarantee, not the annotation.
+const gateSignal = (ok: boolean, stale: boolean, stages: string[] = ["check", "test"]): Signal => ({
+  id: "1",
+  line: "rachel: test ok (1 test)",
+  ageMs: 0,
+  ok,
+  stages,
+  stale,
+});
+const blockPolicy = { ...policy, mode: "block" as const, requireFreshVerdict: true };
+check("commit blocked with no verdict", commitGate(blockPolicy, null).action, "block");
+check("commit blocked when stale", commitGate(blockPolicy, gateSignal(true, true)).action, "block");
+check("commit blocked when the verdict failed", commitGate(blockPolicy, gateSignal(false, false)).action, "block");
+check("commit allowed when fresh and passing", commitGate(blockPolicy, gateSignal(true, false)).action, "allow");
+check("annotate mode only warns", commitGate({ ...blockPolicy, mode: "annotate" as const }, null).action, "warn");
+check("the policy can disable the gate", commitGate({ ...blockPolicy, requireFreshVerdict: false }, null).action, "allow");
+check("the stale reason names the fix", commitGate(blockPolicy, gateSignal(true, true)).reason.includes("rachel verify"), true);
+check("a check-only verdict satisfies the default", commitGate(blockPolicy, gateSignal(true, false, ["check"])).action, "allow");
+check(
+  "a policy can require tests",
+  commitGate({ ...blockPolicy, requireStages: ["check", "test"] }, gateSignal(true, false, ["check"])).action,
+  "block",
+);
+check(
+  "the missing-stage reason names the stage",
+  commitGate({ ...blockPolicy, requireStages: ["check", "test"] }, gateSignal(true, false, ["check"])).reason.includes("test"),
+  true,
+);
+
+// Branch detection, used by the merged-branch rule.
+const repo = mkdtempSync(join(tmpdir(), "guard-branch-"));
+try {
+  execFileSync("git", ["init", "-q", "-b", "guard-test", "."], { cwd: repo });
+  execFileSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "x"], { cwd: repo });
+  check("currentBranch reads the branch", currentBranch(repo), "guard-test");
+  check("prState skips main", prState("main", repo), "");
+} finally {
+  rmSync(repo, { recursive: true, force: true });
+}
 
 if (failures > 0) {
   console.error(`${failures} guard check(s) failed`);

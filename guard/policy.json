@@ -2,6 +2,8 @@
   "version": 1,
   "mode": "annotate",
   "escape": "CS_RAW=1",
+  "requireFreshVerdict": true,
+  "requireStages": ["check"],
   "rules": [
     {
       "id": "no-raw-build",

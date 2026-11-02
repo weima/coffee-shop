@@ -207,6 +207,11 @@ The guard annotates only commands a rule matches, because annotating every bash
 result pays on every call and collects the benefit only when the call duplicated
 Rachel.
 
+On `git commit` the guard requires a fresh, passing verdict whose stages satisfy
+`requireStages` (default `["check"]`), and refuses to commit on a branch whose PR
+is already merged. That is the difference between a reminder and a gate: a commit
+cannot pass with no verdict, a stale verdict, or a merged branch.
+
 ## Findings from dogfooding
 
 Recorded as they were found, because each one changed the design.

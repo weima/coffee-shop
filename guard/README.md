@@ -66,6 +66,23 @@ build|check|test`, and no raw `git worktree`. Add rules as data:
 `mode` at the top level decides whether a block rule blocks (`block`) or only
 annotates (`annotate`). A rule may set `"mode": "annotate"` to never block.
 
+## Gates on `git commit`
+
+A commit is the point of no return, so it gets checks rather than advice. When a
+command is `git commit`, the guard evaluates four gates:
+
+- **fresh verdict** — the newest verdict must be newer than the newest `.odin` file
+  or justfile. A verdict older than the source is *stale* and does not count;
+- **passing verdict** — `ok: true` in `.rachel/last.json`;
+- **required stages** — `requireStages` in the policy, default `["check"]`. Where
+  the test recipe is cheap, ask for `["check", "test"]`;
+- **not a merged branch** — if `gh pr view <branch>` reports `MERGED`, the commit
+  is refused with "create a new branch". This is the mistake the guard's author
+  made four times in one session.
+
+In `annotate` mode each gate appends a warning to the commit's output; in `block`
+mode it refuses the command. `CS_RAW=1` overrides everything, deliberately.
+
 ## Token shape
 
 The point is transport, not content: Rachel delivers the same diagnostics, so it
@@ -86,8 +103,16 @@ is actually used instead of the raw command.
 - **Blocking is best effort.** It matches the command string. `bash -c "odin
   check"`, `env -i …`, or a `just` recipe that shells out to `odin` all pass. The
   evidence gate is the guarantee; this is the speed bump.
-- **Annotation is the reliable part.** It runs on every bash result and cannot be
-  routed around, because it does not depend on the command.
+- **The commit gate is the reliable part.** It does not depend on the agent
+  choosing to run anything; a commit either has a fresh verdict or it does not.
+- **Annotation is now narrow** — only commands a rule matches, never Rachel's own
+  run. That is deliberate: annotating everything pays on every call.
+- **The merged-branch gate needs `gh` and a network**, fails open to "unknown",
+  caches per branch for a minute, and skips `main`.
+- **Staleness walks up to 5000 source files**, so a huge tree makes the gate
+  lenient rather than wrong.
+- **The default stage requirement is `check`**, so a commit can pass on a
+  compile-only verdict unless the policy asks for `test` too.
 - **`CS_RAW=1` in a command always allows it.** A harness that cannot be
   overridden when it is wrong gets worked around silently.
 - **The extension fails open.** A broken policy or missing evidence directory

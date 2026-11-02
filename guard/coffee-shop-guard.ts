@@ -14,6 +14,8 @@
  * Everything here fails open: a broken policy or a missing evidence directory
  * means no blocking and no annotation, never a broken session.
  */
+import { execFileSync } from "node:child_process";
+import type { Dirent } from "node:fs";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
@@ -33,6 +35,10 @@ export interface Policy {
   version: number;
   mode: Mode;
   escape: string;
+  /** A commit needs a fresh, passing verdict unless this is false. */
+  requireFreshVerdict?: boolean;
+  /** Stages the verdict must have run. Default ["check"], the cheap universal one. */
+  requireStages?: string[];
   rules: Rule[];
 }
 
@@ -62,6 +68,10 @@ export function parsePolicy(text: string): Policy {
       version: Number(raw?.version ?? 1),
       mode: raw?.mode === "block" ? "block" : "annotate",
       escape: typeof raw?.escape === "string" && raw.escape ? raw.escape : DEFAULT_POLICY.escape,
+      requireFreshVerdict: raw?.requireFreshVerdict !== false,
+      requireStages: Array.isArray(raw?.requireStages)
+        ? raw.requireStages.filter((stage: any) => typeof stage === "string")
+        : ["check"],
       rules,
     };
   } catch {
@@ -222,6 +232,10 @@ export interface Signal {
   line: string;
   ageMs: number;
   ok: boolean;
+  /** Stages the run executed, so the gate can require more than a compile. */
+  stages: string[];
+  /** True when a source file changed after the run that produced this verdict. */
+  stale: boolean;
 }
 
 /**
@@ -233,15 +247,140 @@ export function lastSignal(project: string, now = Date.now()): Signal | null {
     const raw = JSON.parse(readFileSync(join(project, ".rachel", "last.json"), "utf8"));
     const verdict: string[] = Array.isArray(raw?.verdict) ? raw.verdict : [];
     const started = Number(raw?.started_ns ?? 0) / 1e6;
+    const newest = newestSourceMtime(project);
     return {
       id: String(raw?.started_ns ?? 0),
       line: verdict[0] ?? "no verdict",
       ageMs: started > 0 ? Math.max(0, now - started) : 0,
       ok: raw?.ok === true,
+      stages: Array.isArray(raw?.stages) ? raw.stages : [],
+      stale: started > 0 && newest > started,
     };
   } catch {
     return null;
   }
+}
+
+const SKIP_DIRS = new Set([".git", ".rachel", ".pi", "node_modules", "build", "dist", "target", ".venv"]);
+
+/**
+ * newestSourceMtime is what "stale" means for Rachel's domain: the newest .odin
+ * file or justfile in the project. A verdict older than that describes code that
+ * no longer exists.
+ */
+export function newestSourceMtime(project: string, limit = 5000): number {
+  let newest = 0;
+  let seen = 0;
+  const walk = (dir: string) => {
+    if (seen >= limit) return;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (seen >= limit) return;
+      if (entry.isDirectory()) {
+        if (SKIP_DIRS.has(entry.name)) continue;
+        walk(join(dir, entry.name));
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const name = entry.name;
+      if (!name.endsWith(".odin") && !name.startsWith("justfile") && name !== "Justfile" && name !== ".justfile") continue;
+      seen += 1;
+      try {
+        newest = Math.max(newest, statSync(join(dir, name)).mtimeMs);
+      } catch {
+        // A file that vanished mid-walk is not a reason to fail.
+      }
+    }
+  };
+  walk(project);
+  return newest;
+}
+
+/** pickPush chooses the newest un-pushed signal across the projects seen so far. */
+export function pickPush(
+  candidates: Array<{ project: string; signal: Signal | null }>,
+  pushed: Record<string, string>,
+): { project: string; signal: Signal } | null {
+  let best: { project: string; signal: Signal } | null = null;
+  for (const candidate of candidates) {
+    const signal = candidate.signal;
+    if (!signal) continue;
+    if (pushed[candidate.project] === signal.id) continue;
+    if (best === null || Number(signal.id) > Number(best.signal.id)) {
+      best = { project: candidate.project, signal };
+    }
+  }
+  return best;
+}
+
+export interface Gate {
+  action: "allow" | "warn" | "block";
+  reason: string;
+}
+
+/**
+ * commitGate is the guarantee the annotation cannot give: a commit needs a
+ * verdict that passed and that is newer than the source it describes.
+ */
+export function commitGate(policy: Policy, signal: Signal | null): Gate {
+  if (policy.requireFreshVerdict === false) return { action: "allow", reason: "" };
+  const failed = (reason: string): Gate => ({ action: policy.mode === "block" ? "block" : "warn", reason });
+  if (signal === null) {
+    return failed("no Rachel verdict in this project yet: run `rachel verify .` before committing");
+  }
+  if (signal.stale) {
+    return failed("the source changed after the last verdict: re-run `rachel verify .` before committing");
+  }
+  const required = policy.requireStages ?? ["check"];
+  const missing = required.filter((stage) => !signal.stages.includes(stage));
+  if (missing.length > 0) {
+    return failed(`the last verdict did not run ${missing.join(", ")}: run \`rachel verify .\``);
+  }
+  if (!signal.ok) {
+    return failed(`the last Rachel verdict failed (${signal.line}): fix it before committing`);
+  }
+  return { action: "allow", reason: "" };
+}
+
+export function currentBranch(cwd: string): string {
+  try {
+    return String(
+      execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }),
+    ).trim();
+  } catch {
+    return "";
+  }
+}
+
+const prStates = new Map<string, { state: string; at: number }>();
+
+/**
+ * prState reports the branch's PR state, cached for a minute. It fails open to
+ * "" so an offline machine or a missing gh never blocks a commit.
+ */
+export function prState(branch: string, cwd: string, now = Date.now()): string {
+  if (!branch || branch === "HEAD" || branch === "main") return "";
+  const cached = prStates.get(branch);
+  if (cached && now - cached.at < 60_000) return cached.state;
+  let state = "";
+  try {
+    state = String(
+      execFileSync("gh", ["pr", "view", branch, "--json", "state", "-q", ".state"], {
+        cwd,
+        timeout: 8000,
+        stdio: ["ignore", "pipe", "ignore"],
+      }),
+    ).trim();
+  } catch {
+    state = "";
+  }
+  prStates.set(branch, { state, at: now });
+  return state;
 }
 
 /** shouldPush is true only for a signal the agent has not been told about yet. */
@@ -307,17 +446,28 @@ export default function (pi: any) {
     }
   });
 
-  let lastPushedId = "";
+  // Projects seen in commands, so a push reaches the project being worked on and
+  // not only the directory the session started in.
+  const observed = new Set<string>([sessionDir]);
+  const pushed: Record<string, string> = {};
+  const pendingWarnings = new Map<string, string>();
 
   // Push, don't make the agent pull: a changed verdict is added to the context
   // with the next model call, which costs no extra turn.
   pi.on("turn_start", async () => {
     try {
-      const signal = lastSignal(sessionDir);
-      if (!shouldPush(lastPushedId, signal) || signal === null) return;
-      lastPushedId = signal.id;
+      const candidates = Array.from(observed).map((project) => ({ project, signal: lastSignal(project) }));
+      const next = pickPush(candidates, pushed);
+      if (next === null) return;
+      pushed[next.project] = next.signal.id;
+      const stale = next.signal.stale ? ", stale" : "";
+      const label = next.project === sessionDir ? "" : `${next.project.split("/").pop()}: `;
       await pi.sendMessage(
-        { customType: "coffee-shop-guard", content: `${signal.line} (${humanAge(signal.ageMs)})`, display: true },
+        {
+          customType: "coffee-shop-guard",
+          content: `${label}${next.signal.line} (${humanAge(next.signal.ageMs)}${stale})`,
+          display: true,
+        },
         { triggerTurn: false },
       );
     } catch {
@@ -328,25 +478,61 @@ export default function (pi: any) {
   pi.on("tool_call", async (event: any) => {
     if (event?.toolName !== "bash") return;
     const command = String(event?.input?.command ?? "");
+    const project = resolveProject(command, sessionDir);
+    if (project) observed.add(project);
+
+    // The escape token wins over every rule, including the commit gates.
+    if (policy.escape && command.includes(policy.escape)) return;
+
+    if (/^\s*git\s+commit\b/.test(command)) {
+      const target = project ?? sessionDir;
+      const gate = commitGate(policy, lastSignal(target));
+      if (gate.action === "block") {
+        return { block: true, reason: `Coffee Shop rule "fresh-verdict": ${gate.reason} (escape: ${policy.escape})` };
+      }
+      if (gate.action === "warn") {
+        pendingWarnings.set(event.toolCallId, `[coffee-shop guard] ${gate.reason}`);
+      }
+      const branch = currentBranch(target);
+      if (branch && prState(branch, target) === "MERGED") {
+        const reason = `branch ${branch} has a merged PR: create a new branch before committing (escape: ${policy.escape})`;
+        if (policy.mode === "block") {
+          return { block: true, reason: `Coffee Shop rule "merged-branch": ${reason}` };
+        }
+        pendingWarnings.set(event.toolCallId, `[coffee-shop guard] ${reason}`);
+      }
+      return;
+    }
+
     const decision = evaluate(policy, command);
     if (decision.action !== "block") return;
     // A rule that needs a project to name must not block when none resolves; a
     // rule with its own alternative (wt) applies anywhere.
-    if (decision.requiresProject !== false && !resolveProject(command, sessionDir)) return;
+    if (decision.requiresProject !== false && !project) return;
     return { block: true, reason: decision.reason };
   });
 
   pi.on("tool_result", async (event: any) => {
     if (event?.toolName !== "bash") return;
     try {
+      const warning = pendingWarnings.get(event.toolCallId);
+      if (warning !== undefined) {
+        pendingWarnings.delete(event.toolCallId);
+        const content = Array.isArray(event.content)
+          ? [...event.content, { type: "text", text: warning }]
+          : [{ type: "text", text: warning }];
+        return { content, structuredContent: event.structuredContent };
+      }
       const command = String(event?.input?.command ?? "");
       if (!shouldAnnotate(policy, command)) return undefined;
       const project = resolveProject(command, sessionDir);
       if (!project) return undefined;
+      const signal = lastSignal(project);
       const note = verdictNote(project, sessionDir);
+      const suffix = signal?.stale ? " [stale: source changed after this verdict]" : "";
       const content = Array.isArray(event.content)
-        ? [...event.content, { type: "text", text: note }]
-        : [{ type: "text", text: note }];
+        ? [...event.content, { type: "text", text: note + suffix }]
+        : [{ type: "text", text: note + suffix }];
       return { content, structuredContent: event.structuredContent };
     } catch {
       return undefined;
