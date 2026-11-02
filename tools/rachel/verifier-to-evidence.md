@@ -236,6 +236,14 @@ On `git commit` the guard requires a fresh, passing verdict whose stages satisfy
 is already merged. That is the difference between a reminder and a gate: a commit
 cannot pass with no verdict, a stale verdict, or a merged branch.
 
+- **A verdict measured under load is not a verdict.** Two Odin suites at once made
+  `git init` fail in three different fixtures, on different runs. `verify` now takes
+  a machine-wide advisory lock: wait by default, `--no-wait` to fail, `--no-lock` to
+  skip, `--lock-path` to isolate. This is the first real precondition in the plan.
+- **`just`'s own failure line is not a diagnostic.** Adding lowercase `error:` to the
+  filter made `error: recipe `check` failed on line 2` count as a third compiler
+  error. Wrapper lines are now skipped.
+
 ## Findings from dogfooding
 
 - **Rachel was Odin-only.** `check` claimed to run the project's recipe, but

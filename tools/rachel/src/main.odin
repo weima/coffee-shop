@@ -22,6 +22,9 @@ CLI_Options :: struct {
 	stage_test:  bool,
 	stage_e2e:   bool,
 	all_stages:  bool,
+	no_lock:     bool,
+	no_wait:     bool,
+	lock_path:   string,
 	max_errors: int, // 0 means every error; a human reading a terminal usually wants 1
 }
 
@@ -97,6 +100,21 @@ parse_cli_args :: proc(args: []string, allocator := context.allocator) -> (optio
 			if rest[0] == "--all" {
 				options.all_stages = true
 				rest = rest[1:]
+				continue
+			}
+			if rest[0] == "--no-lock" {
+				options.no_lock = true
+				rest = rest[1:]
+				continue
+			}
+			if rest[0] == "--no-wait" {
+				options.no_wait = true
+				rest = rest[1:]
+				continue
+			}
+			if rest[0] == "--lock-path" && len(rest) >= 2 {
+				options.lock_path = rest[1]
+				rest = rest[2:]
 				continue
 			}
 			if rest[0] == "--max-errors" && len(rest) >= 2 {
@@ -546,6 +564,11 @@ collect_diagnostics :: proc(
 			// contains neither.
 			// Odin's compiler uses "Error:"/"Syntax Error:", its tooling uses
 			// "ERROR:", tsc uses "error TS", and generic tools use "error:".
+			// `just` prints "error: recipe `check` failed ..." when a recipe exits
+			// non-zero; that is the wrapper talking, not a diagnostic.
+			if strings.contains(trimmed, "error: recipe ") {
+				continue
+			}
 			if !strings.contains(trimmed, "Error:") && !strings.contains(trimmed, "ERROR:") && !strings.contains(trimmed, "error TS") && !strings.contains(trimmed, "error:") {
 				continue
 			}
@@ -1254,6 +1277,11 @@ verify_stage :: proc(
 // verify_once writes .rachel/last.json on every path, so a passing run still
 // leaves a current signal for the guard. Failure evidence stays separate.
 verify_once :: proc(options: CLI_Options, allocator := context.allocator) -> int {
+	lock, refused := verify_lock(options, allocator)
+	if refused {
+		return 1
+	}
+	defer lock_release(&lock)
 	started := time.now()
 	failed := false
 	all_lines := make([dynamic]string, 0, allocator)

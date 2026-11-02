@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
+import "core:time"
 
 PASSING_TEST_MODULE :: `package demo
 
@@ -57,7 +58,7 @@ test_verify_runs_check_then_test_and_stops_on_failure :: proc(t: ^testing.T) {
 	write_file(t, justfile_path, CUSTOM_JUSTFILE)
 
 	write_file(t, module_path, PASSING_TEST_MODULE)
-	ok_output, ok_err := run_to_output([]string{build.binary, "verify", project})
+	ok_output, ok_err := run_to_output([]string{build.binary, "verify", "--no-lock", project})
 	defer output_destroy(&ok_output)
 	testing.expectf(t, ok_err == nil, "verify would not run: %v", ok_err)
 	testing.expectf(t, ok_output.exit_code == 0, "verify failed on a passing project: %q%s", ok_output.stdout, ok_output.stderr)
@@ -77,7 +78,7 @@ test_verify_runs_check_then_test_and_stops_on_failure :: proc(t: ^testing.T) {
 	}
 
 	write_file(t, module_path, FAILING_TEST_MODULE)
-	fail_output, fail_err := run_to_output([]string{build.binary, "verify", project})
+	fail_output, fail_err := run_to_output([]string{build.binary, "verify", "--no-lock", project})
 	defer output_destroy(&fail_output)
 	testing.expectf(t, fail_err == nil, "verify would not run: %v", fail_err)
 	testing.expect_value(t, fail_output.exit_code, 1)
@@ -120,7 +121,7 @@ test_verify_stage_selection_all_and_skip :: proc(t: ^testing.T) {
 	write_file(t, module_path, FAILING_TEST_MODULE)
 
 	// Selection: only the check stage runs, so the failing test cannot fail verify.
-	check_only, check_err := run_to_output([]string{build.binary, "verify", "--stages", "check", project})
+	check_only, check_err := run_to_output([]string{build.binary, "verify", "--no-lock", "--stages", "check", project})
 	defer output_destroy(&check_only)
 	testing.expectf(t, check_err == nil, "verify would not run: %v", check_err)
 	testing.expect_value(t, check_only.exit_code, 0)
@@ -128,7 +129,7 @@ test_verify_stage_selection_all_and_skip :: proc(t: ^testing.T) {
 	testing.expectf(t, !strings.contains(check_only.stdout, "rachel: test"), "test stage ran when not selected: %q", check_only.stdout)
 
 	// Default ladder stops at the failing test.
-	stopped, stopped_err := run_to_output([]string{build.binary, "verify", "--stages", "check,test,e2e", project})
+	stopped, stopped_err := run_to_output([]string{build.binary, "verify", "--no-lock", "--stages", "check,test,e2e", project})
 	defer output_destroy(&stopped)
 	testing.expectf(t, stopped_err == nil, "verify would not run: %v", stopped_err)
 	testing.expect_value(t, stopped.exit_code, 1)
@@ -136,7 +137,7 @@ test_verify_stage_selection_all_and_skip :: proc(t: ^testing.T) {
 	testing.expectf(t, !strings.contains(stopped.stdout, "rachel: e2e"), "e2e ran after a failed stage: %q", stopped.stdout)
 
 	// --all continues past the failure.
-	every, every_err := run_to_output([]string{build.binary, "verify", "--all", "--stages", "check,test,e2e", project})
+	every, every_err := run_to_output([]string{build.binary, "verify", "--no-lock", "--all", "--stages", "check,test,e2e", project})
 	defer output_destroy(&every)
 	testing.expectf(t, every_err == nil, "verify would not run: %v", every_err)
 	testing.expect_value(t, every.exit_code, 1)
@@ -144,7 +145,7 @@ test_verify_stage_selection_all_and_skip :: proc(t: ^testing.T) {
 
 	// A stage with no recipe is a skip, not a failure.
 	write_file(t, justfile_path, CUSTOM_JUSTFILE)
-	skipped, skipped_err := run_to_output([]string{build.binary, "verify", "--stages", "check,e2e", project})
+	skipped, skipped_err := run_to_output([]string{build.binary, "verify", "--no-lock", "--stages", "check,e2e", project})
 	defer output_destroy(&skipped)
 	testing.expectf(t, skipped_err == nil, "verify would not run: %v", skipped_err)
 	testing.expect_value(t, skipped.exit_code, 0)
@@ -175,14 +176,14 @@ test_failing_verify_writes_evidence_and_passing_writes_none :: proc(t: ^testing.
 	write_file(t, justfile_path, CUSTOM_JUSTFILE)
 
 	write_file(t, module_path, PASSING_TEST_MODULE)
-	passing, passing_err := run_to_output([]string{build.binary, "verify", project})
+	passing, passing_err := run_to_output([]string{build.binary, "verify", "--no-lock", project})
 	defer output_destroy(&passing)
 	testing.expectf(t, passing_err == nil, "verify would not run: %v", passing_err)
 	testing.expect_value(t, passing.exit_code, 0)
 	testing.expectf(t, !os.exists(evidence_root), "a passing stage wrote evidence")
 
 	write_file(t, module_path, FAILING_TEST_MODULE)
-	failing, failing_err := run_to_output([]string{build.binary, "verify", project})
+	failing, failing_err := run_to_output([]string{build.binary, "verify", "--no-lock", project})
 	defer output_destroy(&failing)
 	testing.expectf(t, failing_err == nil, "verify would not run: %v", failing_err)
 	testing.expect_value(t, failing.exit_code, 1)
@@ -272,4 +273,58 @@ test_typescript_project_compiles_with_tsc :: proc(t: ^testing.T) {
 	testing.expectf(t, passing_err == nil, "check would not run: %v", passing_err)
 	testing.expect_value(t, passing.exit_code, 0)
 	testing.expectf(t, strings.contains(passing.stdout, "rachel: ok"), "no passing verdict: %q", passing.stdout)
+}
+
+SLOW_CHECK_JUSTFILE :: `check:
+    sh -c "sleep 1.5"
+
+test:
+    sh -c "true"
+`
+
+@(test)
+test_verify_serialises_on_the_machine_lock :: proc(t: ^testing.T) {
+	if !require_layout(t) {
+		return
+	}
+	build := build_rachel(t)
+	defer build_destroy(&build)
+	if build.binary == "" {
+		return
+	}
+	project := make_project(t)
+	defer project_destroy(&project)
+	if project == "" {
+		return
+	}
+	justfile_path := fmt.aprintf("%s/justfile", project, allocator = context.allocator)
+	defer delete(justfile_path, context.allocator)
+	lock_path := fmt.aprintf("%s/lock", build.dir, allocator = context.allocator)
+	defer delete(lock_path, context.allocator)
+	first_log := fmt.aprintf("%s/first.log", build.dir, allocator = context.allocator)
+	defer delete(first_log, context.allocator)
+	write_file(t, justfile_path, SLOW_CHECK_JUSTFILE)
+
+	// A holds the lock for ~1.5 s.
+	first, start_err := spawn_to_log([]string{build.binary, "verify", "--lock-path", lock_path, project}, first_log)
+	testing.expectf(t, start_err == nil, "cannot start the first verify: %v", start_err)
+	if start_err != nil {
+		return
+	}
+	defer stop_process(first)
+	time.sleep(400 * time.Millisecond)
+
+	// B must refuse rather than measure under load.
+	refused, refused_err := run_to_output([]string{build.binary, "verify", "--no-wait", "--lock-path", lock_path, project})
+	defer output_destroy(&refused)
+	testing.expectf(t, refused_err == nil, "verify would not run: %v", refused_err)
+	testing.expect_value(t, refused.exit_code, 1)
+	testing.expectf(t, strings.contains(refused.stdout, "another verify is running"), "no refusal message: %q", refused.stdout)
+
+	// C waits and then runs.
+	waited, waited_err := run_to_output([]string{build.binary, "verify", "--lock-path", lock_path, project})
+	defer output_destroy(&waited)
+	testing.expectf(t, waited_err == nil, "verify would not run: %v", waited_err)
+	testing.expectf(t, strings.contains(waited.stderr, "another verify held the lock"), "no wait message: %q", waited.stderr)
+	testing.expect_value(t, waited.exit_code, 0)
 }

@@ -187,6 +187,22 @@ for TypeScript: add one for your runner and `verify` will use it.
 `rachel <dir>` is a one-shot `verify`; watching is `rachel watch`, which is
 language-agnostic.
 
+## Concurrency
+
+A verdict measured while another suite is running is not a verdict: two Odin suites
+at once were enough to make `git init` fail inside test fixtures. `verify` therefore
+takes a machine-wide lock before running stages.
+
+- default: wait for the lock, and say so on stderr;
+- `--no-wait`: fail at once with `rachel: fail (precondition): another verify is running`;
+- `--no-lock`: skip locking;
+- `--lock-path <path>`: use another lock file (CI shards, tests).
+
+It is an advisory `fcntl` record lock, released by the kernel when the process
+exits, so a crashed run cannot wedge it. `RACHEL_LOCK_PATH` overrides the default
+`$HOME/.rachel/machine.lock`. The e2e suite gives each verify its own lock and has
+one contention test that starts two against a single lock.
+
 ## Evidence
 
 A failing stage writes a run directory and prints where it went:
