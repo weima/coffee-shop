@@ -117,4 +117,35 @@ grep -F -q 'check package=' "$project/justfile" || fail "starter justfile has no
 grep -F -q 'test package=' "$project/justfile" || fail "starter justfile has no test recipe"
 stop_watcher
 
-echo "PASS: watch loop, contract warning, companion test creation, starter justfile, and shutdown"
+echo "scenario 3: one-shot check narrows to a package and reports one line"
+project="$work/one-shot"
+mkdir -p "$project"
+printf 'check:\n    odin check -no-entry-point .\n\ntest:\n    TZ=UTC odin test .\n' >"$project/justfile"
+cat >"$project/module.odin" <<'ODIN'
+package demo
+
+// one returns 1.
+one :: proc() -> int {
+	return 1
+}
+ODIN
+verdict=$("$bin" check "$project" 2>"$work/check-ok.err") || fail "one-shot check failed on valid code"
+case "$verdict" in
+"rachel: ok"*) ;;
+*) fail "unexpected ok verdict: $verdict" ;;
+esac
+
+printf 'package demo\n\none :: proc() -> int {\n\treturn\n}\n' >"$project/module.odin"
+if "$bin" check "$project" >"$work/check-fail.out" 2>"$work/check-fail.err"; then
+	fail "one-shot check passed on invalid code"
+fi
+grep -F -q 'rachel: fail' "$work/check-fail.out" || fail "no fail verdict on invalid code"
+grep -F -q 'module.odin' "$work/check-fail.out" || fail "fail verdict does not name the file"
+
+verdict=$("$bin" check "$project" "$project/module.odin" 2>/dev/null || true)
+case "$verdict" in
+"rachel: fail"*) ;;
+*) fail "unexpected narrowing verdict: $verdict" ;;
+esac
+
+echo "PASS: watch loop, contract warning, companion test creation, starter justfile, shutdown, and one-shot check"

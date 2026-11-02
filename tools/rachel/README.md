@@ -21,6 +21,25 @@ The project justfile is left untouched when present. Rachel creates the starter 
 
 The generator is a trusted local executable. It reads one versioned JSON request from stdin and returns test source as JSON on stdout; see [the protocol](architecture.md#local-generator-protocol).
 
+## One-shot check
+
+`rachel check <project-directory> [path ...]` runs the checks once and exits: `0`
+when every check passes, `1` when one fails, `2` on a usage error. It prints one
+verdict line on stdout, `rachel: ok (2 checked)` or
+`rachel: fail (1 of 2): module.odin(4:2) Error: ...`, and writes the full
+compiler output to stderr, so a caller can consume a single line.
+
+A `path` narrows the check to the package of that `.odin` file. Any other path,
+an empty list, or a path outside the project checks the whole project, so a check
+is never skipped. A hand-written justfile takes no package argument, so it always
+checks the project once.
+
+This is the form a file watcher drives. Changed-path forwarding is not wired yet:
+
+```sh
+watchexec --debounce 500ms --exit-on-eof -- rachel check /path/to/odin-project
+```
+
 ## Test-file convention
 
 - Production source uses names such as `memory_usage.odin`.

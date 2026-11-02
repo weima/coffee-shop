@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
@@ -445,4 +446,90 @@ test_quiet_window_waits_until_writes_stop :: proc(t: ^testing.T) {
 	written, found := find_odin_file(snapshot, module_path)
 	testing.expect(t, found)
 	testing.expectf(t, written.size == i64(len(final)), "sampled %d bytes while the file holds %d", written.size, len(final))
+}
+
+@(test)
+test_cli_accepts_check_with_paths :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp("", "rachel-check-cli-*", context.allocator)
+	testing.expect(t, make_err == nil)
+	defer {
+		_ = os.remove_all(root)
+		delete(root)
+	}
+	options, parse_err := parse_cli_args([]string{"rachel", "check", root, "a/module.odin"}, context.allocator)
+	defer options_destroy(&options)
+	testing.expect_value(t, parse_err, os.Error(nil))
+	testing.expect(t, options.check_once)
+	testing.expect_value(t, len(options.paths), 1)
+	testing.expect_value(t, options.paths[0], "a/module.odin")
+
+	_, watch_err := parse_cli_args([]string{"rachel", root, "extra"}, context.allocator)
+	testing.expect(t, watch_err != nil)
+	_, missing_err := parse_cli_args([]string{"rachel", "check"}, context.allocator)
+	testing.expect(t, missing_err != nil)
+}
+
+@(test)
+test_check_targets_narrows_to_packages_and_widens_for_other_files :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp("", "rachel-check-targets-*", context.allocator)
+	testing.expect(t, make_err == nil)
+	defer {
+		_ = os.remove_all(root)
+		delete(root)
+	}
+	package_dir, join_err := filepath.join({root, "a"}, context.allocator)
+	testing.expect(t, join_err == nil)
+	defer delete(package_dir)
+	testing.expect(t, os.make_directory(package_dir) == nil)
+	_ = os.write_entire_file_from_string(
+		fmt.tprintf("%s/one.odin", package_dir),
+		"package a\n",
+		os.Permissions{.Read_User, .Write_User},
+	)
+
+	targets, whole, targets_err := check_targets(root, []string{"a/one.odin", "a/one.odin"}, context.allocator)
+	defer delete_string_slice(targets, context.allocator)
+	testing.expect_value(t, targets_err, os.Error(nil))
+	testing.expect(t, !whole)
+	testing.expect_value(t, len(targets), 1)
+	testing.expect_value(t, targets[0], package_dir)
+
+	notes, notes_whole, notes_err := check_targets(root, []string{"notes.md"}, context.allocator)
+	defer delete_string_slice(notes, context.allocator)
+	testing.expect_value(t, notes_err, os.Error(nil))
+	testing.expect(t, notes_whole)
+
+	none, none_whole, none_err := check_targets(root, nil, context.allocator)
+	defer delete_string_slice(none, context.allocator)
+	testing.expect_value(t, none_err, os.Error(nil))
+	testing.expect(t, none_whole)
+}
+
+@(test)
+test_check_once_reports_ok_and_failure :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp("", "rachel-check-once-*", context.allocator)
+	testing.expect(t, make_err == nil)
+	defer {
+		_ = os.remove_all(root)
+		delete(root)
+	}
+	justfile_path, justfile_err := filepath.join({root, "justfile"}, context.allocator)
+	testing.expect(t, justfile_err == nil)
+	defer delete(justfile_path)
+	_ = os.write_entire_file_from_string(
+		justfile_path,
+		"check:\n    odin check -no-entry-point .\n",
+		os.Permissions{.Read_User, .Write_User},
+	)
+	module_path, module_err := filepath.join({root, "module.odin"}, context.allocator)
+	testing.expect(t, module_err == nil)
+	defer delete(module_path)
+	_ = os.write_entire_file_from_string(module_path, "package sample\n\n// one returns 1.\none :: proc() -> int {\n\treturn 1\n}\n", os.Permissions{.Read_User, .Write_User})
+
+	options := CLI_Options{root = strings.clone(root, context.allocator)}
+	defer options_destroy(&options)
+	testing.expect_value(t, check_once(options), 0)
+
+	_ = os.write_entire_file_from_string(module_path, "package sample\n\none :: proc() -> int {\n\treturn\n}\n", os.Permissions{.Read_User, .Write_User})
+	testing.expect_value(t, check_once(options), 1)
 }
