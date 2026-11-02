@@ -46,9 +46,14 @@ packages, and runs one pass.
 owned by `--debounce` alone:
 
 ```sh
-watchexec --debounce 500ms --exit-on-eof -f '*.odin' --emit-events-to=environment -- \
+watchexec -q --debounce 500ms --exit-on-eof -f '*.odin' \
+  --emit-events-to=environment -- \
   rachel check --from-env <project>
 ```
+
+`-q` keeps watchexec's own `[Running: ...]` banner out of the verdict stream; a
+consumer that reads lines would otherwise see them as verdicts. Each verdict is a
+`rachel:`-prefixed line, so a filter on that prefix is enough.
 
 Verified against watchexec 2.8.0 on macOS:
 
@@ -63,6 +68,9 @@ Verified against watchexec 2.8.0 on macOS:
 - A command that writes into the watched tree triggers itself. `rachel check`
   creates a starter justfile, which is not a `.odin` file, so the `-f '*.odin'`
   filter stops the loop; the e2e asserts the run count stays bounded.
+- Watch the directory you are editing, not the directory you started in. A
+  watcher started from the wrong working directory looks alive and reports
+  nothing, which is indistinguishable from a clean build.
 
 This deletes roughly 250 lines: the project scan, the snapshot diff, and the
 poll/debounce loop. It adds roughly 50 lines of environment parsing.
