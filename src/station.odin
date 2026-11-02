@@ -278,6 +278,7 @@ valid_shot_taste :: proc(taste: string) -> bool {
 Shot_Options :: struct {
 	interactive: bool,
 	codemode:    bool,
+	watch:       string, // shell command whose distinct stdout lines become rachel_verdict reports
 }
 
 run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_kind, taste, message: string, options: Shot_Options, agent: []string) -> int {
@@ -386,6 +387,22 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 		return 1
 	}
 
+	watch: ^Station_Watch
+	watch_thread: ^thread.Thread
+	if options.watch != "" {
+		started, watch_err := station_watch_start(&sender, brew_id, station_id, options.watch)
+		if watch_err != nil {
+			fmt.eprintfln("[ERROR] could not start the watch command: %s", os.error_string(watch_err))
+		} else {
+			watch = started
+			watch_thread = thread.create_and_start_with_data(watch, station_watch_reader, self_cleanup = false)
+			if watch_thread == nil {
+				station_watch_stop(watch, nil)
+				watch = nil
+			}
+		}
+	}
+
 	watchdog := Station_Watchdog{relay = relay, process = process, deadline_seconds = station_turn_deadline_seconds()}
 	watchdog_thread := thread.create_and_start_with_data(&watchdog, station_watchdog, self_cleanup = false)
 
@@ -403,6 +420,7 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 		free_all(context.temp_allocator)
 	}
 
+	station_watch_stop(watch, watch_thread)
 	sync.atomic_store(&relay.watchdog_stop, true)
 	if watchdog_thread != nil {
 		thread.join(watchdog_thread)
@@ -1037,6 +1055,124 @@ station_is_turn_end :: proc(line: string) -> bool {
 // Reports that fit the activity limit travel inline. A longer report is written to
 // <host>/reports/ and the socket carries "file:" plus its path, so the host can
 // relay the whole text. If the file cannot be written, the report is truncated.
+STATION_WATCH_LINE_MAX :: 400
+STATION_WATCH_STOP_GRACE_MS :: 2000
+
+// A watch command runs beside the agent, and its distinct stdout lines are
+// reported as rachel_verdict. That is how a checker informs the parent without
+// the agent spending a call on it. A checker that repeats the same failure does
+// not flood the stream: equal consecutive lines are dropped.
+Station_Watch :: struct {
+	sender:     ^Activity_Sender,
+	brew_id:    string,
+	station_id: string,
+	output:     ^os.File,
+	child:      os.Process,
+	stdin:      ^os.File, // held open by the Station so closing it asks a --exit-on-eof child to stop
+	mutex:      sync.Mutex,
+	last_line:  string, // owned
+}
+
+station_watch_should_report :: proc(last, line: string) -> bool {
+	return line != "" && line != last
+}
+
+@(private)
+station_watch_verdict :: proc(line: string) -> string {
+	trimmed := strings.trim_space(line)
+	if len(trimmed) > STATION_WATCH_LINE_MAX {
+		trimmed = trimmed[:STATION_WATCH_LINE_MAX]
+	}
+	cloned, clone_err := strings.clone(trimmed)
+	if clone_err != nil {
+		return ""
+	}
+	return cloned
+}
+
+station_watch_start :: proc(
+	sender: ^Activity_Sender,
+	brew_id, station_id, command: string,
+) -> (watch: ^Station_Watch, err: os.Error) {
+	out_read, out_write, out_err := os.pipe()
+	if out_err != nil {
+		return nil, out_err
+	}
+	in_read, in_write, in_err := os.pipe()
+	if in_err != nil {
+		station_close_file(&out_read)
+		station_close_file(&out_write)
+		return nil, in_err
+	}
+	child, start_err := os.process_start(os.Process_Desc{
+		command = {"sh", "-c", command},
+		stdin = in_read,
+		stdout = out_write,
+		stderr = os.stderr,
+	})
+	station_close_file(&in_read)
+	station_close_file(&out_write)
+	if start_err != nil {
+		station_close_file(&in_write)
+		station_close_file(&out_read)
+		return nil, start_err
+	}
+	watch = new(Station_Watch)
+	watch.sender = sender
+	watch.brew_id = brew_id
+	watch.station_id = station_id
+	watch.output = out_read
+	watch.child = child
+	watch.stdin = in_write
+	return watch, nil
+}
+
+@(private)
+station_watch_reader :: proc(data: rawptr) {
+	watch := (^Station_Watch)(data)
+	reader: bufio.Reader
+	bufio.reader_init(&reader, os.to_reader(watch.output))
+	defer bufio.reader_destroy(&reader)
+	for {
+		line, read_err := bufio.reader_read_string(&reader, '\n', context.temp_allocator)
+		if read_err != nil {
+			break
+		}
+		verdict := station_watch_verdict(strings.trim_right(line, "\r\n"))
+		sync.mutex_lock(&watch.mutex)
+		if station_watch_should_report(watch.last_line, verdict) {
+			delete(watch.last_line)
+			watch.last_line = ""
+			if cloned, clone_err := strings.clone(verdict); clone_err == nil {
+				watch.last_line = cloned
+			}
+			station_report(watch.sender, watch.brew_id, watch.station_id, ACTIVITY_KIND_RACHEL_VERDICT, verdict)
+		}
+		sync.mutex_unlock(&watch.mutex)
+		delete(verdict)
+		free_all(context.temp_allocator)
+	}
+}
+
+station_watch_stop :: proc(watch: ^Station_Watch, reader_thread: ^thread.Thread) {
+	if watch == nil {
+		return
+	}
+	// Closing stdin asks a watcher started with --exit-on-eof to stop on its own.
+	station_close_file(&watch.stdin)
+	if watch.child.pid > 0 {
+		_ = posix.kill(posix.pid_t(watch.child.pid), .SIGTERM)
+	}
+	if reader_thread != nil {
+		thread.join(reader_thread)
+		thread.destroy(reader_thread)
+	}
+	_, _ = os.process_wait(watch.child, STATION_WATCH_STOP_GRACE_MS)
+	station_close_file(&watch.output)
+	delete(watch.last_line)
+	free(watch)
+}
+
 station_report :: proc(sender: ^Activity_Sender, brew_id, station_id, kind, description: string) {
 	text := description
 	if len(text) > ACTIVITY_MAX_DESCRIPTION {

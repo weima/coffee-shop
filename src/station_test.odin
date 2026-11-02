@@ -1720,3 +1720,25 @@ test_station_cancel_stops_a_turn_waiting_on_the_agent :: proc(t: ^testing.T) {
 	testing.expect(t, slice_contains(kinds[:], "agent_exited"), "the Station reports the agent's exit")
 	testing.expect(t, !slice_contains(kinds[:], "incomplete"), "a cancel is not reported as a deadline expiry")
 }
+
+@(test)
+test_watch_reports_only_distinct_non_empty_lines :: proc(t: ^testing.T) {
+	testing.expect(t, station_watch_should_report("", "rachel: ok (1 checked)"))
+	testing.expect(t, !station_watch_should_report("", ""))
+	testing.expect(t, !station_watch_should_report("rachel: ok", "rachel: ok"))
+	testing.expect(t, station_watch_should_report("rachel: ok", "rachel: fail (1 of 1)"))
+}
+
+@(test)
+test_watch_verdict_trims_and_caps_the_line :: proc(t: ^testing.T) {
+	padded := station_watch_verdict("  rachel: ok  \n")
+	defer delete(padded)
+	testing.expect_value(t, padded, "rachel: ok")
+
+	defer free_all(context.temp_allocator)
+	long := strings.concatenate({"rachel: ", strings.repeat("-", STATION_WATCH_LINE_MAX, context.temp_allocator)}, context.allocator)
+	defer delete(long)
+	capped := station_watch_verdict(long)
+	defer delete(capped)
+	testing.expect_value(t, len(capped), STATION_WATCH_LINE_MAX)
+}

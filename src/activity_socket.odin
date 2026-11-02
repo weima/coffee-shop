@@ -3,6 +3,7 @@ package main
 import "core:c"
 import "core:encoding/json"
 import "core:strings"
+import "core:sync"
 import "core:sys/posix"
 
 ACTIVITY_MAX_PAYLOAD :: 2048
@@ -39,6 +40,8 @@ Activity_Listener :: struct {
 Activity_Sender :: struct {
 	fd: posix.FD,
 	path: string, // socket path, so a sender can find its sibling directories
+	// More than one thread may report: the main flow and a watch command's reader.
+	mutex: sync.Mutex,
 }
 
 Activity_Receive_Kind :: enum {
@@ -152,6 +155,8 @@ activity_sender_open :: proc(path: string) -> (sender: Activity_Sender, ok: bool
 }
 
 activity_sender_send :: proc(sender: ^Activity_Sender, message: Activity_Message) -> bool {
+	sync.mutex_lock(&sender.mutex)
+	defer sync.mutex_unlock(&sender.mutex)
 	if sender.fd < 0 || !activity_valid_message(message) {
 		return false
 	}
