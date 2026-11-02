@@ -26,6 +26,9 @@ Project_Snapshot :: struct {
 	files: [dynamic]Odin_File_Stamp,
 }
 
+QUIET_WINDOW :: 350 * time.Millisecond
+QUIET_SAMPLE :: 70 * time.Millisecond
+
 Odin_Command_Result :: struct {
 	state: os.Process_State,
 	stdout: []byte,
@@ -159,6 +162,50 @@ scan_odin_directory :: proc(
 @(private)
 should_skip_directory :: proc(name: string) -> bool {
 	return name == ".git" || name == "build" || name == "dist" || name == "node_modules"
+}
+
+// wait_for_quiet rescans until the source has been unchanged for `window`.
+// One fixed sleep is not enough: at human typing speed every sample still differs.
+wait_for_quiet :: proc(
+	root: string,
+	baseline: ^Project_Snapshot,
+	window := QUIET_WINDOW,
+	sample := QUIET_SAMPLE,
+	allocator := context.allocator,
+) -> (snapshot: Project_Snapshot, err: os.Error) {
+	previous := baseline
+	held: Project_Snapshot
+	holding := false
+	defer if holding {project_snapshot_destroy(&held, allocator)}
+	quiet_samples := 0
+	for {
+		time.sleep(sample)
+		next, next_err := scan_odin_project(root, allocator, previous)
+		if next_err != nil {
+			return {}, next_err
+		}
+		changed, diff_err := changed_package_dirs(previous^, next, allocator)
+		if diff_err != nil {
+			project_snapshot_destroy(&next, allocator)
+			return {}, diff_err
+		}
+		stable := len(changed) == 0
+		delete_string_slice(changed, allocator)
+		if stable {
+			quiet_samples += 1
+			if time.Duration(quiet_samples) * sample >= window {
+				return next, nil
+			}
+		} else {
+			quiet_samples = 0
+		}
+		if holding {
+			project_snapshot_destroy(&held, allocator)
+		}
+		held = next
+		holding = true
+		previous = &held
+	}
 }
 
 changed_package_dirs :: proc(

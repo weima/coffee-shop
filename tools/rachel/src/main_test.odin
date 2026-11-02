@@ -4,6 +4,7 @@ import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import "core:testing"
+import "core:time"
 
 @(test)
 test_cli_accepts_one_existing_project_directory :: proc(t: ^testing.T) {
@@ -400,4 +401,48 @@ test_project_scan_reports_package_when_odin_source_changes :: proc(t: ^testing.T
 	testing.expect_value(t, change_err, os.Error(nil))
 	testing.expect_value(t, len(changed), 1)
 	testing.expect_value(t, changed[0], after.files[0].package_dir)
+}
+
+@(test)
+test_quiet_window_waits_until_writes_stop :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp("", "rachel-quiet-*", context.allocator)
+	testing.expect(t, make_err == nil)
+	defer {
+		_ = os.remove_all(root)
+		delete(root)
+	}
+	source_path, path_err := filepath.join({root, "module.odin"})
+	testing.expect(t, path_err == nil)
+	defer delete(source_path)
+	_ = os.write_entire_file_from_string(source_path, "package sample\n", os.Permissions{.Read_User, .Write_User})
+	baseline, baseline_err := scan_odin_project(root, context.allocator)
+	defer project_snapshot_destroy(&baseline)
+	testing.expect_value(t, baseline_err, os.Error(nil))
+	// Scanned paths resolve symlinks (macOS /var), so use the scan's own path.
+	module_path := baseline.files[0].path
+
+	// A writer that keeps editing for ~400ms, longer than the 100ms quiet window.
+	// A single fixed sleep would sample in the middle of it and return a stale size.
+	writer := "i=0; while [ $i -lt 20 ]; do printf '// append\\n' >> \"$1\"; i=$((i+1)); sleep 0.02; done"
+	process, start_err := os.process_start(
+		os.Process_Desc{command = []string{"sh", "-c", writer, "sh", module_path}},
+	)
+	testing.expect_value(t, start_err, os.Error(nil))
+	if start_err != nil {
+		return
+	}
+	start := time.now()
+	snapshot, quiet_err := wait_for_quiet(root, &baseline, 100*time.Millisecond, 20*time.Millisecond)
+	elapsed := time.since(start)
+	defer project_snapshot_destroy(&snapshot)
+	_, _ = os.process_wait(process)
+	testing.expect_value(t, quiet_err, os.Error(nil))
+	testing.expectf(t, elapsed >= 300*time.Millisecond, "returned after %v, before the writer stopped", elapsed)
+
+	final, read_err := os.read_entire_file(module_path, context.allocator)
+	testing.expect_value(t, read_err, os.Error(nil))
+	defer delete(final)
+	written, found := find_odin_file(snapshot, module_path)
+	testing.expect(t, found)
+	testing.expectf(t, written.size == i64(len(final)), "sampled %d bytes while the file holds %d", written.size, len(final))
 }

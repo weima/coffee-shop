@@ -36,6 +36,13 @@ The watcher, compile/test feedback loop, missing-intent warnings, test-filename 
 
 `cd tools/rachel && just test` passes 14 tests without allocator-leak warnings; `just build` succeeds. Linux verification remains outstanding.
 
+`just e2e` runs the compiled binary against temporary Odin projects and checks the real watch loop, which the in-process tests cannot cover: debounced re-check after a save, the missing-intent warning, companion test creation without a recreate loop, the starter justfile path, and clean shutdown on SIGTERM. It passes on macOS; it has not been run on Linux.
+
+`just typing-e2e` is the human-speed check. Two station processes share one worktree: one types a code fragment into `dummy.odin` about eleven characters per second with a pause after each line, the other runs Rachel on the same checkout. The driver asserts both stations resolved the same worktree, then reports what Rachel said while the file was half-typed. Expect failed checks mid-typing: Rachel's 350 ms pause is one fixed wait rather than a quiet window that restarts per edit. No agent session or pane manager is involved.
+
+The watcher overlaps with [watchexec](watchexec.md); that document compares them and records the integration options and the decision to keep the built-in watcher for now.
+
+- [Watchexec comparison](watchexec.md)
 - [Architecture and diagrams](architecture.md)
 - [Implementation plan](PLAN.md)
 - [Roadmap](ROADMAP.md)
