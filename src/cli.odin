@@ -5,7 +5,6 @@ import "core:fmt"
 
 Command_Kind :: enum {
 	Help,
-	Server,
 	Status,
 	Host,
 	Station,
@@ -49,11 +48,6 @@ Command :: struct {
 
 Request_ID_Arguments :: struct {
 	request_id: string `args:"pos=0,required" usage:"Host request identifier."`,
-}
-
-Server_Arguments :: struct {
-	state_root: string `args:"required" usage:"Coffee Shop state directory."`,
-	repository: string `args:"required" usage:"Beans Git repository path."`,
 }
 
 Pr_Arguments :: struct {
@@ -160,12 +154,6 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 		return parse_host_args(args[1:])
 	case "station":
 		return parse_station_args(args[1:])
-	case "__server":
-		options: Server_Arguments
-		if flags.parse(&options, args[1:], .Unix) != nil {
-			return Command{kind = .Help}, "invalid server arguments"
-		}
-		return Command{kind = .Server, state_root = options.state_root, repo = options.repository}, ""
 	case "pr":
 		options: Pr_Arguments
 		if flags.parse(&options, args[1:], .Unix) != nil {

@@ -152,7 +152,6 @@ short_lived_children_unreaped :: proc() -> int {
 		for _ in 0 ..< 20 {
 			_ = process_commands_ps()
 			dev_cancel_escalate(2147483000, 1)
-			_ = server_spawn({"/usr/bin/true"}, "/tmp/cs-no-state", "/tmp/cs-no-repo")
 		}
 		time.sleep(300 * time.Millisecond)
 		posix._exit(c.int(min(defunct_children() - before, 100)))

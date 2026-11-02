@@ -1216,7 +1216,7 @@ station_spool_report :: proc(socket_path: string, message: Activity_Message) -> 
 	}
 	path, _ := filepath.join({spool_dir, name}, context.temp_allocator)
 	temp_path := fmt.tprintf("%s.tmp", path)
-	if write_all_to_file(temp_path, data, os.O_WRONLY|os.O_CREATE|os.O_EXCL).kind != .None || os.rename(temp_path, path) != nil {
+	if write_all_to_file(temp_path, data, os.O_WRONLY|os.O_CREATE|os.O_EXCL) != nil || os.rename(temp_path, path) != nil {
 		_ = os.remove(temp_path)
 		return ""
 	}
@@ -1246,7 +1246,7 @@ station_write_report_file :: proc(socket_path, brew_id, station_id, kind, text: 
 	}
 	name := fmt.tprintf("%s-%s-%s-%s.txt", brew_id, station_id, kind, random_token(context.temp_allocator))
 	temp_path, _ := filepath.join({reports_dir, name}, context.temp_allocator)
-	if err := write_all_to_file(temp_path, transmute([]byte)text, os.O_WRONLY|os.O_CREATE|os.O_EXCL); err.kind != .None {
+	if write_all_to_file(temp_path, transmute([]byte)text, os.O_WRONLY|os.O_CREATE|os.O_EXCL) != nil {
 		_ = os.remove(temp_path)
 		return "", false
 	}

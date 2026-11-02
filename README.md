@@ -131,9 +131,8 @@ odin run src -- --help
 Use `just` for build, check and test. `just test` holds the repository's suite lock, so two runs
 cannot overlap and produce the flakes this repository has already measured.
 
-The Odin tests drive the real binary as separate processes in temporary repositories: the
-`__server` election and idle exit, `pr` and `cleanup` against real Git, the seams, and the
-Station with fake agents. They need Git, a POSIX shell, and the Odin and Go toolchains, but no
+The Odin tests drive the real binary as separate processes in temporary repositories:
+`pr` and `cleanup` against real Git, the seams, and the Station with fake agents. They need Git, a POSIX shell, and the Odin and Go toolchains, but no
 network or AI service. The Go tests cover the host: contract conformance, dispatch, the queue and
 Slots, cancellation, durability, progress supervision and Blend routing.
 
