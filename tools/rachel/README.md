@@ -82,6 +82,29 @@ when the watcher reports no paths, the whole project is checked. `just
 watchexec-e2e` proves the pair against a real watchexec run and skips when
 watchexec is not installed.
 
+## Verify
+
+`rachel verify <project-directory> [path ...]` runs the check stage and, only if it
+passes, the test stage. Each stage prints its own verdict:
+
+```
+rachel: check ok (1 checked)
+rachel: test fail (1 of 2 tests)
+rachel: error module.odin:12:test_wants_two() expected value() to be 2, got 1
+```
+
+Exit `0` only when every stage passed, `1` when one failed, `2` on a usage error.
+`--max-errors`, `--from-env` and path arguments behave as they do for `check`.
+
+The test stage runs the project's `test` recipe for every package that has a
+`*_test.odin` file, or once for the whole project when the justfile is
+hand-written. Odin's `[ERROR] --- [<timestamp>] [<location>] <message>` lines
+become `<location> <message>`, with the timestamp dropped, the project root
+stripped, duplicates removed and the list capped.
+
+`odin run src -- verify .` on this repository reports `check ok (1 checked)` and
+`test ok (24 tests)` in under two seconds.
+
 ## Test-file convention
 
 - Production source uses names such as `memory_usage.odin`.
