@@ -4,10 +4,10 @@ This file defines the coding and test standards for the Coffee Shop repository. 
 
 ## Project boundaries
 
-- Keep Coffee Shop a local Odin CLI that dispatches explicit work to Pi Workers in isolated Git worktrees and Herdr tabs.
+- Keep Coffee Shop a local CLI that dispatches explicit work to Pi Stations in isolated Git worktrees, run by one foreground host (`csd`, in Go). Odin keeps the CLI, the Station, Recipe parsing, worktrees, `pr` and `cleanup`.
 - Keep task decomposition with the Barista and integration decisions with the developer.
 - Do not add automatic task decomposition, merges, publishing, PR creation, remote workers, alternate harnesses, or a daemon without explicit approval.
-- Use one Herdr workspace per Brew and one tab per Shot. Do not add tmux or zmx backends without explicit approval.
+- A Station is a headless child process. Do not add a pane, tab or workspace layer, or a tmux or zmx backend, without explicit approval.
 - Preserve the boundary between Worker-authored changes and Filter verification. Filter reports review and test evidence; it does not rewrite repository test commands or configuration.
 
 ## Odin implementation

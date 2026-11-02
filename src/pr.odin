@@ -386,6 +386,30 @@ run_cleanup :: proc(run_id, branch: string) -> int {
 	return 0
 }
 
+// Blend combines 2 to 20 Pull commits; one Pull is fast-forwarded instead.
+HOST_BLEND_COMMITS_MIN :: 2
+HOST_BLEND_COMMITS_MAX :: 20
+
+// A commit hash is what Git writes: 7 to 40 lowercase hex characters.
+valid_commit_hash :: proc(hash: string) -> bool {
+	if len(hash) < 7 || len(hash) > 40 {
+		return false
+	}
+	for c in hash {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+// A Pull's commit message is one line: git wants it that way, and a newline would split it.
+HOST_COMMIT_MESSAGE_MAX :: 200
+
+valid_commit_message :: proc(message: string) -> bool {
+	return strings.trim_space(message) != "" && strings.rune_count(message) <= HOST_COMMIT_MESSAGE_MAX && !strings.contains_any(message, "\r\n")
+}
+
 pr_operation :: proc(
 	state_root, run_id, shot_id, branch, remote, message: string,
 	blend: bool,

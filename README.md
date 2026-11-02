@@ -4,7 +4,7 @@
 
 Coffee Shop is a local Odin orchestrator for work initiated from a long-lived main-agent session. Pi is the first user-facing **Barista**: it receives a natural-language **Order**, prepares an explicit **Recipe**, and asks a foreground Coffee Shop host to manage isolated Git worktrees and worker sessions. The first usable workflow uses Pi for both main and worker sessions. Oreo may take either agent role once stable; Oreo and Rachel are optional improvements, not prerequisites.
 
-> **Current status:** The interactive workflow is implemented — a foreground host dispatches interactive Pi **Stations** as headless child processes, one isolated Git worktree each, and relays their reports. The retired one-shot `brew`/Worker workflow is no longer part of the CLI; `status` lists live host Stations, with `log` and `reply` for host requests. The automated vertical-slice suite passes on Linux, WSL and macOS, and a real Pi/Herdr smoke Brew passed on macOS with Pi `1.1.0` and Herdr `0.9.3`. The long-lived host, interactive worker sessions, and live completion/needs-input relay are **implemented**; `PLAN.md` records what shipped and what is still live.
+> **Current status:** The interactive workflow is implemented — a foreground host dispatches interactive Pi **Stations** as headless child processes, one isolated Git worktree each, and relays their reports. The retired one-shot `brew`/Worker workflow is no longer part of the CLI; `status` lists live host Stations, with `log` and `reply` for host requests. The automated vertical-slice suite passes on Linux, WSL and macOS, and a real Pi smoke run passed on macOS with Pi `1.1.0`. The long-lived host, interactive worker sessions, and live completion/needs-input relay are **implemented**; `PLAN.md` records what shipped and what is still live.
 
 
 ## The story behind the names
@@ -24,7 +24,7 @@ To **use** Coffee Shop you need:
 
 - Linux (including WSL) or macOS. Linux process identity uses `/proc`; macOS uses Darwin's process-usage API. Native Windows is not supported.
 - [Git](https://git-scm.com/).
-- [Herdr](https://herdr.dev) `0.9.3` and [Pi](https://pi.dev) `1.1.0` on your `PATH`, with Pi already authenticated. A Herdr server must be running, but you do not need to run Coffee Shop inside a Herdr pane: from a plain terminal the Herdr CLI uses its default socket. The Herdr server must be reachable when dispatching Stations.
+- [Pi](https://pi.dev) `1.1.0` on your `PATH`, with Pi already authenticated. Coffee Shop needs no terminal multiplexer: a Station is a plain child process.
 - Whatever the Beans repository's own tests need (for example `npm` or `make`) when running its Taste/checks.
 
 To **develop** Coffee Shop you also need:
@@ -63,14 +63,14 @@ Two things to know:
 
 **Input boundary:** “Coffee Shop waits for input” means the foreground host waits for structured requests from the active main-agent harness. Raw user text goes to that harness; Coffee Shop does not interpret it.
 
-**Current implementation:** the foreground host dispatches interactive Pi Stations as headless child processes (`CS_PANE_BACKEND=headless` selects the supported path), described in [the architecture](docs/architecture.md). The former one-shot `brew` and Worker execution path has been retired; Station output goes to bounded per-Shot logs, and the Herdr pane pool and tab lifecycle no longer exist.
+**Current implementation:** the foreground host dispatches interactive Pi Stations as headless child processes, described in [the architecture](docs/architecture.md). The former one-shot `brew` and Worker execution path has been retired; Station output goes to bounded per-Shot logs, and no pane, tab or workspace layer remains.
 
 
 ### Go host (v0.6, in progress)
 
-`csd` is a second, in-progress implementation of the foreground host, written in Go. It speaks the same wire contract as the Odin host — the same request stream, stdout event shapes, socket paths, and spool and history files — so the same conformance suite runs against both. Today it serves the request stream, receives Station reports over the activity socket with a durable spool and per-request history, and dispatches Shots by driving the Odin CLI's `prepare` and `station` commands. It runs five Slots per host and queues the sixth.
+`csd` is the foreground host, written in Go. It serves the request stream, receives Station reports over the activity socket with a durable spool and per-request history, supervises progress, and dispatches Shots by driving the Odin CLI's `prepare` and `station` commands. It runs five Slots per host and queues the sixth. The Odin host loop this replaced has been deleted; Odin keeps the CLI, the Station, Recipe parsing, Git worktrees, `pr` and `cleanup`.
 
-It takes the same host lock as the Odin host, serves the request socket, and escalates a cancel from SIGTERM to SIGKILL, so `coffee-shop status --stations` and `coffee-shop reply` work against it unchanged; the machine-wide Slot files are shared, so a Go host and an Odin Brew cannot together exceed the budget. The Go host installs its Pi extension itself and has no pane backend. `coffee-shop host` now defaults to Go; `--impl=odin` keeps the prior Odin backend available as a rollback. A normal build embeds and installs its matching `csd`; an explicit `CS_CSD` takes precedence, then the embedded host, then `csd` on `PATH`. A bare `odin run src -- host` has no embedded copy, so it requires a `CS_CSD` or matching `csd` on `PATH` and fails clearly otherwise. During Go handover, Coffee Shop sets `CS_CLI` to the current running executable so Go can drive `prepare` and `station` without buffering the host protocol.
+It holds the host lock, serves the request socket, and escalates a cancel from SIGTERM to SIGKILL, so `coffee-shop status --stations` and `coffee-shop reply` work against it. The machine-wide Slot files bound every host on the machine. The host installs its Pi extension itself and has no pane backend. `coffee-shop host` runs it; there is no second implementation to switch to. A normal build embeds and installs its matching `csd`; an explicit `CS_CSD` takes precedence, then the embedded host, then `csd` on `PATH`. A bare `odin run src -- host` has no embedded copy, so it requires a `CS_CSD` or matching `csd` on `PATH` and fails clearly otherwise. During Go handover, Coffee Shop sets `CS_CLI` to the current running executable so Go can drive `prepare` and `station` without buffering the host protocol.
 
 Oreo and Rachel are improvement tracks, not core dependencies: the Coffee Shop workflow must be usable with Pi alone. See [the architecture](docs/architecture.md) for target and current diagrams and boundaries. See [the plan](PLAN.md) for the next implementation phases. See the [vocabulary](specs/UBIQUITOUS_LANGUAGE_LATEST.md) for the coffee-shop terms.
 
@@ -80,7 +80,7 @@ Oreo and Rachel are improvement tracks, not core dependencies: the Coffee Shop w
 | --- | --- |
 | One local main-agent session (Pi first) with a foreground Coffee Shop controller | A detached background daemon or remote workers |
 | Explicit task breakdown by the Barista | Natural-language task decomposition inside Coffee Shop |
-| Herdr workspaces, isolated Git worktrees, and interactive Pi worker sessions | Oreo/Rachel integration in the core path; unrelated harnesses or workspace backends |
+| Isolated Git worktrees, interactive Pi worker sessions, and one foreground host | Oreo/Rachel integration in the core path; unrelated harnesses or workspace backends |
 | Session history plus completion and needs-input handoff to the main agent | Automatic merge, PR creation, publishing, or cleanup |
 | Human review before integration | Persistent second coordinators |
 
@@ -143,7 +143,7 @@ odin run src -- --help
 
 The `justfile` only wraps the documented Odin commands, so `odin test src` and `odin check src` also work without `just`. Its `test` recipe is what the Filter discovers when it verifies a Station of this repository.
 
-The end-to-end tests in `src/e2e_test.odin` build the real binary and run it as separate processes against fake `herdr` and `pi` scripts in a temporary repository. They cover a multi-Shot Brew with a failure, `status` and `collect` from fresh processes, Station isolation, repeated collection, cancellation (running Workers stopped, queued Shots cancelled, repeatable), and recovery after the supervisor is killed. They need Git, a POSIX shell and the Odin compiler, but no network, AI service or Herdr.
+The end-to-end tests in `src/e2e_test.odin` build the real binary and run it as separate processes in a temporary repository. They cover a multi-Shot Brew with a failure, `status` and `collect` from fresh processes, Station isolation, repeated collection, cancellation (running Workers stopped, queued Shots cancelled, repeatable), and recovery after the supervisor is killed. They need Git, a POSIX shell and the Odin compiler, but no network or AI service.
 
 ## Odin reference
 

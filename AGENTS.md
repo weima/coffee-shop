@@ -26,7 +26,7 @@
 
 ## Terminology
 
-When the user says “Station” or “Stations” in this repository, they mean Coffee Shop Station(s): interactive agent processes in Herdr panes for Shots. Use Coffee Shop’s host workflow to create them; do not interpret this as a Nodeterm session.
+When the user says “Station” or “Stations” in this repository, they mean Coffee Shop Station(s): interactive agent processes, run headless by the Coffee Shop host for Shots. Use Coffee Shop’s host workflow to create them; do not interpret this as a Nodeterm session.
 
 ## Sessions run with codemode
 
