@@ -183,8 +183,7 @@ watch_project :: proc(root: string) -> int {
 			continue
 		}
 		if len(changed) > 0 {
-			time.sleep(350 * time.Millisecond)
-			latest, latest_err := scan_odin_project(root, context.allocator, &current)
+			latest, latest_err := wait_for_quiet(root, &current)
 			if latest_err != nil {
 				delete_string_slice(changed)
 				project_snapshot_destroy(&next)

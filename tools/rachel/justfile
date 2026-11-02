@@ -12,3 +12,8 @@ build: check
 
 run directory:
     odin run src -- "{{directory}}"
+
+e2e:
+    sh e2e/watcher_e2e.sh
+typing-e2e:
+    sh e2e/typing_e2e.sh
