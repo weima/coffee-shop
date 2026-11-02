@@ -13,6 +13,7 @@ CLI_Options :: struct {
 	root:       string,
 	paths:      [dynamic]string,
 	check_once: bool,
+	verify:     bool,
 	from_env:   bool,
 	max_errors: int, // 0 means every error; a human reading a terminal usually wants 1
 }
@@ -36,8 +37,9 @@ test package=".":
 
 parse_cli_args :: proc(args: []string, allocator := context.allocator) -> (options: CLI_Options, err: os.Error) {
 	rest := args[1:]
-	if len(rest) > 0 && rest[0] == "check" {
-		options.check_once = true
+	if len(rest) > 0 && (rest[0] == "check" || rest[0] == "verify") {
+		options.check_once = rest[0] == "check"
+		options.verify = rest[0] == "verify"
 		options.max_errors = CHECK_DEFAULT_MAX_ERRORS
 		rest = rest[1:]
 		for len(rest) > 0 && strings.has_prefix(rest[0], "--") {
@@ -69,7 +71,7 @@ parse_cli_args :: proc(args: []string, allocator := context.allocator) -> (optio
 		return {}, os.Error(clone_err)
 	}
 	options.root = root
-	if len(rest) > 1 && !options.check_once {
+	if len(rest) > 1 && !options.check_once && !options.verify {
 		options_destroy(&options, allocator)
 		return {}, os.Error(.Invalid_Command)
 	}
@@ -189,12 +191,16 @@ run_cli :: proc(args: []string) -> int {
 	if parse_err != nil {
 		fmt.eprintln("Usage: rachel <odin-project-directory>")
 		fmt.eprintln("       rachel check <odin-project-directory> [path ...]")
+		fmt.eprintln("       rachel verify <odin-project-directory> [path ...]")
 		fmt.eprintfln("[ERROR] %s", os.error_string(parse_err))
 		return 2
 	}
 	defer options_destroy(&options)
 	if options.check_once {
 		return check_once(options)
+	}
+	if options.verify {
+		return verify_once(options)
 	}
 	return watch_project(options.root)
 }
@@ -823,18 +829,33 @@ paths_from_watchexec_env :: proc(allocator := context.allocator) -> (paths: [dyn
 	return paths, nil
 }
 
-check_once :: proc(options: CLI_Options, allocator := context.allocator) -> int {
+Check_Summary :: struct {
+	ok:          bool,
+	checked:     int,
+	failures:    int,
+	error_count: int,
+	diagnostics: [dynamic]string, // owned, capped by --max-errors
+}
+
+check_summary_destroy :: proc(summary: ^Check_Summary, allocator := context.allocator) {
+	delete_string_slice(summary.diagnostics, allocator)
+	summary^ = Check_Summary{}
+}
+
+// run_checks is the check stage without its verdict, so verify can tag the result
+// with the stage name. Only operational errors are printed here.
+run_checks :: proc(options: CLI_Options, allocator := context.allocator) -> (summary: Check_Summary, fatal: bool) {
 	root := options.root
 	current, scan_err := scan_odin_project(root, allocator)
 	if scan_err != nil {
 		fmt.eprintfln("[ERROR] cannot scan %s: %s", root, os.error_string(scan_err))
-		return 1
+		return summary, true
 	}
 	defer project_snapshot_destroy(&current, allocator)
 	justfile, justfile_err := ensure_project_justfile(root, allocator)
 	if justfile_err != nil {
 		fmt.eprintfln("[ERROR] cannot prepare Rachel's justfile in %s: %s", root, os.error_string(justfile_err))
-		return 1
+		return summary, true
 	}
 	defer justfile_destroy(&justfile, allocator)
 
@@ -844,7 +865,7 @@ check_once :: proc(options: CLI_Options, allocator := context.allocator) -> int 
 		loaded, env_err := paths_from_watchexec_env(allocator)
 		if env_err != nil {
 			fmt.eprintfln("[ERROR] cannot read watcher paths: %s", os.error_string(env_err))
-			return 1
+			return summary, true
 		}
 		env_paths = loaded
 		if len(env_paths) > 0 {
@@ -857,7 +878,7 @@ check_once :: proc(options: CLI_Options, allocator := context.allocator) -> int 
 	narrowed, whole_project, target_err := check_targets(root, paths, allocator)
 	if target_err != nil {
 		fmt.eprintfln("[ERROR] cannot resolve check paths: %s", os.error_string(target_err))
-		return 1
+		return summary, true
 	}
 	defer delete_string_slice(narrowed, allocator)
 
@@ -869,20 +890,20 @@ check_once :: proc(options: CLI_Options, allocator := context.allocator) -> int 
 			package_dirs, package_err := project_package_dirs(current, allocator)
 			if package_err != nil {
 				fmt.eprintfln("[ERROR] cannot list Odin packages: %s", os.error_string(package_err))
-				return 1
+				return summary, true
 			}
 			defer delete_string_slice(package_dirs, allocator)
 			for package_dir in package_dirs {
 				if append_err := append_unique_package(&directories, package_dir, allocator); append_err != nil {
 					fmt.eprintfln("[ERROR] cannot collect packages: %s", os.error_string(append_err))
-					return 1
+					return summary, true
 				}
 			}
 		} else {
 			for package_dir in narrowed {
 				if append_err := append_unique_package(&directories, package_dir, allocator); append_err != nil {
 					fmt.eprintfln("[ERROR] cannot collect packages: %s", os.error_string(append_err))
-					return 1
+					return summary, true
 				}
 			}
 		}
@@ -903,49 +924,309 @@ check_once :: proc(options: CLI_Options, allocator := context.allocator) -> int 
 	}
 	defer delete(display_owned, allocator)
 
-	checked := 0
-	failures := 0
-	error_count := 0
-	diagnostics := make([dynamic]string, 0, allocator)
-	defer delete_string_slice(diagnostics, allocator)
 	for package_dir in to_check {
-		checked += 1
+		summary.checked += 1
 		outcome, outcome_err := check_package(justfile, root, package_dir, display_root, options.max_errors, allocator)
 		if outcome_err != nil {
 			fmt.eprintfln("[ERROR] could not run the check: %s", os.error_string(outcome_err))
-			return 1
+			return summary, true
 		}
 		if outcome.ok {
 			continue
 		}
-		failures += 1
-		error_count += outcome.error_count
+		summary.failures += 1
+		summary.error_count += outcome.error_count
 		for line in outcome.diagnostics {
-			if options.max_errors == 0 || len(diagnostics) < options.max_errors {
-				_ = append(&diagnostics, line) // ownership moves to diagnostics
+			if options.max_errors == 0 || len(summary.diagnostics) < options.max_errors {
+				_ = append(&summary.diagnostics, line) // ownership moves to summary
 			} else {
 				delete(line, allocator)
 			}
 		}
 		delete(outcome.diagnostics)
 	}
+	summary.ok = summary.failures == 0
+	return summary, false
+}
 
-	if failures == 0 {
-		fmt.printfln("rachel: ok (%d checked)", checked)
-		return 0
+print_check_verdict :: proc(summary: Check_Summary, tag: string) {
+	if summary.ok {
+		fmt.printfln("%sok (%d checked)", tag, summary.checked)
+		return
 	}
-	if error_count == 1 {
-		fmt.printfln("rachel: fail (%d of %d, 1 error)", failures, checked)
-	} else if error_count > 1 {
-		fmt.printfln("rachel: fail (%d of %d, %d errors)", failures, checked, error_count)
+	if summary.error_count == 1 {
+		fmt.printfln("%sfail (%d of %d, 1 error)", tag, summary.failures, summary.checked)
+	} else if summary.error_count > 1 {
+		fmt.printfln("%sfail (%d of %d, %d errors)", tag, summary.failures, summary.checked, summary.error_count)
 	} else {
-		fmt.printfln("rachel: fail (%d of %d)", failures, checked)
+		fmt.printfln("%sfail (%d of %d)", tag, summary.failures, summary.checked)
 	}
-	for line in diagnostics {
+	for line in summary.diagnostics {
 		fmt.printfln("rachel: error %s", line)
 	}
-	if error_count > len(diagnostics) {
-		fmt.printfln("rachel: error ... (%d more)", error_count - len(diagnostics))
+	if summary.error_count > len(summary.diagnostics) {
+		fmt.printfln("rachel: error ... (%d more)", summary.error_count - len(summary.diagnostics))
 	}
-	return 1
+}
+
+check_once :: proc(options: CLI_Options, allocator := context.allocator) -> int {
+	summary, fatal := run_checks(options, allocator)
+	defer check_summary_destroy(&summary, allocator)
+	if fatal {
+		return 1
+	}
+	print_check_verdict(summary, "rachel: ")
+	if !summary.ok {
+		return 1
+	}
+	return 0
+}
+
+Test_Summary :: struct {
+	ok:            bool,
+	packages:      int,
+	tests:         int,
+	failure_count: int,
+	failures:      [dynamic]string, // owned, capped by --max-errors
+}
+
+test_summary_destroy :: proc(summary: ^Test_Summary, allocator := context.allocator) {
+	delete_string_slice(summary.failures, allocator)
+	summary^ = Test_Summary{}
+}
+
+// parse_test_count reads Odin's "Finished N tests" trailer. Zero means the count
+// could not be read, which is reported differently from "no tests".
+parse_test_count :: proc(stdout, stderr: string) -> int {
+	for source in ([]string{stdout, stderr}) {
+		text := source
+		for {
+			index := strings.index(text, "Finished ")
+			if index < 0 {
+				break
+			}
+			rest := text[index + len("Finished "):]
+			digits := 0
+			for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+				digits += 1
+			}
+			if digits > 0 {
+				if value, parsed := strconv.parse_int(rest[:digits]); parsed {
+					return value
+				}
+			}
+			text = rest
+		}
+	}
+	return 0
+}
+
+// test_failure_text turns one Odin test runner line into "<location> <message>".
+// The real form is: [ERROR] --- [<timestamp>] [<location>] <message>
+@(private)
+test_failure_text :: proc(line, display_root: string, allocator := context.allocator) -> (text: string, ok: bool) {
+	trimmed := strings.trim_space(line)
+	if !strings.has_prefix(trimmed, "[ERROR]") {
+		return "", false
+	}
+	separator := strings.index(trimmed, "] [")
+	if separator < 0 {
+		return "", false
+	}
+	rest := trimmed[separator + 3:]
+	close := strings.index(rest, "] ")
+	if close < 0 {
+		return "", false
+	}
+	location := rest[:close]
+	message := strings.trim_space(rest[close + 2:])
+	if len(display_root) > 0 && strings.has_prefix(location, display_root) {
+		location = strings.trim_prefix(location[len(display_root):], "/")
+	}
+	if len(location) == 0 || len(message) == 0 {
+		return "", false
+	}
+	return fmt.aprintf("%s %s", location, message, allocator = allocator), true
+}
+
+// collect_test_failures keeps distinct failures in output order. Deduplication
+// compares against the retained lines, so a flood past the cap can overcount.
+@(private)
+collect_test_failures :: proc(
+	stdout, stderr, display_root: string,
+	limit: int,
+	allocator := context.allocator,
+) -> (failures: [dynamic]string, total: int) {
+	failures = make([dynamic]string, 0, allocator)
+	for source in ([]string{stderr, stdout}) {
+		lines, split_err := strings.split_lines(source, allocator)
+		if split_err != nil {
+			continue
+		}
+		for raw in lines {
+			text, ok := test_failure_text(raw, display_root, allocator)
+			if !ok {
+				continue
+			}
+			duplicate := false
+			for existing in failures {
+				if existing == text {
+					duplicate = true
+					break
+				}
+			}
+			if duplicate {
+				delete(text, allocator)
+				continue
+			}
+			total += 1
+			if limit == 0 || len(failures) < limit {
+				_ = append(&failures, text)
+			} else {
+				delete(text, allocator)
+			}
+		}
+		delete(lines, allocator)
+	}
+	return failures, total
+}
+
+// run_tests is the test stage: every package with a test file, or the whole
+// project once when the justfile is hand-written.
+run_tests :: proc(root: string, max_errors: int, allocator := context.allocator) -> (summary: Test_Summary, fatal: bool) {
+	summary.ok = true
+	current, scan_err := scan_odin_project(root, allocator)
+	if scan_err != nil {
+		fmt.eprintfln("[ERROR] cannot scan %s: %s", root, os.error_string(scan_err))
+		return summary, true
+	}
+	defer project_snapshot_destroy(&current, allocator)
+	justfile, justfile_err := ensure_project_justfile(root, allocator)
+	if justfile_err != nil {
+		fmt.eprintfln("[ERROR] cannot prepare Rachel's justfile in %s: %s", root, os.error_string(justfile_err))
+		return summary, true
+	}
+	defer justfile_destroy(&justfile, allocator)
+
+	display_root := root
+	display_owned: string
+	if resolved, resolved_ok := canonical_path(root, allocator); resolved_ok {
+		display_owned = resolved
+		display_root = display_owned
+	}
+	defer delete(display_owned, allocator)
+
+	directories := make([dynamic]string, 0, allocator)
+	defer delete_string_slice(directories, allocator)
+	if justfile.generated {
+		package_dirs, package_err := project_package_dirs(current, allocator)
+		if package_err != nil {
+			fmt.eprintfln("[ERROR] cannot list Odin packages: %s", os.error_string(package_err))
+			return summary, true
+		}
+		defer delete_string_slice(package_dirs, allocator)
+		for package_dir in package_dirs {
+			if !package_has_test_file(current, package_dir) {
+				continue
+			}
+			if append_err := append_unique_package(&directories, package_dir, allocator); append_err != nil {
+				fmt.eprintfln("[ERROR] cannot collect packages: %s", os.error_string(append_err))
+				return summary, true
+			}
+		}
+	}
+
+	whole_project_call := []string{""}
+	to_test: []string = whole_project_call
+	if justfile.generated {
+		to_test = directories[:]
+	}
+	for package_dir in to_test {
+		summary.packages += 1
+		result := run_just_recipe(justfile, root, "test", package_dir, allocator)
+		if result.process_error != nil {
+			fmt.eprintfln("[ERROR] could not run the test stage: %s", os.error_string(result.process_error))
+			odin_command_result_destroy(&result, allocator)
+			summary.ok = false
+			continue
+		}
+		print_command_output(result)
+		summary.tests += parse_test_count(transmute(string)result.stdout, transmute(string)result.stderr)
+		if !odin_command_succeeded(result) {
+			summary.ok = false
+			lines, total := collect_test_failures(
+				transmute(string)result.stdout,
+				transmute(string)result.stderr,
+				display_root,
+				max_errors,
+				allocator,
+			)
+			summary.failure_count += total
+			for line in lines {
+				if max_errors == 0 || len(summary.failures) < max_errors {
+					_ = append(&summary.failures, line)
+				} else {
+					delete(line, allocator)
+				}
+			}
+			delete(lines) // the dynamic array; its strings were moved or freed above
+		}
+		odin_command_result_destroy(&result, allocator)
+	}
+	return summary, false
+}
+
+print_test_verdict :: proc(summary: Test_Summary, tag: string) {
+	if summary.ok {
+		switch summary.tests {
+		case 0:
+			fmt.printfln("%sok (no tests)", tag)
+		case 1:
+			fmt.printfln("%sok (1 test)", tag)
+		case:
+			fmt.printfln("%sok (%d tests)", tag, summary.tests)
+		}
+		return
+	}
+	if summary.tests > 0 {
+		if summary.failure_count == 1 {
+			fmt.printfln("%sfail (1 of %d tests)", tag, summary.tests)
+		} else {
+			fmt.printfln("%sfail (%d of %d tests)", tag, summary.failure_count, summary.tests)
+		}
+	} else if summary.failure_count > 1 {
+		fmt.printfln("%sfail (%d failures)", tag, summary.failure_count)
+	} else if summary.failure_count == 1 {
+		fmt.printfln("%sfail (1 failure)", tag)
+	} else {
+		fmt.printfln("%sfail (exit code only)", tag)
+	}
+	for line in summary.failures {
+		fmt.printfln("rachel: error %s", line)
+	}
+	if summary.failure_count > len(summary.failures) {
+		fmt.printfln("rachel: error ... (%d more)", summary.failure_count - len(summary.failures))
+	}
+}
+
+verify_once :: proc(options: CLI_Options, allocator := context.allocator) -> int {
+	check_summary, check_fatal := run_checks(options, allocator)
+	defer check_summary_destroy(&check_summary, allocator)
+	if check_fatal {
+		return 1
+	}
+	print_check_verdict(check_summary, "rachel: check ")
+	if !check_summary.ok {
+		return 1
+	}
+	test_summary, test_fatal := run_tests(options.root, options.max_errors, allocator)
+	defer test_summary_destroy(&test_summary, allocator)
+	if test_fatal {
+		return 1
+	}
+	print_test_verdict(test_summary, "rachel: test ")
+	if !test_summary.ok {
+		return 1
+	}
+	return 0
 }

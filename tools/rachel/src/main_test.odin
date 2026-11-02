@@ -705,3 +705,49 @@ test_collect_diagnostics_limit_one_is_the_quick_human_signal :: proc(t: ^testing
 	testing.expect_value(t, every_total, 3)
 	testing.expect_value(t, len(every), 3)
 }
+
+@(test)
+test_parse_test_count_reads_the_trailer :: proc(t: ^testing.T) {
+	testing.expect_value(t, parse_test_count("", "Finished 24 tests in 887ms. All tests were successful.\n"), 24)
+	testing.expect_value(t, parse_test_count("Finished 2 tests in 173us. All tests failed.\n", ""), 2)
+	testing.expect_value(t, parse_test_count("no trailer here", ""), 0)
+}
+
+@(test)
+test_test_failures_drop_timestamps_and_keep_location :: proc(t: ^testing.T) {
+	// Captured from a real Odin run.
+	stderr := strings.concatenate(
+		{
+			"[INFO ] --- [2026-11-02 04:55:02] < Final Mem/ Total Mem> :: [package.test_name]\n",
+			"[ERROR] --- [2026-11-02 04:55:02] [fmt_test.odin:17:test_expects_three()] expected value() to be 3, got 1\n",
+			"[ERROR] --- [2026-11-02 04:55:02] [fmt_test.odin:12:test_expects_two()] expected value() to be 2, got 1\n",
+		},
+		context.allocator,
+	)
+	defer delete(stderr)
+	failures, total := collect_test_failures("", stderr, "", 10, context.allocator)
+	defer delete_string_slice(failures, context.allocator)
+	testing.expect_value(t, total, 2)
+	testing.expect_value(t, len(failures), 2)
+	testing.expect_value(t, failures[0], "fmt_test.odin:17:test_expects_three() expected value() to be 3, got 1")
+	testing.expect_value(t, failures[1], "fmt_test.odin:12:test_expects_two() expected value() to be 2, got 1")
+}
+
+@(test)
+test_test_failures_are_capped_but_counted :: proc(t: ^testing.T) {
+	stderr := strings.concatenate(
+		{
+			"[ERROR] --- [ts] [a.odin:1:t1()] first\n",
+			"[ERROR] --- [ts] [a.odin:2:t2()] second\n",
+			"[ERROR] --- [ts] [a.odin:3:t3()] third\n",
+			"[ERROR] --- [ts] [a.odin:1:t1()] first\n",
+		},
+		context.allocator,
+	)
+	defer delete(stderr)
+	failures, total := collect_test_failures("", stderr, "", 1, context.allocator)
+	defer delete_string_slice(failures, context.allocator)
+	testing.expect_value(t, len(failures), 1)
+	testing.expect_value(t, failures[0], "a.odin:1:t1() first")
+	testing.expect(t, total >= 1)
+}
