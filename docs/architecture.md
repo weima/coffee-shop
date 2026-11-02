@@ -1,312 +1,196 @@
 # Coffee Shop Architecture
 
-The target is an interactive, foreground control loop around the user's main-agent session. Pi is the first Barista; Oreo may take the main-agent or worker role once stable. The Barista is the natural-language interface and owns task decomposition. Coffee Shop owns worktree and worker-session lifecycle, then relays worker events and user replies. The first usable path uses Pi for both agent roles. Oreo and Rachel are optional improvements, not core dependencies.
+Coffee Shop is a local, foreground control loop around a developer's main-agent session. Pi is
+the first **Barista**: it receives raw user input, decides the work, and sends structured
+requests. Coffee Shop runs each unit of work — a **Shot** — as an interactive agent **Station**
+in its own Git worktree, and relays that Station's reports and questions back to the Barista.
+Oreo may take either agent role once stable; Oreo and Rachel are optional, never prerequisites.
 
-## Target interaction flow
+## Who does what
 
-![Target Coffee Shop interactive workflow](diagrams/interactive-workflow.png)<br>
-Source: [`diagrams/interactive-workflow.html`](diagrams/interactive-workflow.html).
+Orchestration is Go. The work is Odin.
 
-The active main-agent session receives raw user input. The foreground Coffee Shop host waits for structured dispatch and control requests from the Barista; it does not parse natural language and is not a detached daemon. The initial target worker session is interactive Pi: it can receive follow-up instructions and return `needs_input` or `completed` events to the main agent. Oreo may be evaluated for either agent role only after the Pi-based flow is usable and Oreo is stable; Rachel is outside the runtime. The exact local transport is not fixed. This loop is **implemented**: the foreground host, interactive Stations, the activity-socket relay and `needs_input` routing all exist. The one-shot `brew`/Worker path has been retired; `PLAN.md` records the decision and remaining v0.6 work.
+| Half | Owns |
+| --- | --- |
+| **`csd`** (Go host) | The foreground loop, the request and activity sockets, dispatch acceptance, the queue and Slot accounting, Station spawn and watch, the bounded per-Shot log, the report relay, the durable spool, per-request history, the progress ledger, cancel escalation |
+| **`coffee-shop`** (Odin CLI) | The commands a person or the Barista runs, the Station and its agent relay, the seams the host drives, Git worktrees, `pr`, `cleanup`, `blend` |
 
-## Current one-shot architecture diagram
-The diagram below documents the `brew` pipeline; the interactive host and its Stations are described under *Current implementation internals*.
+The seam between them is a command line, not a link: `prepare`, `release`, `blend` and `station`
+are ordinary subcommands whose output is data. Orchestrating one Shot costs one process per
+call, and the two halves share no memory.
 
-```mermaid
-flowchart TD
-    Dev[Developer] -->|Order and review| Barista[Active Pi session<br/>Barista]
-    Barista -->|Recipe: order plus Shots| CLI[Coffee Shop brew command and supervisor<br/>Odin]
-    Beans[Target repository<br/>and task context] --> CLI
-    CLI --> Register[Register<br/>current Brew and Shot status]
-    CLI --> Receipt[Receipt<br/>append-only event history]
-    CLI --> Scale[Scale<br/>concurrency limit]
-    CLI --> Stations[Station process per Shot<br/>headless child, log-bounded output]
-    Stations --> Worker1[Worker A<br/>Pi event adapter]
-    Stations --> WorkerN[Worker N<br/>Pi event adapter]
-    Worker1 --> Station1[Station A<br/>isolated Git worktree]
-    WorkerN --> StationN[Station N<br/>isolated Git worktree]
-    Worker1 --> Pi1[Pi CLI<br/>JSON mode]
-    WorkerN --> PiN[Pi CLI<br/>JSON mode]
-    Pi1 -->|newline-delimited JSON events| Worker1
-    PiN -->|newline-delimited JSON events| WorkerN
-    Worker1 -->|bounded normalized events| Activity[Per-Brew Unix-domain stream socket]
-    WorkerN -->|bounded normalized events| Activity
-    Activity -->|validate Brew and running Shot| CLI
-    CLI -->|atomically persist| ActivityState[Latest activity<br/>per running Shot]
-    Status[Coffee Shop status command] -->|read snapshot| Register
-    Status -->|read snapshot| ActivityState
-    Worker1 --> Results[Worker reports and check evidence]
-    WorkerN --> Results
-    Results --> Filter[Filter<br/>review and existing tests]
-    Register --> Collect[Collect completed results]
-    Receipt --> Collect
-    Filter --> Collect
-    Collect --> Tray[Tray<br/>summary, evidence, decisions]
-    Tray --> Barista
-    Barista -->|explicit request| Blend[Proposed Blend command<br/>one commit]
-    Station1 -->|Shot changes| Blend
-    StationN -->|Shot changes| Blend
-    Blend --> Delivery[Retained integration worktree]
-    Delivery -->|commit hash and path| Barista
-    Delivery -. commit succeeds .-> Cleanup[Close Herdr tabs<br/>remove per-Shot Stations]
-    Blend -. conflict or commit failure .-> Preserve[Keep tabs and Stations]
-    Preserve --> Barista
-    Barista --> Dev
-```
-
-## Current implementation internals
-
-The views below document the retired one-shot CLI foundation and repository server. Its execution path has been removed; the interactive host path runs Stations headless.
-
-### Processes
-
-Which processes exist, and what each one may talk to.
+## Processes
 
 ```mermaid
 flowchart LR
-    Dev[Developer or Barista shell] -->|brew| Sup[Brew supervisor process]
-    Dev -->|status, cancel, collect| Cmd[Command process]
-    Sup -->|requests over server.sock| Srv[Repository server]
-    Cmd -->|requests over server.sock| Srv
-    Sup -->|opens tabs and runs Workers| Herdr[Herdr workspace]
-    Herdr --> W[Worker process, one per Shot]
-    W -->|requests with Brew token| Srv
-    W -->|runs| Pi[pi --mode json --print]
-    Srv -->|only writer| State[(register.json and receipt.ndjson)]
+    Dev[Developer] --> Barista[Pi main session<br/>Barista]
+    Barista -->|dispatch, reply, cancel,<br/>status, log, pr, cleanup| CLI[coffee-shop<br/>Odin CLI]
+    CLI -->|host| Host[csd<br/>Go host, foreground]
+    Host -->|station seam<br/>one process per Shot| Station[Station<br/>Odin, headless]
+    Station -->|prompts, replies| Agent[Pi agent<br/>RPC on stdin/stdout]
+    Station -->|reports over activity.sock| Host
+    CLI -->|reply over requests.sock| Host
+    Host -->|history, spool, logs| State[(state root)]
+    CLI -->|read history, tail logs| State
+    Station -->|Git worktree| Beans[(Beans repository)]
 ```
 
-### File ownership
+A Station is a plain child process: no terminal, pane, tab or multiplexer is involved, so the
+same design runs on macOS and WSL2.
 
-Each file has one writer, so no file needs a lock shared between processes.
+## A request's life
 
-```mermaid
-flowchart TD
-    Brew[brew command, before any Worker exists] -->|creates| Reg[register.json]
-    Brew -->|creates| Rec[receipt.ndjson]
-    Srv[Repository server] -->|sole writer after launch| Reg
-    Srv -->|sole writer after launch| Rec
-    Srv -->|rewrites with heartbeat| Meta[servers/name-hash/server.json]
-    Srv -->|holds| Lock[servers/name-hash/server.lock]
-    W[Worker for one Shot] -->|writes its own| Started[workers/shot.started]
-    W -->|writes its own| Result[results/shot.json]
-    W -->|writes its own| Report[reports/shot.md]
-    W -->|writes its own| Act[workers/shot.activity.json]
-    Cancel[cancel command] -->|writes marker only| Marker[cancel marker file]
-```
+1. The Barista writes one JSON request per line to the host's stdin. The host acknowledges it
+   with `received`, then acts.
+2. A `dispatch` request is validated in full before any work starts: an absolute repository
+   path, at least one Shot, unique safe ids, prompts, and the optional `model`, `thinking`,
+   `kind`, `taste`+`message`, `interactive` and `codemode` fields.
+3. For each Shot the host acquires a Slot, then calls the `prepare` seam to create the worktree
+   and write the prompt, and starts the `station` seam in that worktree.
+4. The Station reports each turn over the activity socket. The host records the report in
+   `<state>/host/<request>/history.ndjson`, then announces it on stdout with an `at` stamp.
+5. A terminal report — `pulled`, `taste_failed`, `incomplete` or `session_failed` — frees the
+   Shot's Slot and starts whatever was queued behind it. A Station that exits without one frees
+   its Slot on exit instead.
+6. The Barista reads the event stream. `status --stations`, `log` and `reply` are the controls
+   it and the developer use while a run is live.
 
-Commands read only a Brew's repository path and token from `register.json`, to find their server. Brew status always comes from the server.
+## Host internals
 
-### Transition through the server
+### Slots and the queue
 
-A Worker's state change, including the retry-then-abort path. No client reads or writes `register.json` directly.
+Five Shots run at once. Beyond that a Shot is queued, which the host announces as
+`dispatch_queued`, and it starts with `dispatch_dequeued` when a Slot frees. The budget is also
+machine-wide: a host takes numbered lock files under `<state>/machine-limit/`, so two hosts
+cannot exceed it together.
 
-```mermaid
-sequenceDiagram
-    participant W as Worker
-    participant C as Client code
-    participant S as Repository server
-    participant F as register.json and receipt.ndjson
-    W->>C: transition Shot to running
-    C->>S: connect to server.sock
-    alt server reachable
-        S->>F: check repository and token, then append Receipt event
-        S->>F: rewrite Register
-        S-->>C: ok
-        C-->>W: ok
-    else server not reachable
-        C->>C: start a server if none is running
-        loop a fixed number of attempts, pausing between them
-            C->>S: connect to server.sock
-        end
-        C-->>W: abort with the cause, no state changed
-    end
-```
+### Reports, history and the spool
 
-### Server lifecycle
+- A Station sends one JSON line per report on `<state>/host/activity.sock`: `brew_id`, `shot_id`,
+  `kind`, `description`, `timestamp_ns`.
+- A report longer than the activity limit is written to `<state>/host/reports/` and the socket
+  carries `file:<path>` instead, which the host reads in full.
+- Every report is copied to `<state>/host/spool/` before it is announced, and the copy is removed
+  only after it has been relayed. A host that dies mid-announce leaves the copy behind; the next
+  host on that state root replays it before accepting new reports.
 
-The server is one process per repository. A restart keeps its id, so Workers launched earlier still reach it.
+### Progress supervision
 
-```mermaid
-stateDiagram-v2
-    [*] --> Electing
-    Electing --> Standby: lock held by another server
-    Standby --> [*]: this process exits
-    Electing --> Serving: lock acquired, generation plus one written
-    Serving --> Serving: serve request, heartbeat each second
-    Serving --> Idle: no non-terminal Brew for this repository
-    Idle --> Serving: a Brew becomes active
-    Idle --> Exited: idle timeout passes
-    Serving --> Crashed: process dies
-    Crashed --> Electing: kernel releases lock, next client starts a server with the same id
-    Exited --> [*]
-```
+The host keeps a ledger of live Stations, rebuilt from history at start. It raises two events:
 
-### Current one-shot Shot states
+- `needs_input_alert` when a Station reports `needs_input`, naming the Station and the session
+  key a reply must use. One question produces one alert.
+- `stale_warning` after ten minutes without any report. It is a warning, never a cancel, and any
+  report restarts the quiet period.
 
-These Register states describe the one-shot `brew` path. The interactive path has its own Station lifecycle, including a pause/input state, described under *Current implementation internals*.
+A released Station can neither warn nor alert again.
 
-```mermaid
-stateDiagram-v2
-    [*] --> queued
-    queued --> running: Worker started
-    queued --> failed: launch failed
-    queued --> cancelled: cancelled before start
-    running --> completed: CS-DONE, or exit 0 in a v0.1 Brew
-    running --> incomplete: no marker, or CS-BLOCKED
-    running --> failed: exit with an error
-    running --> cancelled: exited after a cancel request
-    running --> interrupted: exit not seen, or not confirmed after cancel
-```
+### Cancellation
 
-### One host implementation
+`cancel` asks the host to stop one Shot, or every Shot of a request. The host sends `SIGTERM` to
+the Station's process group, and escalates to `SIGKILL` after two seconds if the Station is still
+there. The Station's own handler closes the agent's input, so the agent exits on its own instead
+of dying when the pipes go away.
 
-The foreground host is `csd`, written in Go, behind the wire contract in [the v0.6 Go subsystem design](plans/2026-10-31-v0-6-go-subsystem-design.md). The Odin host loop this replaced has been deleted. Orchestration lives in Go: the host loop, the request and activity sockets, dispatch acceptance, the dispatch queue and Slot accounting, the Station process and its bounded log pump, the relay, the spool and the history. The work stays in Odin: a Station's own labour — the agent, its RPC lines and dialogs, the turn deadline, cancel propagation, the Taste and the commit — and the repository work, which is worktrees, Blend, `pr` and cleanup. Go reaches the Odin side through command lines, `prepare` and `release` for the worktree and the unchanged `station` for the Station, so orchestrating one Shot costs one process per call and the two halves share no memory.
+### Sockets and the lock
 
-## Components
-
-| Component | Responsibility |
+| Path | Purpose |
 | --- | --- |
-| **Barista** | The long-lived, user-facing main-agent session. Pi is first; Oreo may take this role later when stable. It receives Orders, owns task decomposition, and relays worker events and human replies. |
-| **Coffee Shop host** | Implemented: `csd`, a foreground Go control process started by the Barista. It reads one JSON request per line, launches Stations and relays their reports; it does not interpret natural language. The legacy CLI is one-shot. |
-| **Coffee Shop CLI** | Current commands validate inputs, create Stations, start Workers in Herdr, record state, and collect results. |
-| **Beans** | The target repository and task context supplied to workers. |
-| **Recipe** | An Order and its explicit list of Shots. The Barista owns task decomposition. |
-| **Shot** | One unit of work with one prompt and one Worker. |
-| **Station** | A Git worktree isolated to one Shot. |
-| **Worker** | Implemented: an interactive Pi session driven by a Station. The Station runs as a headless child process, started by the Go host; its output goes to a bounded per-Shot log under `<state>/host/<request>/logs/<shot>.log`, and no pane, tab or workspace layer exists. The one-shot path uses a non-interactive Pi JSON/print process per Shot. Oreo is a later optional alternative, not a prerequisite. |
-| **Activity channel** | Current per-Brew Unix-domain socket for best-effort progress summaries. It does not deliver `needs_input` or completion to the main Pi and does not establish liveness. |
-| **Session bridge** | Implemented: the activity socket carries Station reports (`turn_done`, usage, outcome) to the host, and a routed `reply` request is forwarded to the Station and its agent as input. |
-| **Register** | Durable current status for each Brew and Shot. |
-| **Receipt** | Append-only events that explain status changes. |
-| **Server** | Current per-repository state server. It starts on demand, holds the Register in memory, and is the only writer of Brew state. It exits when the repository has no active Brew; it is distinct from the target foreground Coffee Shop host. See the Server section below. |
-| **Scale** | The maximum number of concurrent Workers. |
+| `<state>/host/host.lock` | Held for the host's life, so "a host is running" is a kernel fact |
+| `<state>/host/activity.sock` | Station reports |
+| `<state>/host/requests.sock` | `coffee-shop reply`, 0600 in a 0700 directory |
 
-| **Tray** | The final review packet with the outcome, evidence, and any decision for the developer. |
-| **Blend (proposed)** | An explicit post-review operation that gathers a Brew's Shot changes into one commit in a retained integration worktree, then removes the per-Shot worktrees after success. |
+### State layout
 
-## Recipe contract
+```
+<state>/host/
+  host.lock  activity.sock  requests.sock
+  bin/            the extracted csd
+  extensions/     the installed Pi extension
+  spool/          reports not yet relayed
+  reports/        full text of over-long reports
+  <request>/
+    history.ndjson   every event the host emitted for this request
+    prompts/<shot>.md
+    logs/<shot>.log  bounded, rotated once
+    stations/<shot>/ the Shot's Git worktree
+```
 
-Recipes are strict JSON objects described by the root `recipe.schema.json`. They have exactly one of `order`/`order_file`, a non-empty `shots` array, optional `share`, optional model/thinking defaults, and optional `preamble`/`preamble_file`. A Shot has exactly one of `prompt`/`prompt_file`, a unique safe `id`, optional model/thinking overrides, and optional `expect_changes`. File inputs resolve relative to the Recipe, reject absolute/traversal paths, and are read before Stations are created. Text is snapshotted in Brew state. Scale defaults to two; `workers` opts into 1–5.
+`history.ndjson` is what `status --stations` reads: a Station that has said nothing looks idle
+until its `stale_warning` fires.
 
-The foreground host's dispatch request carries the per-Shot `model` and `thinking` fields. A Pi Station defaults to `opencode-go/deepseek-v4.1-flash`; an explicit Shot model overrides it. An Oreo Shot still requires its own provider/model route. A Shot that omits `thinking` runs at Pi's own default, which the developer cannot see from the request. The thinking level is a cost control, not a cosmetic setting: it drives how many turns a Station takes, and turn count is what dominates a Station's token spend.
+## The Station
 
-## Shared paths
+`coffee-shop station --report <socket> --station <id> --brew <request> --prompt-file <path> --
+<agent argv>` runs one Shot.
 
-A Station is a fresh checkout, so gitignored dependency directories (`node_modules`, `vendor/bundle`, `.venv`) are absent from it, and installing them per Station would waste space and time. The Recipe's `share` list names Beans paths to symlink into every Station instead. Each path must be relative, free of `..`, outside `.git`, present in the Beans, and gitignored there; otherwise `brew` fails before it creates any state. The check also guarantees a shared path never collides with a tracked file.
+1. It starts the agent and speaks the Pi RPC subset on its stdin/stdout: a `prompt` in, an
+   `agent_end` out.
+2. It reports `turn_done` per turn, `usage` when Pi answers `get_session_stats`, and
+   `agent_exited` when the agent goes.
+3. Replies arrive as lines on its stdin. `coffee-shop reply` sends one through the host's request
+   socket; typing into the Station's own stdin does the same.
+4. A research Shot and a Pull are one turn: after the first `agent_end` the Station closes the
+   agent's input so its post-exit checks run — the research cleanliness check, or the Taste and
+   optional commit. `--interactive` keeps the session open instead.
+5. A dialog from the `coffee_shop_ask` extension reaches the Barista as `needs_input`; the
+   Station keeps it until a reply arrives.
 
-A `.gitignore` entry such as `node_modules/` matches only directories, so a symlink to one would appear as an untracked change. Coffee Shop therefore adds an anchored entry (`/node_modules`, no trailing slash) to the repository's shared `info/exclude` file once per path. The entry is redundant for the Beans' real directory and is not duplicated by later Brews. The shared list is recorded in the Register.
+The Station is harness-neutral: it starts whatever argv it is given, so Oreo can take the same
+role when it speaks the same RPC subset.
 
-The link is read-through, so a Worker that installs packages modifies the Beans' real copy. Coffee Shop does not prevent this; the Barista should tell Workers not to install dependencies.
+## Git worktrees
 
-## Local state
+Each Shot gets a worktree at `<state>/host/<request>/stations/<shot>` on branch
+`cs-host-<request>-<shot>`, created by the `prepare` seam from the Beans' `HEAD`. Uncommitted
+changes in the Beans are invisible to a Station, so commit first. The `release` seam removes a
+worktree and leaves its branch.
 
-Store each Brew under `$CS_STATE_DIR/<brew-id>/`; when `CS_STATE_DIR` is unset, the default is `~/.coffee-shop/<brew-id>/`. `CS_STATE_DIR` must be an absolute path. Coffee Shop does not use XDG or any other platform directory convention. A Brew ID is `brew-<UTC start time>-<pid>`, for example `brew-20261008T041500Z-1634886`, so sorting by name sorts by start time. IDs are never reused; a counter is appended if two Brews would collide. `register.json` contains its current state; `receipt.ndjson` is its append-only event history. This state remains outside the Beans repository.
+A Pull commits only after its Taste passes, and reports the short hash as `pulled`. A Taste that
+cannot run or exits non-zero reports `taste_failed` and leaves the worktree unchanged.
 
-Each Brew has a Brew token, `<brew-id>-<guid>`, recorded in `register.json` when the Brew is created. Workers receive it at launch and present it, and a Worker carrying another Brew's token is refused before it records a start. The GUID tells apart Workers that share a resource; it is not a security measure.
+## Blend
 
-Each Brew keeps its state under one repository server. That server keeps its files under `$CS_STATE_DIR/servers/<name>-<hash>/`, with `server.json` (pid, generation, heartbeat, socket path, repository path), `server.lock` and `server.sock`. The server holds `server.lock` for its whole life, so liveness is a kernel fact. The heartbeat is for display only. A restarted server keeps its id, `<name>-<hash>`, so Workers launched under the old server still reach its socket. The server is the only reader and writer of Brew state after launch: commands, the supervisor and Workers ask it over `server.sock`. If it cannot be reached, a client waits and retries a few times, starting the server if needed, and then aborts with the cause. There is no fallback to reading files directly. Before a Brew's first Worker starts, its files are created directly by `brew`.
+`blend` combines 2 to 20 Pull commits into one commit on a new branch, in a temporary worktree
+under the state root. It cherry-picks, commits, removes the worktree and keeps the branch. A
+conflict or a failed commit removes the worktree *and* the branch, so nothing half-finished is
+left behind. It never pushes.
 
-The Receipt event is appended before the Register is rewritten, so a crash between the two leaves the Receipt one or more events ahead. The server repairs that case: it replays the complete Receipt lines the Register does not yet record, checking each one against the state before it, and cuts off a final line that was never fully written. Any other disagreement, or a failed check, leaves both files untouched and reports the Brew's state as unknown, naming the failing line when it can. To recover from that, inspect `receipt.ndjson` and `register.json` by hand; the Receipt is the more detailed record. A file that cannot be read for another reason, such as permissions, is reported as an I/O error rather than as corruption.
+The host drives it through the `blend` seam: the request goes to a file, the seam prints its
+events, and the host relays and records them.
 
-## Server
+## Integration
 
-The server for a repository is described under Local state. This section describes how it talks to clients and how it stays correct.
-
-- **Transport.** A Unix stream socket, `server.sock`, inside the server's directory, which only the user can read. A connection carries one request and one response, each a single JSON line. The socket path must fit the kernel limit of about 107 bytes, so a long `CS_STATE_DIR` is refused with an explanation. Local clients need no network boundary, so TCP is not used.
-- **Requests.** `snapshot` returns the Register. `transition` and `request_cancel` change one Shot and return the updated Register. Every request must name a Brew of this repository and carry that Brew's token; a Worker with another Brew's token is refused.
-- **Concurrency.** One thread with a non-blocking event loop (`poll`) over the listener and every connected client. Each client gets its own buffers, so a client that stalls or reads slowly delays only itself. A change is always written and synced before its response is sent, so the loop waits for the disk while one change is applied.
-- **Socket hygiene.** The listener and every accepted socket are non-blocking and close-on-exec, so a child process never inherits them.
-- **Timeouts.** A client that does not finish its request or response within 15 seconds is dropped. A server with no active Brew on its repository exits after 30 seconds; the next command starts a new one.
-- **Retries.** A client that cannot reach the server starts it if none is running, retries up to six times with half a second between attempts, then aborts with the cause.
-- **Stale servers.** A lock belongs to the file it was taken on. A server that finds its lock file replaced, because the directory was removed and recreated, stops without touching the socket path, which now belongs to its successor.
-
-## Current one-shot Shot lifecycle
-
-| State | Meaning |
-| --- | --- |
-| `queued` | The Shot is validated and waiting to start. |
-| `running` | Its Worker has started and no terminal outcome is confirmed. |
-| `completed` | For v0.1 Brews, the Worker exited successfully. For v0.2 Brews, it exited successfully and ended its final response with `CS-DONE`. |
-| `failed` | The Worker could not be launched or exited unsuccessfully. |
-| `cancelled` | The Shot was cancelled before launch, or its Worker exited after a cancellation request. |
-| `interrupted` | The Worker outcome cannot be proved, for example after an unexpected session loss. |
-| `incomplete` | A v0.2 Worker exited successfully but did not finish with `CS-DONE`, declared `CS-BLOCKED`, or failed its `expect_changes` check. |
-
-Allowed transitions are `queued` → `running`, `failed`, or `cancelled`, and `running` → `completed`, `failed`, `cancelled`, `interrupted`, or `incomplete`. A cancellation request is recorded separately; a running Shot stays `running` until the Worker exit is confirmed, then becomes `cancelled`. Cancelling a Brew marks queued Shots `cancelled` and interrupts active Workers. Brew status is derived from its Shots rather than maintained as a second state machine.
-
-## Worker activity
-
-A Worker runs Pi with `--mode json --print --no-session`. It parses newline-delimited Pi events and sends only short normalized summaries (for example, a tool name or “drafting response”) over the Brew's Unix-domain stream socket. Each newline-delimited event is bounded and includes a timestamp. The Worker does not send prompts, tool arguments, tool output, or response deltas; send and receive failures do not fail a successful Pi run. The Worker still extracts the final assistant text for the report.
-
-The supervisor stamps received events and atomically saves the latest activity under `workers/<shot>.activity.json`. `workers/<shot>.started_at` records the Worker start time. A `status` snapshot shows running time and the age/description of the last activity on the same line as the Shot. Activity older than 12 minutes is marked quiet; this is not a timeout. A missing socket or activity record only removes progress detail. Worker process identity remains the authority for liveness and completion.
-
-### Station usage
-
-A Station reports what it cost. Once Pi has settled, the Station asks it for `get_session_stats` and records one `usage` report carrying the model, the thinking level, `input`, `output`, `cacheRead`, `cacheWrite`, `total`, and `cost`.
-
-- **Source.** `get_session_stats` is Pi's own accounting for the whole session, so Coffee Shop never estimates tokens from message text. This is the evidence for the v0.3 gate that recorded tokens match the provider.
-- **Cost may be unavailable.** Pi reports `0` for a model its catalog cannot price. Tokens are always recorded; `cost` is recorded only when Pi reports a non-zero value, and is otherwise reported as unavailable with that reason, never as free.
-- **Advisory only.** Usage is evidence for the developer. A missing, unreadable, or failed stats response removes the numbers and never fails a Station, exactly as activity reporting does.
-- **Why it is recorded.** Cost is dominated by turn count rather than prompt size, and `cacheRead` dominates the token total, because every turn re-reads the conversation so far. Per-Station usage is what makes a Station that is thrashing visible while it is still running, instead of only in the provider's billing page afterwards.
-
-## Cancellation and recovery
-
-`cancel <brew-id>` records a cancellation request and is safe to repeat. While the supervisor is alive it does the work: queued Shots become `cancelled`, and each running Station is asked to stop with `SIGTERM`. A Station handles that signal by closing the agent's input, so the agent exits on its own instead of dying when the Station's pipes go away, and then exits normally. The supervisor waits up to five seconds for the Station to exit; if it has not, it closes the Herdr tab as a fallback, which ends whatever is left in the pane. A Shot becomes `cancelled` once its Worker process is confirmed gone, or `interrupted` if that cannot be confirmed within the existing ten-second grace period.
-
-The supervisor records its process identity (PID plus kernel start time, so a reused PID is not mistaken for it) in `supervisor.json`; each Worker does the same in `workers/<shot>.started`. If the supervisor has died, `status` says so, and `collect` or `cancel` take over its job using only evidence: a Worker's result file is recorded as completed or failed, and a Worker that vanished without a result becomes `interrupted`. A live Worker is left alone unless the Brew is being cancelled. A Shot is never marked `completed` without a recorded successful result.
-
-Liveness has three answers, not two. A process is **gone** only on evidence. On Linux, Coffee Shop checks whether `/proc/<pid>/stat` is missing, is a zombie, or has a different start time. On macOS, `proc_pid_rusage` supplies the process start and exit times; if that lookup fails, `kill(pid, 0)` proves absence only when it reports `ESRCH`. Any other unreadable or malformed record is **unknown**, and unknown is never treated as gone: a Worker is not recorded as `interrupted`, `cancel` does not confirm an exit it cannot see (after its grace period the Shot ends `interrupted`, which says the exit was not confirmed), and `collect` and `cancel` do not take over from a supervisor whose state they cannot read. A process that cannot record its own identity says so and stops rather than writing a guessed start time.
-
-## Filter and Tray
-
-`collect` runs the Filter once for each `completed` Shot and saves its evidence in `<brew>/filter/<shot>.json`; later collections show the saved evidence without re-running Pi or the tests. Delete that file to run the Filter again for a Shot.
-
-- **Review.** A one-shot `pi --print --no-session --no-extensions --no-mcp --tools read,grep,find,ls` reviews `git diff <base commit>` plus the untracked file list against the Station's `standards.md`. The tool allowlist is what keeps it read-only. The Brew records the Beans HEAD commit as the base when it starts. If `standards.md` is missing, the base commit is unknown, there are no changes, or Pi fails, the Tray says the review was not performed; it never shows a failed review as clean.
-- **Checks.** Test commands are discovered, never invented, from the Station's own manifests: `package.json` scripts (`test`, `test:unit`, `test:e2e`, `e2e`, `test:playwright`, using the package manager its lockfile or `packageManager` field names), `justfile` (also `Justfile`, `.justfile`) and `Makefile` `test`/`e2e`/`test-e2e` targets, `go.mod`, and `Cargo.toml`. A recipe that needs arguments is skipped, since a bare run could not execute it. If more than one candidate exists for a kind, none is run and the Tray reports the ambiguity. A Playwright configuration without an e2e script, or no recognized test configuration, is reported rather than guessed at.
-- **Limits.** Checks run inside the Station, a fresh checkout: dependencies the repository does not commit (for example `node_modules`) are absent, and a command may write build output there. Failures from either cause are reported as failures. Output is kept to its tail, and there is no timeout.
-- **Decisions.** The Tray ends with "Decisions for the developer": any Shot that did not complete, a review that reported findings or could not run, a failing check, and every ambiguity or gap above.
-
-## Current one-shot data flow
-
-The following is the implemented `brew` lifecycle; it is not the target user-to-worker interaction loop.
-
-1. The Barista supplies a JSON Recipe and the path to the Beans.
-2. The CLI validates the repository and Recipe before it starts Workers.
-3. The CLI creates one Station per Shot and one Herdr workspace per Brew. A per-Brew supervisor creates one tab per Shot, runs `pi --mode json --print --no-session` from each Station, and keeps at most the Recipe's Worker limit active (two by default, five maximum). It schedules queued Shots as slots open, receives best-effort activity messages, and exits when the Brew is terminal.
-4. Workers write their result and check evidence to their own Station. The Barista may assign a normal Shot to add tests from `standards.md`; that Worker receives the Taste-Driven Development skill as task guidance, without installing it into the Beans repository.
-5. The CLI updates the Register and Receipt as it observes Worker state. The repository's server makes these writes. The supervisor persists latest activity separately; activity recency never changes liveness. The Scale uses the Recipe's Worker limit (two by default, five maximum); the supervisor continues queued independent Shots after a Worker fails. There is no automatic timeout.
-6. Filter runs a separate one-shot Pi code review against `standards.md`, then discovers and runs the repository's existing unit/component and end-to-end test commands without overriding them.
-7. The Barista collects Worker reports and Filter evidence into the Tray for human review.
-8. The proposed `blend <brew-id>` action integrates reviewed Shot changes after the Barista approves the Tray.
-
-## Blend (proposed)
-
-Blend creates one retained integration worktree from the Brew's recorded Beans base commit and combines its Shot changes into one local commit. Workers continue not to commit. On success, Blend closes that Brew's Herdr tabs and removes its per-Shot Station worktrees, but preserves Brew state, reports, and Filter evidence. It prints the commit hash and integration-worktree path; it never pushes or creates a PR. The Barista removes the retained integration worktree only after the owner is done with it.
-
-If changes conflict or the commit fails, Blend leaves the original tabs, Stations, and state intact. The action is explicit and scoped to one Brew; it does not clean up historical or unrelated Brews.
-
-## Human development worktrees
-
-This workflow is for worktrees used by a human or coding agent to develop Coffee Shop itself. It is separate from Brew Stations, which Coffee Shop creates for Pi Workers.
-
-- Create and remove development worktrees with `wt`, using the configured `~/.wt/coffee-shop/<branch>` layout and slash-free branch names.
-- Whenever a development worktree is created, open a dedicated Herdr workspace with one human-operated tab rooted at that worktree. The tab is for the developer's Git operations and inspection, not a Pi Worker. Worktree setup is incomplete until this tab is open; if Herdr is unavailable, report the failure and leave the worktree intact.
-- Keep the tab and worktree available while the branch is under review or the PR is not confirmed merged.
-- Only after the human confirms that the PR has been merged into the local root checkout may the associated Herdr tab be closed and the worktree removed. Before cleanup, verify the root checkout contains the merged work and the worktree has no uncommitted changes. Close the tab, then remove the worktree with `wt`; if either verification fails, preserve both and ask the human. Never force-remove or silently discard changes.
+`pr <run-id> <shot-id> --branch <name>` verifies from history that the Shot passed Taste and
+recorded a commit, fast-forwards the developer's branch to it, pushes, and opens a PR with `gh`.
+`--blend --message <text>` combines a multi-Pull run first. `cleanup <run-id>` removes that run's
+worktrees and keeps every branch. Both are explicit, human-run commands: Coffee Shop never merges
+or publishes on its own.
 
 ## Safety boundaries
 
-- A Worker never shares a Station with another Worker in the same Brew.
-- Herdr launches Workers from command text. Its command contains only Coffee Shop's internal Worker subcommand, the state directory (so the Worker reads the same Brew state even when `CS_STATE_DIR` is set), and validated Brew/Shot IDs. That subcommand reads the prompt as data and starts Pi with a separate argument vector; Order and Shot text never enter shell syntax.
-- Coffee Shop reports a missing or failed Worker as incomplete. It does not treat an unreadable state record as success.
-- A test-authoring Worker reads the Beans repository's root `standards.md` and receives Taste-Driven Development as task guidance; Coffee Shop does not install the skill into the Beans repository.
-- Filter reports review findings and test outcomes; it does not auto-fix, commit, merge, publish, or manage CI. It does not rewrite test scripts or configuration. If discovery is ambiguous or setup is unavailable, it reports that instead of guessing.
-- Workers do not merge, commit, or publish their changes. A person reviews the Tray and explicitly decides when to integrate them.
-- Coffee Shop preserves Stations and Brew state by default. The proposed Blend action removes only the target Brew's per-Shot worktrees after its single integration commit succeeds; Brew state, reports, and Filter evidence remain.
-- **Current one-shot behavior.** The per-Brew supervisor exists only while `brew` is active. A repository's state server exits after an idle timeout; it is not the foreground host.
-- **Target host behavior.** The Coffee Shop controller stays attached to the main-agent session and routes worker events and replies. A detached global daemon remains out of scope.
-- The Register and Receipt live under the Coffee Shop state directory, outside the Beans repository.
+- A Station sees only its own worktree; it never shares one with another Shot.
+- Prompt and reply text travel as data: the host builds an argv for the `station` seam, and a
+  Blend request travels in a file. Task text never enters shell syntax.
+- A failed Station is reported as `session_failed` or `incomplete`; an unreadable record is never
+  read as success.
+- The host holds one lock, so two hosts cannot serve the same state root, and the machine-wide
+  Slot files bound every host together.
+- Nothing is deleted automatically: Station worktrees, branches and state accumulate until `pr`
+  or `cleanup` removes them.
+- A detached daemon, remote execution, unrelated agent or session backends, automatic merge and
+  publishing remain out of scope.
 
 ## Target boundaries
 
-Target one machine, a user-facing main-agent/Barista session (Pi first), and a foreground Coffee Shop host. Pi is required for the first usable path. Oreo may take the main or worker agent role after the Pi-based workflow is usable and Oreo is stable; Rachel is a developer aid outside the runtime. Keep task decomposition with the Barista and integration decisions with the developer. A detached daemon, remote execution, unrelated agent/session backends, automatic task decomposition, automatic merge, PR creation, and publishing remain out of scope.
+One machine, a user-facing main-agent/Barista session (Pi first), and one foreground host. Pi is
+required for the first usable path. Oreo may take the main or worker role once the Pi-based flow
+is usable and Oreo is stable; Rachel is a developer aid outside the runtime. Task decomposition
+stays with the Barista and integration decisions with the developer.
+
+## Retired designs
+
+Earlier releases built a one-shot `brew`/Worker pipeline: a per-Brew supervisor, Herdr workspaces
+and tabs, a Recipe file format, a Register/Receipt state server, a Filter and a Tray. All of it is
+gone from the runtime — the Recipe file input in #172, the pane layer in #174, the Odin host in
+#176. `PLAN.md` keeps the record of those releases and the reasons behind each decision.
