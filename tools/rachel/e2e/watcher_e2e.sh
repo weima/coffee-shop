@@ -158,6 +158,12 @@ grep -F -q 'rachel: fail (1 of 1, 2 errors)' "$work/check-fail.out" ||
 grep -F -q '/module.odin(' "$work/check-fail.out" &&
 	fail "verdict still prints absolute paths"
 
+first=$("$bin" check --max-errors 1 "$project" 2>/dev/null || true)
+case "$first" in
+"rachel: fail (1 of 1, 2 errors)"*"rachel: error module.odin("*"rachel: error ... (1 more)"*) ;;
+*) fail "max-errors 1 did not report the first error and the remainder: $first" ;;
+esac
+
 verdict=$("$bin" check "$project" "$project/module.odin" 2>/dev/null || true)
 case "$verdict" in
 "rachel: fail"*) ;;

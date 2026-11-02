@@ -4,6 +4,7 @@ import "base:runtime"
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
+import "core:strconv"
 import "core:strings"
 import "core:sys/posix"
 import "core:time"
@@ -13,6 +14,7 @@ CLI_Options :: struct {
 	paths:      [dynamic]string,
 	check_once: bool,
 	from_env:   bool,
+	max_errors: int, // 0 means every error; a human reading a terminal usually wants 1
 }
 
 Rachel_Justfile :: struct {
@@ -36,10 +38,24 @@ parse_cli_args :: proc(args: []string, allocator := context.allocator) -> (optio
 	rest := args[1:]
 	if len(rest) > 0 && rest[0] == "check" {
 		options.check_once = true
+		options.max_errors = CHECK_DEFAULT_MAX_ERRORS
 		rest = rest[1:]
-		if len(rest) > 0 && rest[0] == "--from-env" {
-			options.from_env = true
-			rest = rest[1:]
+		for len(rest) > 0 && strings.has_prefix(rest[0], "--") {
+			if rest[0] == "--from-env" {
+				options.from_env = true
+				rest = rest[1:]
+				continue
+			}
+			if rest[0] == "--max-errors" && len(rest) >= 2 {
+				value, parsed := strconv.parse_int(rest[1])
+				if !parsed || value < 0 {
+					return {}, os.Error(.Invalid_Command)
+				}
+				options.max_errors = value
+				rest = rest[2:]
+				continue
+			}
+			return {}, os.Error(.Invalid_Command)
 		}
 	}
 	if len(rest) < 1 {
@@ -593,7 +609,8 @@ Check_Outcome :: struct {
 	error_count: int,             // distinct diagnostics seen, before the cap
 }
 
-CHECK_DIAGNOSTIC_MAX :: 10
+CHECK_DEFAULT_MAX_ERRORS :: 10 // enough to act on, small enough to read
+CHECK_DIAGNOSTIC_MAX :: CHECK_DEFAULT_MAX_ERRORS
 
 // canonical_path resolves symlinks (macOS /var is /private/var) so a watcher's
 // absolute paths and a user's project root compare equal.
@@ -669,6 +686,7 @@ check_targets :: proc(
 check_package :: proc(
 	justfile: Rachel_Justfile,
 	root, package_dir, display_root: string,
+	limit: int,
 	allocator := context.allocator,
 ) -> (outcome: Check_Outcome, err: os.Error) {
 	result := run_just_recipe(justfile, root, "check", package_dir, allocator)
@@ -684,6 +702,7 @@ check_package :: proc(
 		transmute(string)result.stdout,
 		transmute(string)result.stderr,
 		display_root,
+		limit,
 		allocator,
 	)
 	if outcome.error_count == 0 {
@@ -701,6 +720,7 @@ check_package :: proc(
 @(private)
 collect_diagnostics :: proc(
 	stdout, stderr, root: string,
+	limit: int, // 0 lists every distinct error
 	allocator := context.allocator,
 ) -> (diagnostics: [dynamic]string, total: int) {
 	diagnostics = make([dynamic]string, 0, allocator)
@@ -731,7 +751,7 @@ collect_diagnostics :: proc(
 				continue
 			}
 			total += 1
-			if len(diagnostics) < CHECK_DIAGNOSTIC_MAX {
+			if limit == 0 || len(diagnostics) < limit {
 				if cloned, clone_err := strings.clone(display, allocator); clone_err == nil {
 					_ = append(&diagnostics, cloned)
 				}
@@ -890,7 +910,7 @@ check_once :: proc(options: CLI_Options, allocator := context.allocator) -> int 
 	defer delete_string_slice(diagnostics, allocator)
 	for package_dir in to_check {
 		checked += 1
-		outcome, outcome_err := check_package(justfile, root, package_dir, display_root, allocator)
+		outcome, outcome_err := check_package(justfile, root, package_dir, display_root, options.max_errors, allocator)
 		if outcome_err != nil {
 			fmt.eprintfln("[ERROR] could not run the check: %s", os.error_string(outcome_err))
 			return 1
@@ -901,7 +921,7 @@ check_once :: proc(options: CLI_Options, allocator := context.allocator) -> int 
 		failures += 1
 		error_count += outcome.error_count
 		for line in outcome.diagnostics {
-			if len(diagnostics) < CHECK_DIAGNOSTIC_MAX {
+			if options.max_errors == 0 || len(diagnostics) < options.max_errors {
 				_ = append(&diagnostics, line) // ownership moves to diagnostics
 			} else {
 				delete(line, allocator)

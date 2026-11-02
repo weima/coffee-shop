@@ -642,7 +642,7 @@ test_collect_diagnostics_keeps_distinct_errors_with_relative_paths :: proc(t: ^t
 		context.allocator,
 	)
 	defer delete(stderr)
-	lines, total := collect_diagnostics("noise\n", stderr, "/private/tmp/project", context.allocator)
+	lines, total := collect_diagnostics("noise\n", stderr, "/private/tmp/project", CHECK_DEFAULT_MAX_ERRORS, context.allocator)
 	defer delete_string_slice(lines, context.allocator)
 	testing.expect_value(t, total, 3)
 	testing.expect_value(t, len(lines), 3)
@@ -658,7 +658,7 @@ test_collect_diagnostics_caps_the_list_but_counts_all :: proc(t: ^testing.T) {
 	for i in 1 ..= CHECK_DIAGNOSTIC_MAX + 3 {
 		fmt.sbprintf(&builder, "module.odin(%d:1) Error: failure %d\n", i, i)
 	}
-	lines, total := collect_diagnostics("", strings.to_string(builder), "", context.allocator)
+	lines, total := collect_diagnostics("", strings.to_string(builder), "", CHECK_DEFAULT_MAX_ERRORS, context.allocator)
 	defer delete_string_slice(lines, context.allocator)
 	testing.expect_value(t, total, CHECK_DIAGNOSTIC_MAX + 3)
 	testing.expect_value(t, len(lines), CHECK_DIAGNOSTIC_MAX)
@@ -676,9 +676,32 @@ test_collect_diagnostics_ignores_warnings_and_snippets :: proc(t: ^testing.T) {
 		context.allocator,
 	)
 	defer delete(stderr)
-	lines, total := collect_diagnostics("", stderr, "/project", context.allocator)
+	lines, total := collect_diagnostics("", stderr, "/project", CHECK_DEFAULT_MAX_ERRORS, context.allocator)
 	defer delete_string_slice(lines, context.allocator)
 	testing.expect_value(t, total, 1)
 	testing.expect_value(t, len(lines), 1)
 	testing.expect_value(t, lines[0], "module.odin(5:2) Syntax Error: Expected '}', got 'EOF'")
+}
+
+@(test)
+test_collect_diagnostics_limit_one_is_the_quick_human_signal :: proc(t: ^testing.T) {
+	stderr := strings.concatenate(
+		{
+			"/p/module.odin(4:2) Error: first\n",
+			"/p/module.odin(9:2) Error: second\n",
+			"/p/util.odin(1:1) Error: third\n",
+		},
+		context.allocator,
+	)
+	defer delete(stderr)
+	one, total := collect_diagnostics("", stderr, "/p", 1, context.allocator)
+	defer delete_string_slice(one, context.allocator)
+	testing.expect_value(t, total, 3)
+	testing.expect_value(t, len(one), 1)
+	testing.expect_value(t, one[0], "module.odin(4:2) Error: first")
+
+	every, every_total := collect_diagnostics("", stderr, "/p", 0, context.allocator)
+	defer delete_string_slice(every, context.allocator)
+	testing.expect_value(t, every_total, 3)
+	testing.expect_value(t, len(every), 3)
 }
