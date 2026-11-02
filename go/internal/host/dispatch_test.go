@@ -50,6 +50,29 @@ func fakeCLI(argv []string) {
 			os.Exit(1)
 		}
 		os.Exit(0)
+	case "blend":
+		// The seam prints the events a Blend produced; the host only relays them.
+		requestPath := flagValue(argv, "--request")
+		raw, readErr := os.ReadFile(requestPath)
+		if readErr != nil {
+			os.Exit(1)
+		}
+		var request struct {
+			RequestID string `json:"request_id"`
+		}
+		_ = json.Unmarshal(raw, &request)
+		switch os.Getenv("CS_FAKE_BLEND") {
+		case "ok":
+			fmt.Printf(`{"type":"blended","request_id":"%s","branch":"blend-out","commit":"abc1234"}`+"\n", request.RequestID)
+			os.Exit(0)
+		case "reject":
+			fmt.Printf(`{"type":"error","request_id":"%s","reason":"commits must list 2 to 20 commit hashes"}`+"\n", request.RequestID)
+			os.Exit(1)
+		case "fail":
+			fmt.Fprintln(os.Stderr, "the seam could not run")
+			os.Exit(1)
+		}
+		os.Exit(2)
 	case "station":
 		socket := flagValue(argv, "--report")
 		shot := flagValue(argv, "--station")
