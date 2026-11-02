@@ -74,7 +74,7 @@ ODIN
 
 echo "starting watchexec with the filter and the 300ms debounce"
 (
-	cd "$project" && exec watchexec -d 300ms -f '*.odin' --emit-events-to=environment -- \
+	cd "$project" && exec watchexec -q -d 300ms -f '*.odin' --emit-events-to=environment -- \
 		"$bin" check --from-env "$project"
 ) >"$log" 2>&1 &
 pid=$!
@@ -83,7 +83,7 @@ wait_for_count 'rachel: ok (2 checked)' 1
 echo "breaking sub/other.odin"
 printf 'package sub\n\ntwo :: proc() -> int {\n\treturn\n}\n' >"$project/sub/other.odin"
 # A narrowed check reports 1 of 1; a whole-project check would report 1 of 2.
-wait_for_count 'rachel: fail (1 of 1)' 1
+wait_for_count 'rachel: fail (1 of 1, 1 error)' 1
 grep -F -q 'sub/other.odin' "$log" || fail "fail verdict does not name the changed file"
 
 echo "fixing sub/other.odin"
@@ -97,6 +97,9 @@ two :: proc() -> int {
 ODIN
 wait_for_count 'rachel: ok (1 checked)' 1
 
+if grep -F -q '[Running:' "$log"; then
+	fail "watchexec banners leaked into the verdict stream"
+fi
 runs=$(grep -F -c 'rachel: ' "$log" || true)
 [ "$runs" -le 12 ] || fail "watcher ran $runs times; it is looping on its own output"
 

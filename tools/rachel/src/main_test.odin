@@ -627,3 +627,58 @@ test_generated_justfile_keeps_per_package_behaviour_on_later_runs :: proc(t: ^te
 	testing.expect_value(t, handwritten_err, os.Error(nil))
 	testing.expect(t, !handwritten.generated)
 }
+
+@(test)
+test_collect_diagnostics_keeps_distinct_errors_with_relative_paths :: proc(t: ^testing.T) {
+	stderr := strings.concatenate(
+		{
+			"/private/tmp/project/module.odin(4:2) Error: Expected 1 return values, got 0 \n",
+			"\treturn \n",
+			"\t^~~~~^ \n",
+			"/private/tmp/project/module.odin(4:2) Error: Expected 1 return values, got 0 \n",
+			"/private/tmp/project/util.odin(9:1) Error: Other failure \n",
+			"/private/tmp/project/module.odin(12:3) Error: Third failure \n",
+		},
+		context.allocator,
+	)
+	defer delete(stderr)
+	lines, total := collect_diagnostics("noise\n", stderr, "/private/tmp/project", context.allocator)
+	defer delete_string_slice(lines, context.allocator)
+	testing.expect_value(t, total, 3)
+	testing.expect_value(t, len(lines), 3)
+	testing.expect_value(t, lines[0], "module.odin(4:2) Error: Expected 1 return values, got 0")
+	testing.expect_value(t, lines[1], "util.odin(9:1) Error: Other failure")
+	testing.expect_value(t, lines[2], "module.odin(12:3) Error: Third failure")
+}
+
+@(test)
+test_collect_diagnostics_caps_the_list_but_counts_all :: proc(t: ^testing.T) {
+	builder := strings.builder_make(context.allocator)
+	defer strings.builder_destroy(&builder)
+	for i in 1 ..= CHECK_DIAGNOSTIC_MAX + 3 {
+		fmt.sbprintf(&builder, "module.odin(%d:1) Error: failure %d\n", i, i)
+	}
+	lines, total := collect_diagnostics("", strings.to_string(builder), "", context.allocator)
+	defer delete_string_slice(lines, context.allocator)
+	testing.expect_value(t, total, CHECK_DIAGNOSTIC_MAX + 3)
+	testing.expect_value(t, len(lines), CHECK_DIAGNOSTIC_MAX)
+}
+
+@(test)
+test_collect_diagnostics_ignores_warnings_and_snippets :: proc(t: ^testing.T) {
+	stderr := strings.concatenate(
+		{
+			"/project/module.odin(2:1) Warning: unused variable\n",
+			"\tvalue := 1\n",
+			"/project/module.odin(5:2) Syntax Error: Expected '}', got 'EOF'\n",
+			"\t^~~~~^\n",
+		},
+		context.allocator,
+	)
+	defer delete(stderr)
+	lines, total := collect_diagnostics("", stderr, "/project", context.allocator)
+	defer delete_string_slice(lines, context.allocator)
+	testing.expect_value(t, total, 1)
+	testing.expect_value(t, len(lines), 1)
+	testing.expect_value(t, lines[0], "module.odin(5:2) Syntax Error: Expected '}', got 'EOF'")
+}

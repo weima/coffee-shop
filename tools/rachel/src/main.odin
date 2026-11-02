@@ -584,10 +584,16 @@ print_command_output :: proc(result: Odin_Command_Result) {
 	}
 }
 
+// A checker's answer for one package: whether it passed, and the distinct
+// compiler diagnostics an agent needs to fix it. Reporting only the first error
+// forced the reader to run the compiler again, which defeats the point.
 Check_Outcome :: struct {
-	ok:     bool,
-	detail: string, // owned; the first compiler diagnostic, or ""
+	ok:          bool,
+	diagnostics: [dynamic]string, // owned; at most CHECK_DIAGNOSTIC_MAX, paths relative to the project
+	error_count: int,             // distinct diagnostics seen, before the cap
 }
+
+CHECK_DIAGNOSTIC_MAX :: 10
 
 // canonical_path resolves symlinks (macOS /var is /private/var) so a watcher's
 // absolute paths and a user's project root compare equal.
@@ -658,11 +664,11 @@ check_targets :: proc(
 	return targets, false, nil
 }
 
-// check_package runs one check and keeps the first diagnostic for the verdict.
-// The full compiler output goes to stderr so a caller's stdout stays one line.
+// check_package runs one check and collects its distinct diagnostics. The full
+// compiler output still goes to stderr for a human reading a terminal.
 check_package :: proc(
 	justfile: Rachel_Justfile,
-	root, package_dir: string,
+	root, package_dir, display_root: string,
 	allocator := context.allocator,
 ) -> (outcome: Check_Outcome, err: os.Error) {
 	result := run_just_recipe(justfile, root, "check", package_dir, allocator)
@@ -674,34 +680,66 @@ check_package :: proc(
 		return Check_Outcome{ok = true}, nil
 	}
 	print_command_output(result)
-	detail, found := first_diagnostic(transmute(string)result.stdout, transmute(string)result.stderr, allocator)
-	if !found {
-		detail = fmt.aprintf("just check exited %d", result.state.exit_code, allocator = allocator)
+	outcome.diagnostics, outcome.error_count = collect_diagnostics(
+		transmute(string)result.stdout,
+		transmute(string)result.stderr,
+		display_root,
+		allocator,
+	)
+	if outcome.error_count == 0 {
+		fallback := fmt.aprintf("just check exited %d", result.state.exit_code, allocator = allocator)
+		_ = append(&outcome.diagnostics, fallback)
+		outcome.error_count = 1
 	}
-	return Check_Outcome{ok = false, detail = detail}, nil
+	return outcome, nil
 }
 
+// collect_diagnostics keeps one entry per distinct compiler error, in compiler
+// order, with the project root stripped. Odin prints `file(line:col) Error:
+// message` followed by a source snippet and caret line; only the error line is
+// kept, because the snippet costs tokens and the file is one read away.
 @(private)
-first_diagnostic :: proc(stdout, stderr: string, allocator := context.allocator) -> (line: string, found: bool) {
-	for source in ([]string{stdout, stderr}) {
+collect_diagnostics :: proc(
+	stdout, stderr, root: string,
+	allocator := context.allocator,
+) -> (diagnostics: [dynamic]string, total: int) {
+	diagnostics = make([dynamic]string, 0, allocator)
+	for source in ([]string{stderr, stdout}) {
 		lines, split_err := strings.split_lines(source, allocator)
 		if split_err != nil {
 			continue
 		}
-		defer delete(lines, allocator)
 		for raw in lines {
 			trimmed := strings.trim_space(raw)
-			if !strings.contains(trimmed, "Error:") && !strings.contains(trimmed, "error:") {
+			// Odin prints both "Error:" and "Syntax Error:"; a snippet and caret line
+			// contains neither.
+			if !strings.contains(trimmed, "Error:") {
 				continue
 			}
-			cloned, clone_err := strings.clone(trimmed, allocator)
-			if clone_err != nil {
+			display := trimmed
+			if len(root) > 0 && strings.has_prefix(display, root) {
+				display = strings.trim_prefix(display[len(root):], "/")
+			}
+			duplicate := false
+			for existing in diagnostics {
+				if existing == display {
+					duplicate = true
+					break
+				}
+			}
+			if duplicate {
 				continue
 			}
-			return cloned, true
+			total += 1
+			if len(diagnostics) < CHECK_DIAGNOSTIC_MAX {
+				if cloned, clone_err := strings.clone(display, allocator); clone_err == nil {
+					_ = append(&diagnostics, cloned)
+				}
+			}
 		}
+		delete(lines, allocator)
 	}
-	return "", false
+	return diagnostics, total
 }
 
 WATCHEXEC_PATH_VARS :: []string{
@@ -835,37 +873,59 @@ check_once :: proc(options: CLI_Options, allocator := context.allocator) -> int 
 	if justfile.generated {
 		to_check = directories[:]
 	}
+	// The compiler prints resolved paths (/private/var on macOS), so strip the
+	// canonical root, not the path the caller typed.
+	display_root := root
+	display_owned: string
+	if resolved, resolved_ok := canonical_path(root, allocator); resolved_ok {
+		display_owned = resolved
+		display_root = display_owned
+	}
+	defer delete(display_owned, allocator)
+
 	checked := 0
 	failures := 0
-	first_detail := ""
+	error_count := 0
+	diagnostics := make([dynamic]string, 0, allocator)
+	defer delete_string_slice(diagnostics, allocator)
 	for package_dir in to_check {
 		checked += 1
-		outcome, outcome_err := check_package(justfile, root, package_dir, allocator)
+		outcome, outcome_err := check_package(justfile, root, package_dir, display_root, allocator)
 		if outcome_err != nil {
 			fmt.eprintfln("[ERROR] could not run the check: %s", os.error_string(outcome_err))
 			return 1
 		}
 		if outcome.ok {
-			delete(outcome.detail, allocator)
 			continue
 		}
 		failures += 1
-		if first_detail == "" {
-			first_detail = outcome.detail
-		} else {
-			delete(outcome.detail, allocator)
+		error_count += outcome.error_count
+		for line in outcome.diagnostics {
+			if len(diagnostics) < CHECK_DIAGNOSTIC_MAX {
+				_ = append(&diagnostics, line) // ownership moves to diagnostics
+			} else {
+				delete(line, allocator)
+			}
 		}
+		delete(outcome.diagnostics)
 	}
-	defer if first_detail != "" { delete(first_detail, allocator) }
 
 	if failures == 0 {
 		fmt.printfln("rachel: ok (%d checked)", checked)
 		return 0
 	}
-	if first_detail != "" {
-		fmt.printfln("rachel: fail (%d of %d): %s", failures, checked, first_detail)
+	if error_count == 1 {
+		fmt.printfln("rachel: fail (%d of %d, 1 error)", failures, checked)
+	} else if error_count > 1 {
+		fmt.printfln("rachel: fail (%d of %d, %d errors)", failures, checked, error_count)
 	} else {
 		fmt.printfln("rachel: fail (%d of %d)", failures, checked)
+	}
+	for line in diagnostics {
+		fmt.printfln("rachel: error %s", line)
+	}
+	if error_count > len(diagnostics) {
+		fmt.printfln("rachel: error ... (%d more)", error_count - len(diagnostics))
 	}
 	return 1
 }

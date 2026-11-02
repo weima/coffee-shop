@@ -24,10 +24,28 @@ The generator is a trusted local executable. It reads one versioned JSON request
 ## One-shot check
 
 `rachel check <project-directory> [path ...]` runs the checks once and exits: `0`
-when every check passes, `1` when one fails, `2` on a usage error. It prints one
-verdict line on stdout, `rachel: ok (2 checked)` or
-`rachel: fail (1 of 2): module.odin(4:2) Error: ...`, and writes the full
-compiler output to stderr, so a caller can consume a single line.
+when every check passes, `1` when one fails, `2` on a usage error. Every line it
+prints starts with `rachel:`, so a line reader can filter on that prefix.
+
+```
+rachel: ok (2 checked)
+```
+
+On failure it prints a summary and then one line per distinct error, with paths
+relative to the project and no source snippet:
+
+```
+rachel: fail (1 of 2, 3 errors)
+rachel: error module.odin(4:2) Error: Expected 1 return values, got 0
+rachel: error module.odin(10:2) Error: Expected 1 return values, got 0
+rachel: error util.odin(9:1) Error: Other failure
+```
+
+At most 10 errors are listed, followed by `rachel: error ... (N more)` when more
+were found. Distinctness is by message, so a repeated diagnostic does not repeat.
+The intent is that one read is enough to start fixing: reporting only the first
+error forced the reader to run the compiler again. The full compiler output,
+including snippets, still goes to stderr for a human in a terminal.
 
 A `path` narrows the check to the package of that `.odin` file. Any other path,
 an empty list, or a path outside the project checks the whole project, so a check
@@ -41,9 +59,14 @@ reported for the current batch from `$WATCHEXEC_COMMON_PATH`,
 `$WATCHEXEC_OTHERWISE_CHANGED_PATH`, and narrows the check to those packages:
 
 ```sh
-watchexec --debounce 500ms --exit-on-eof -f '*.odin' --emit-events-to=environment -- \
+watchexec -q --debounce 500ms --exit-on-eof -f '*.odin' \
+  --emit-events-to=environment -- \
   rachel check --from-env /path/to/odin-project
 ```
+
+`-q` matters for a machine reader: without it watchexec prints its own
+`[Running: ...]` and `[Command was successful]` lines into the same stream, and
+they are not verdicts.
 
 watchexec is then the one owner of the quiet period. Without `--from-env`, or
 when the watcher reports no paths, the whole project is checked. `just
