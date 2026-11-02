@@ -2,24 +2,33 @@
 
 ![Rachel mascot](../../assets/characters/rachel.svg)
 
-Rachel is a local terminal assistant in development for people editing Odin code. Run her against a project directory; she watches saved `.odin` files and gives fast, visible feedback without taking control of production source.
+Rachel is a local verifier for a project directory: it runs the project's checks and
+tests, prints a verdict a human or an agent can act on, and keeps evidence when
+something fails. It is not tied to Odin; see [Languages](#languages) and
+[Project commands](#project-commands).
 
 ## Intended loop
 
-```sh
-cd tools/rachel
-just run /path/to/odin-project
-```
-
-Rachel currently polls for Odin file updates every 250 ms, coalesces changes for a 350 ms quiet period, and runs the watched project's `just check` and `just test` recipes. If no root justfile exists, she creates a starter with those recipes and package arguments. Test failures and allocator-leak diagnostics become `[ERROR]` terminal feedback. On a changed production file, Rachel creates its missing companion test file without overwriting an existing file. She warns about newly added procedures without intent comments and production-looking code in newly created `*_test.odin` files. When `RACHEL_TEST_GENERATOR` is configured, she can generate and validate tests for documented procedures without a matching test.
+`watchexec` decides when to run:
 
 ```sh
-RACHEL_TEST_GENERATOR=/path/to/local-generator just run /path/to/odin-project
+watchexec -q -d 500ms -f '*.odin' --emit-events-to=environment -- \
+  rachel verify --from-env /path/to/project
 ```
 
-The project justfile is left untouched when present. Rachel creates the starter only when none exists; see [justfile integration](architecture.md#justfile-integration).
+or, when the project has a `.rachel.json`:
 
-The generator is a trusted local executable. It reads one versioned JSON request from stdin and returns test source as JSON on stdout; see [the protocol](architecture.md#local-generator-protocol).
+```sh
+rachel watch /path/to/project
+```
+
+Rachel does not watch anything itself: a file watcher is the one thing every
+language needs and none should write again. With no `.rachel.json`, the stages are
+the project's `just check` / `just test` recipes (a starter justfile is created
+when none exists); with one, the project names its own commands.
+
+The project justfile is left untouched when present. Rachel creates the starter
+only when none exists; see [justfile integration](architecture.md#justfile-integration).
 
 ## One-shot check
 
@@ -175,8 +184,8 @@ per-package call path is unchanged, and a project with no Odin packages still ge
 one whole-project call instead of "0 checked". There is no default `test` recipe
 for TypeScript: add one for your runner and `verify` will use it.
 
-The built-in polling watcher (`rachel <dir>`) still detects only `.odin` files.
-For TypeScript use the watchexec form below, which is language-agnostic.
+`rachel <dir>` is a one-shot `verify`; watching is `rachel watch`, which is
+language-agnostic.
 
 ## Evidence
 
@@ -197,24 +206,15 @@ Only failures write evidence; a passing stage leaves nothing. The newest 10 run
 directories are kept and older ones are deleted on write. `rachel evidence last
 <project>` prints the newest run directory. `.rachel/` is gitignored.
 
-## Test-file convention
-
-- Production source uses names such as `memory_usage.odin`.
-- Test source uses the reserved suffix `*_test.odin` and contains Odin tests.
-- Rachel reserves `*_test.odin` for test source. Changes to these files are compile-checked and tested; automatic test generation will never create a companion such as `memory_usage_test_test.odin`.
-- If a newly created `*_test.odin` file appears to contain production code rather than tests, Rachel gives a visible naming warning and suggests a production filename, for example `memory_usage.odin`.
-
-Generated tests are written directly to the working tree. Rachel rechecks the source and test file before writing and leaves the file untouched if a concurrent edit is detected. Generated test code runs with the developer's normal permissions; the configured generator and generated code are not sandboxed. Rachel does not rewrite production source, run formatters over unrelated files, commit changes, or push branches.
-
 ## Status
 
-The watcher, compile/test feedback loop, missing-intent warnings, test-filename conflict warnings, companion-test creation, and provider-neutral test-generation adapter are implemented. The adapter can use any trusted local command; Rachel does not own model credentials or depend on Pi. Further test-generation quality tuning and Linux verification remain open.
+The verdict and evidence layer is the product: a stage ladder with stage-tagged verdicts, capped and de-duplicated diagnostics, failure evidence, a `.rachel/last.json` signal, and project-owned commands. The Odin-only polling watcher and its scaffolding (companion test files, intent-comment warnings, test generation) are retired: a file watcher is watchexec's job, and those rules only served one language. Linux verification remains open.
 
 `cd tools/rachel && just test` passes 34 tests without allocator-leak warnings; `just e2e` runs 9 process-level tests. `just build` succeeds. Linux verification remains outstanding.
 
 `just e2e` runs the process-level tests in the `e2e` package (`odin test e2e`). They build the real binary and drive it against temporary projects, which the in-process tests cannot cover:
 
-- the watch loop: startup check, a saved file, the missing-intent warning, companion test creation exactly once, and the package test;
+- the check and test stages on real projects, including TypeScript;
 - clean shutdown on SIGTERM;
 - one-shot verdicts: every distinct error, relative paths, no snippets, and `--max-errors`;
 - narrowing a check to the package of a changed file;

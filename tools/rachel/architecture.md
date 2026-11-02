@@ -22,19 +22,27 @@ The runtime sequence is shown in [the feedback-loop diagram](diagrams/feedback-l
 
 ## Processing flow
 
-1. The developer starts `rachel <project-directory>`. Rachel resolves the root and identifies Odin package directories beneath it, excluding `.git`, generated outputs, and configured ignored directories.
-2. The watcher coalesces save events for a package during a short quiet period. It does not launch a new compiler or test process for every keystroke. At most one validation run per package is active; newer saves schedule one follow-up run.
-3. Rachel classifies the changed file by filename. A file ending in `_test.odin` is test source, never a production source needing a companion test.
-4. Rachel runs the project's `just check` recipe for syntax/compile validation. If the watched project has no root `justfile`, `Justfile`, or `.justfile`, Rachel creates a starter root `justfile` with `check package="."` and `test package="."` recipes that run Odin for the selected package. Compile or syntax errors are shown as persistent `[ERROR]` output; test generation waits until checks pass.
-5. For a changed production file, Rachel ensures the companion `<source-stem>_test.odin` exists, creating a minimal package test file if necessary. It compares procedure declarations with its previous snapshot. A new procedure without an adjacent intent/contract comment gets a visible advisory warning. A documented procedure without a matching `@(test)` procedure triggers generation when a local generator is configured.
-6. Rachel validates the generator's versioned JSON response, merges its imports, and atomically updates only the matching test file after checking that source and test contents did not change during generation. It then runs package tests and reports failures or allocator-leak warnings as red errors.
-7. Changes to test files run `just test`, including Odin's memory tracking. They never trigger more test-file generation.
-
-The feedback-loop diagram gives the ordered view. The file-routing diagram gives the file-classification decisions.
+1. `watchexec` watches the project and runs `rachel verify --from-env <dir>` per
+   batch, with the filters the project configured. Rachel itself never watches.
+2. `verify` runs the selected stages in order — `check`, `test`, `e2e` — and stops
+   at the first failure unless `--all`. A stage is either a command from
+   `.rachel.json` or the project's justfile recipe.
+3. Each stage's output is normalized into verdict lines: a stage summary, then up
+   to `--max-errors` distinct diagnostics with the project root stripped.
+4. A failing stage writes `.rachel/evidence/<run>/` (manifest plus verdict text) and
+   prints one `rachel: evidence <path>` line.
+5. Every run writes `.rachel/last.json` with the stage list, `ok`, and the verdict
+   lines, so a reader — or the guard — has one small current signal.
+6. `rachel watch <dir>` is a thin launcher for watchexec; the built-in poller and
+   its Odin-only scaffolding are retired.
 
 ## Current implementation status
 
-The first implementation uses portable directory polling every 250 ms and a 350 ms quiet-period debounce. It scans recursively and currently skips `.git`, `build`, `dist`, `node_modules`, symlinks, and special files. It caches procedure declarations for unchanged files, checks changed packages, and runs package tests when a `*_test.odin` file is present. New undocumented procedures and production-looking code in newly added test files produce advisory warnings. A changed production file gets a minimal companion test file using exclusive create. If `RACHEL_TEST_GENERATOR` names a local generator and a documented procedure has no matching test, Rachel requests and validates a generated test.
+The verdict and evidence layer is the product. Stages come from the project, so
+Rachel is language-agnostic: this repository runs Odin, Go and TypeScript in one
+`.rachel.json`, and Odin and TypeScript have first-class defaults (starter recipe,
+diagnostic extraction). The polling watcher, companion test creation, intent
+warnings and test generation are retired.
 
 ## Justfile integration
 
@@ -52,19 +60,14 @@ test package=".":
 
 For the generated file, Rachel passes each affected package as a recipe argument. For an existing justfile, Rachel runs its root-level `check` and `test` recipes. If a required recipe is missing or fails, the diagnostic is visible; Rachel does not replace or silently bypass the project's commands.
 
-## Test generation and write safety
+## Retired: Odin-only scaffolding
 
-Automatic writes create a missing companion `*_test.odin` file with exclusive creation, then may add generated tests to that file. Rachel never rewrites production source. Before writing a generated test, Rachel re-reads the source and test file; if either changed during generation, it leaves the test file untouched and reports a conflict. It writes a replacement to a temporary directory beside the test file and renames it into place, preserving existing content and file permissions. It checks for a matching test first to avoid duplicates. Generated code is compiled and tested immediately; failures remain visible. Rachel does not retry indefinitely.
-
-### Local generator protocol
-
-Set `RACHEL_TEST_GENERATOR` to one executable path before starting Rachel. Rachel invokes that executable directly (argv, no shell), passes one UTF-8 JSON request on stdin, and reads one JSON response from stdout. Use a wrapper script if a particular harness needs extra flags or configuration. Rachel waits at most two minutes, kills a timed-out child, captures stderr for diagnostics, and has no built-in provider or credential flow. If the variable is unset, Rachel creates the companion test file and warns that it cannot generate test cases.
-
-Request v1 fields are `protocol_version` (1), `kind` (`generate_odin_test`), `package_dir`, `source_path`, `procedure_name`, `procedure_line`, `source_text`, `test_path`, and `existing_test_source`. The response v1 fields are `protocol_version` (1), `imports` (package paths), and `test_source` (one or more `@(test)` procedures). Test names must start with `test_<procedure-name>`; Rachel treats an existing `test_<procedure-name>` or `test_<procedure-name>_*` as coverage. Generated source cannot add a package declaration, import statement, `#run`, or foreign import. Put additional packages in the response `imports` array.
-
-This is a small adapter protocol, not a plugin framework. A fake executable covers the protocol offline; wrappers for different AI harnesses can be written independently. An Oreo adapter is a later option once Oreo has a stable host, agent loop, and provider-neutral call boundary. Rachel should not wait for Oreo or become coupled to Pi.
-
-**Trust boundary:** the configured executable runs with the developer's normal permissions and may access the network. Generated test code also runs as the developer when Odin tests execute; neither process is sandboxed. Configure only a generator you trust and inspect generated code when appropriate. Rachel limits its writes to the matching test file but cannot make arbitrary executable code safe.
+The built-in polling watcher, companion `*_test.odin` creation, missing-intent
+warnings, test-filename warnings and the local test-generation adapter are gone.
+They were reachable only from that watcher, and they served one language. Watching
+is `watchexec`; the Odin rules became a language profile that the project's own
+`check` recipe can run. The generator protocol section is kept in history, not in
+the product.
 
 ## Candidate AI-assisted development flow (experimental)
 
@@ -77,13 +80,7 @@ This is an opt-in alternative to having an AI make a broad change and run the fu
 5. Keep Rachel and the development panes available during the task and review. After all vertical slices are green, run the complete unit and end-to-end suites once as the integration gate; do not run the full E2E suite after every keystroke. Close the panes and remove the worktree only after human confirmation that the PR is merged into the local root checkout and both checkouts are clean.
 6. At the end of the trial, record what worked, where Rachel's feedback was late/noisy/incorrect, any regressions, and whether this loop should replace or complement the current batch-oriented AI workflow.
 
-The `RACHEL_TEST_GENERATOR` adapter is deliberately disabled in this experiment: the TDD coding agent writes tests first, while Rachel independently validates each saved change. This avoids two generators competing to edit the same test file. Adoption as the default AI workflow requires a separate human decision.
-
-## Odin file convention and recursion prevention
-
-`*_test.odin` is reserved for test source. A test source file may contain procedures whose names include `_test`; filenames, not procedure names, determine routing. Rachel must never infer that `memory_usage_test.odin` needs `memory_usage_test_test.odin`.
-
-When a newly created `_test.odin` file contains production-looking procedures but no Odin test declarations, Rachel warns that the name is reserved and suggests renaming the file (for example, `memory_usage_test.odin` → `memory_usage.odin`). This is advisory: it does not rename the user's file. The tool still checks and tests the package while the developer resolves the warning.
+In this experiment the TDD coding agent writes tests first, while Rachel independently validates each saved change. Test generation is not part of Rachel; adoption of the flow requires a separate human decision.
 
 ## Terminal feedback
 

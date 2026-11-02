@@ -43,3 +43,8 @@ install-prompts:
     mkdir -p ~/.pi/agent/prompts
     cp prompts/*.md ~/.pi/agent/prompts/
     @echo "installed: $(ls prompts/*.md | xargs -n1 basename | tr "\n" " ")"
+
+# Rachel is the default verification path for this repository: one command runs the
+# staged checks from .rachel.json, and a failing stage leaves evidence.
+verify:
+    odin run tools/rachel/src -- verify .

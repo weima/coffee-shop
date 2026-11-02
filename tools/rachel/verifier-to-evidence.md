@@ -191,6 +191,13 @@ Done when an agent receives a `rachel_verdict` with no tool call, proven by a te
 - **Stale evidence.** A verdict must name the run directory it produced; an agent
   reading an old directory is the failure mode to design out.
 
+## Retirement of the Odin-only watcher
+
+The polling watcher and its scaffolding (companion tests, intent warnings,
+test-filename warnings, test generation) are removed. They were reachable only from
+the poller and only applied to Odin. `rachel <dir>` is now a one-shot verify;
+watching is `rachel watch` over watchexec.
+
 ## Project commands
 
 Rachel's own watcher and diagnostics were Odin-shaped, which does not serve "most

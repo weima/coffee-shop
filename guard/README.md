@@ -3,6 +3,19 @@
 A Pi project extension that enforces the repository rules that agents otherwise
 ignore. Prompt rules live in `AGENTS.md`; this makes two of them mechanical.
 
+## Coffee Shop installs it with `--enforce`
+
+This repository is the harness, so Rachel is the default verification path here:
+
+```sh
+guard/install.sh . --enforce
+```
+
+That blocks raw `odin`/`go`/`bun` build, check and test commands (escape: `CS_RAW=1`)
+and puts the commit gates in blocking mode, so a commit needs a fresh, passing
+`rachel verify` verdict. Target projects get the same guard only if their owner
+asks for it.
+
 ## Where it goes
 
 Install it into **Coffee Shop only**, not into the projects Coffee Shop works on:
