@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -57,6 +58,16 @@ func TestSamplerWritesTheRecordGateFiveNineReads(t *testing.T) {
 	}
 	if !record.TreePeak.CPUms.Known {
 		t.Fatalf("cpu time is readable on this platform: %+v", record.TreePeak.CPUms)
+	}
+	// A live process always has at least its three standard descriptors, so a known count
+	// of zero is a reader lying about a failed lookup — the bug this asserts against. The
+	// count is not required to be known: macOS does not list another process's descriptors
+	// in every case, and unknown is the honest answer there.
+	if record.StationPeak.FDs.Known && record.StationPeak.FDs.Value == 0 {
+		t.Fatalf("a live process cannot have zero descriptors: %+v", record.StationPeak.FDs)
+	}
+	if runtime.GOOS == "linux" && !record.StationPeak.FDs.Known {
+		t.Fatalf("linux can count descriptors and must report them: %+v", record.StationPeak.FDs)
 	}
 }
 

@@ -76,7 +76,10 @@ func readDarwinProcess(pid int) (sample ProcSample, alive bool) {
 	cpuNanos := uint64(usage.ri_user_time) + uint64(usage.ri_system_time)
 	sample.CPUms = Metric{Known: true, Value: cpuNanos / 1_000_000}
 	sample.RSS = Metric{Known: true, Value: uint64(usage.ri_resident_size)}
-	if fds := C.cs_fd_count(C.int(pid)); fds >= 0 {
+	// Listing another process's descriptors is not guaranteed: macOS answers with no
+	// entries for some processes the caller may still read cpu time and memory for. An
+	// unavailable list stays unknown; recording it as zero would claim a fact.
+	if fds := C.cs_fd_count(C.int(pid)); fds > 0 {
 		sample.FDs = Metric{Known: true, Value: uint64(fds)}
 	}
 	return sample, true
