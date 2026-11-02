@@ -106,6 +106,25 @@ func Run(ctx context.Context, opts Options) error {
 		}
 		defer requests.stop()
 		requests.start(ctx)
+
+		// Resource sampling writes what gate 5.9 reads; it costs one /proc read per live
+		// Station per interval and nothing when no Station runs.
+		stopSampling := make(chan struct{})
+		defer close(stopSampling)
+		go func() {
+			ticker := time.NewTicker(SampleInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-stopSampling:
+					return
+				case <-ticker.C:
+					dispatch.sampleStations()
+				}
+			}
+		}()
 	}
 
 	if server != nil {
