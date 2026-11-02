@@ -7,27 +7,16 @@ import "core:path/filepath"
 import "core:strings"
 import "core:time"
 
-Procedure_Declaration :: struct {
-	name: string,
-	line: int,
-	has_intent_comment: bool,
-	is_test: bool,
-}
-
 Odin_File_Stamp :: struct {
 	path: string,
 	package_dir: string,
 	size: i64,
 	modified_at: time.Time,
-	procedures: [dynamic]Procedure_Declaration,
 }
 
 Project_Snapshot :: struct {
 	files: [dynamic]Odin_File_Stamp,
 }
-
-QUIET_WINDOW :: 350 * time.Millisecond
-QUIET_SAMPLE :: 70 * time.Millisecond
 
 Odin_Command_Result :: struct {
 	state: os.Process_State,
@@ -51,6 +40,10 @@ run_odin_command :: proc(package_dir: string, argv: []string, allocator: runtime
 		allocator,
 	)
 	return Odin_Command_Result{state = state, stdout = stdout, stderr = stderr, process_error = process_err}
+}
+
+odin_test_result_success :: proc(result: Odin_Command_Result) -> bool {
+	return odin_command_succeeded(result) && !odin_test_has_allocator_leak(result)
 }
 
 odin_test_has_allocator_leak :: proc(result: Odin_Command_Result) -> bool {
@@ -121,32 +114,7 @@ scan_odin_directory :: proc(
 				size = entry.size,
 				modified_at = entry.modification_time,
 			}
-			previous_file: Odin_File_Stamp
-			previous_found := false
-			if previous != nil {
-				previous_file, previous_found = find_odin_file(previous^, path)
-			}
-			if previous_found && same_odin_file(previous_file, stamp) {
-				cloned_procedures, clone_err := clone_procedure_declarations(previous_file.procedures, allocator)
-				if clone_err != nil {
-					odin_file_stamp_destroy(&stamp, allocator)
-					return os.Error(clone_err)
-				}
-				stamp.procedures = cloned_procedures
-			} else if !strings.has_suffix(entry.name, "_test.odin") {
-				data, file_err := os.read_entire_file(entry.fullpath, allocator)
-				if file_err != nil {
-					odin_file_stamp_destroy(&stamp, allocator)
-					return file_err
-				}
-				procedures, parse_err := scan_procedure_declarations(transmute(string)data, allocator)
-				delete(data, allocator)
-				if parse_err != nil {
-					odin_file_stamp_destroy(&stamp, allocator)
-					return parse_err
-				}
-				stamp.procedures = procedures
-			}
+			_ = previous // the snapshot is a change check now, not a parse cache
 			_, append_err := append(&snapshot.files, stamp)
 			if append_err != nil {
 				odin_file_stamp_destroy(&stamp, allocator)
@@ -164,78 +132,7 @@ should_skip_directory :: proc(name: string) -> bool {
 	return name == ".git" || name == "build" || name == "dist" || name == "node_modules"
 }
 
-// wait_for_quiet rescans until the source has been unchanged for `window`.
-// One fixed sleep is not enough: at human typing speed every sample still differs.
-wait_for_quiet :: proc(
-	root: string,
-	baseline: ^Project_Snapshot,
-	window := QUIET_WINDOW,
-	sample := QUIET_SAMPLE,
-	allocator := context.allocator,
-) -> (snapshot: Project_Snapshot, err: os.Error) {
-	previous := baseline
-	held: Project_Snapshot
-	holding := false
-	defer if holding {project_snapshot_destroy(&held, allocator)}
-	quiet_samples := 0
-	for {
-		time.sleep(sample)
-		next, next_err := scan_odin_project(root, allocator, previous)
-		if next_err != nil {
-			return {}, next_err
-		}
-		changed, diff_err := changed_package_dirs(previous^, next, allocator)
-		if diff_err != nil {
-			project_snapshot_destroy(&next, allocator)
-			return {}, diff_err
-		}
-		stable := len(changed) == 0
-		delete_string_slice(changed, allocator)
-		if stable {
-			quiet_samples += 1
-			if time.Duration(quiet_samples) * sample >= window {
-				return next, nil
-			}
-		} else {
-			quiet_samples = 0
-		}
-		if holding {
-			project_snapshot_destroy(&held, allocator)
-		}
-		held = next
-		holding = true
-		previous = &held
-	}
-}
 
-changed_package_dirs :: proc(
-	before, after: Project_Snapshot,
-	allocator := context.allocator,
-) -> (directories: [dynamic]string, err: os.Error) {
-	directories = make([dynamic]string, 0, allocator)
-	transferred := false
-	defer if !transferred { delete_string_slice(directories, allocator) }
-
-	// ponytail: O(n²) snapshot comparison is adequate for local source trees; use a path index if measured scans become slow.
-	for old_file in before.files {
-		new_file, found := find_odin_file(after, old_file.path)
-		if !found || !same_odin_file(old_file, new_file) {
-			if err = append_unique_package(&directories, old_file.package_dir, allocator); err != nil {
-				return nil, err
-			}
-		}
-	}
-	for new_file in after.files {
-		_, found := find_odin_file(before, new_file.path)
-		if !found {
-			if err = append_unique_package(&directories, new_file.package_dir, allocator); err != nil {
-				return nil, err
-			}
-		}
-	}
-	transferred = true
-	return directories, nil
-}
 
 @(private)
 find_odin_file :: proc(snapshot: Project_Snapshot, path: string) -> (Odin_File_Stamp, bool) {
@@ -251,10 +148,6 @@ same_odin_file :: proc(a, b: Odin_File_Stamp) -> bool {
 	return a.size == b.size && a.modified_at == b.modified_at
 }
 
-odin_file_changed :: proc(before: Project_Snapshot, current: Odin_File_Stamp) -> bool {
-	previous, found := find_odin_file(before, current.path)
-	return !found || !same_odin_file(previous, current)
-}
 
 @(private)
 append_unique_package :: proc(directories: ^[dynamic]string, package_dir: string, allocator: runtime.Allocator) -> os.Error {
@@ -275,32 +168,6 @@ append_unique_package :: proc(directories: ^[dynamic]string, package_dir: string
 	return nil
 }
 
-clone_procedure_declarations :: proc(
-	procedures: [dynamic]Procedure_Declaration,
-	allocator: runtime.Allocator,
-) -> (cloned: [dynamic]Procedure_Declaration, err: os.Error) {
-	cloned = make([dynamic]Procedure_Declaration, 0, allocator)
-	transferred := false
-	defer if !transferred { procedure_declarations_destroy(cloned, allocator) }
-	for procedure in procedures {
-		name, clone_err := strings.clone(procedure.name, allocator)
-		if clone_err != nil {
-			return nil, os.Error(clone_err)
-		}
-		_, append_err := append(&cloned, Procedure_Declaration{
-			name = name,
-			line = procedure.line,
-			has_intent_comment = procedure.has_intent_comment,
-			is_test = procedure.is_test,
-		})
-		if append_err != nil {
-			delete(name, allocator)
-			return nil, os.Error(append_err)
-		}
-	}
-	transferred = true
-	return cloned, nil
-}
 
 project_snapshot_destroy :: proc(snapshot: ^Project_Snapshot, allocator := context.allocator) {
 	for &file in snapshot.files {
@@ -314,7 +181,6 @@ project_snapshot_destroy :: proc(snapshot: ^Project_Snapshot, allocator := conte
 odin_file_stamp_destroy :: proc(file: ^Odin_File_Stamp, allocator: runtime.Allocator) {
 	delete(file.path, allocator)
 	delete(file.package_dir, allocator)
-	procedure_declarations_destroy(file.procedures, allocator)
 	file^ = Odin_File_Stamp{}
 }
 
@@ -325,141 +191,8 @@ delete_string_slice :: proc(values: [dynamic]string, allocator := context.alloca
 	delete(values)
 }
 
-test_file_looks_like_production :: proc(source: string, allocator := context.allocator) -> bool {
-	lines, split_err := strings.split_lines(source, allocator)
-	if split_err != nil {
-		return false
-	}
-	defer delete(lines, allocator)
 
-	has_odin_test_attribute := false
-	has_procedure_definition := false
-	for line in lines {
-		trimmed := strings.trim_space(line)
-		if strings.has_prefix(trimmed, "//") {
-			continue
-		}
-		if strings.contains(trimmed, "@(test") {
-			has_odin_test_attribute = true
-		}
-		if strings.contains(trimmed, "::") && strings.contains(trimmed, "proc") {
-			has_procedure_definition = true
-		}
-	}
-	return has_procedure_definition && !has_odin_test_attribute
-}
 
-scan_procedure_declarations :: proc(
-	source: string,
-	allocator := context.allocator,
-) -> (procedures: [dynamic]Procedure_Declaration, err: os.Error) {
-	lines, split_err := strings.split_lines(source, allocator)
-	if split_err != nil {
-		return nil, os.Error(split_err)
-	}
-	defer delete(lines, allocator)
-	procedures = make([dynamic]Procedure_Declaration, 0, allocator)
-	transferred := false
-	defer if !transferred { procedure_declarations_destroy(procedures, allocator) }
 
-	pending_test_attribute := false
-	for line, line_index in lines {
-		trimmed := strings.trim_space(line)
-		if strings.has_prefix(trimmed, "//") {
-			continue
-		}
-		if strings.has_prefix(trimmed, "@(test") {
-			pending_test_attribute = true
-			continue
-		}
-		separator := strings.index(trimmed, "::")
-		if separator < 0 {
-			continue
-		}
-		declaration := strings.trim_space(trimmed[separator+2:])
-		if !strings.has_prefix(declaration, "proc") {
-			continue
-		}
-		name := strings.trim_space(trimmed[:separator])
-		if name == "" {
-			continue
-		}
-		owned_name, name_err := strings.clone(name, allocator)
-		if name_err != nil {
-			return nil, os.Error(name_err)
-		}
-		procedure := Procedure_Declaration{
-			name = owned_name,
-			line = line_index + 1,
-			has_intent_comment = procedure_has_adjacent_comment(lines, line_index),
-			is_test = pending_test_attribute,
-		}
-		pending_test_attribute = false
-		_, append_err := append(&procedures, procedure)
-		if append_err != nil {
-			delete(owned_name, allocator)
-			return nil, os.Error(append_err)
-		}
-	}
-	transferred = true
-	return procedures, nil
-}
 
-@(private)
-procedure_has_adjacent_comment :: proc(lines: []string, procedure_line: int) -> bool {
-	for index := procedure_line - 1; index >= 0; index -= 1 {
-		line := strings.trim_space(lines[index])
-		if line == "" || strings.has_prefix(line, "@(") {
-			continue
-		}
-		if strings.has_prefix(line, "//") {
-			return strings.trim_space(line[2:]) != ""
-		}
-		return false
-	}
-	return false
-}
 
-procedure_declarations_destroy :: proc(procedures: [dynamic]Procedure_Declaration, allocator := context.allocator) {
-	for &procedure in procedures {
-		delete(procedure.name, allocator)
-	}
-	delete(procedures)
-}
-
-new_procedure_contract_warnings :: proc(
-	before, after: [dynamic]Procedure_Declaration,
-	allocator := context.allocator,
-) -> [dynamic]string {
-	warnings := make([dynamic]string, 0, allocator)
-	transferred := false
-	defer if !transferred { delete_string_slice(warnings, allocator) }
-	for procedure in after {
-		if procedure.is_test || procedure.has_intent_comment || procedure_was_present(before, procedure.name) {
-			continue
-		}
-		warning := fmt.aprintf(
-			"[WARN] new procedure %s (line %d) has no intent comment",
-			procedure.name,
-			procedure.line,
-			allocator=allocator,
-		)
-		_, append_err := append(&warnings, warning)
-		if append_err != nil {
-			delete(warning, allocator)
-			return nil
-		}
-	}
-	transferred = true
-	return warnings
-}
-
-@(private)
-procedure_was_present :: proc(procedures: [dynamic]Procedure_Declaration, name: string) -> bool {
-	for procedure in procedures {
-		if procedure.name == name {
-			return true
-		}
-	}
-	return false
-}
