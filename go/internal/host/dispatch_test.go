@@ -66,12 +66,18 @@ func fakeCLI(argv []string) {
 			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 			description = strings.TrimSpace(line)
 		}
+		// A test can make the fake Station report a question instead of a Pull, so the
+		// alert path is proven through a real host, not only through the ledger's unit tests.
+		reportKind := "pulled"
+		if override := os.Getenv("CS_FAKE_REPORT_KIND"); override != "" {
+			reportKind = override
+		}
 		conn, err := net.Dial("unix", socket)
 		if err != nil {
 			os.Exit(1)
 		}
 		report := map[string]any{
-			"brew_id": request, "shot_id": shot, "kind": "pulled",
+			"brew_id": request, "shot_id": shot, "kind": reportKind,
 			"description": description, "timestamp_ns": time.Now().UnixNano(),
 		}
 		data, _ := json.Marshal(report)
