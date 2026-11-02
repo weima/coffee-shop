@@ -108,9 +108,10 @@ committing to that integration.
 
 ## Verification
 
-The watcher loop is covered end to end by `e2e/watcher_e2e.sh`, which runs the
-real binary against a real Odin project:
+The watcher loop and this integration are covered end to end by the `e2e` Odin
+package, which builds the real binary and drives it against temporary projects:
 
 ```sh
-just e2e
+just e2e            # all process-level tests
+just watchexec-e2e  # only the watchexec batch test
 ```
