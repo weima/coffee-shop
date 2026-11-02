@@ -1,126 +1,106 @@
 # Coffee Shop Vocabulary
 
-Draft language for the small Pi-worker dispatcher. Coffee and snack metaphors name product concepts; technical terms such as **Pi process**, **Git worktree**, **status**, and **report** keep their ordinary meanings.
+The words Coffee Shop uses, and the ones it has retired. Coffee and snack metaphors name product
+concepts; technical terms such as **Pi**, **Git worktree**, **status**, **log** and **report** keep
+their ordinary meanings.
 
 ## Work
 
 | Term | Definition | Aliases to avoid |
 | --- | --- | --- |
-| **Order** | The outcome a developer asks Coffee Shop to deliver. | Request, ticket (unless referring to an external issue) |
-| **Recipe** | The explicit breakdown of an Order into independent units of work. | Plan, task list (use these only for their ordinary meanings outside Coffee Shop) |
-| **Brew** | One execution of a Recipe, including dispatch, status tracking, and result collection. | Run, session (as names for the overall lifecycle) |
-| **Shot** | One unit of work from a Recipe, assigned to one Pi worker. | Job, subtask, lane |
-| **Barista** | The active Pi session that interprets an Order, prepares its Recipe, and reviews returned work. | Coordinator agent, first mate |
-| **Station** | The Git worktree isolated for one Shot. | Workspace, checkout (when referring to the isolated worktree) |
-| **Worker** | A Pi process executing one Shot at its Station. | Crewmate, mate |
-| **Grind** | The Barista's step of splitting an Order into very small pieces, each tagged as research or execution. | Split, decomposition (for this step) |
-| **Cupping** | A read-only research Shot. It has no side effects, like a pure function: it runs Pi with read-only tools only, and its Station must stay unchanged. Its findings are its report. | Research (for this Shot kind), investigation |
-| **Cupper** | The Worker running a Cupping Shot. | Researcher |
-| **Dial-in** | The Barista's step that summarises Cupping findings and re-splits the executable pieces into Pulls. | Re-plan, replan |
-| **Pull** | An execution Shot. Its Worker runs Taste and, if it passes, commits its change on its own branch. | Task (use Shot), commit |
-| **Taste** | The verification a Pull runs before it commits. A failing or undiscovered check makes the Pull `incomplete`, with no commit. It is not the Filter review. | Test-before-commit, check |
+| **Order** | The outcome a developer asks Coffee Shop to deliver, expressed in natural language to the Barista. | Request, ticket (unless referring to an external issue) |
+| **Barista** | The active Pi session that interprets an Order, decides the Shots, and reviews returned work. | Coordinator agent, first mate |
+| **Shot** | One unit of work with one prompt, run in one Station. | Job, subtask, lane |
+| **Station** | The agent session for one Shot: an Odin child process that runs the agent in an isolated Git worktree. | Pane, tab, workspace (all retired) |
+| **Cupping** | A read-only research Shot. Its tools are `read,grep,find,ls,write,codemode`, so it can write scratch files but must leave the source as it found it; a changed Station is reported `incomplete`. | Research (for this Shot kind) |
+| **Pull** | An execution Shot that runs a **Taste** and, if it passes, commits its change on its own branch. | Task, merge |
+| **Taste** | The verification a Pull runs before it commits. A Taste that cannot run or exits non-zero reports `taste_failed` and commits nothing. | Test-before-commit, check |
+| **Dispatch** | The request that starts work: one JSON line naming the Beans and its Shots, with each Shot's prompt and optional `model`, `thinking`, `kind`, `taste`, `message`, `codemode`. | Recipe (retired file format) |
+| **Slot** | One of five concurrent Stations a host runs. Shots beyond that queue. The budget is also machine-wide. | Scale, Worker |
+
+## Reports and controls
+
+| Term | Definition | Aliases to avoid |
+| --- | --- | --- |
+| **Report** | One line a Station sends the host over the activity socket: `turn_done`, `usage`, `needs_input`, `agent_exited`, or an outcome such as `pulled`, `taste_passed`, `taste_failed`, `incomplete`, `session_failed`. | Event (for a Station's report) |
+| **Event** | One JSON line the host writes to stdout: `ready`, `received`, `dispatch_accepted`, `session_started`, `station_report`, `dispatch_queued`, `needs_input_alert`, `stale_warning`, `cancelled`, `blended`, `blend_failed`, `error`, `stopped`. | Report (for a host event) |
+| **History** | `<state>/host/<request>/history.ndjson`: every event the host emitted for that request, which is what `status --stations` reads. | Log |
+| **Log** | `<state>/host/<request>/logs/<shot>.log`: a Station's own output, bounded and rotated once. | History |
+| **needs_input_alert** | The host's event when a Station asks a question. It names the Station and the session key a reply must use. | Notification |
+| **stale_warning** | The host's event after ten minutes without a report. A warning, never a cancel. | Timeout |
+| **Seam** | A CLI subcommand the host drives: `prepare` (worktree), `release` (remove worktree), `blend`, `station`. | Plugin, adapter |
 
 ## Results
 
 | Term | Definition | Aliases to avoid |
 | --- | --- | --- |
-| **Tray** | The compact review packet for a completed Brew: outcome summary, supporting evidence, and any decision needed from the developer. | Deliverable bundle, completion packet |
-| **Blend** (proposed, not yet implemented) | An explicit operation, run after the Barista approves a Tray, that combines a Brew's Pull commits, in dependency order, into one local commit in a retained integration worktree, then removes that Brew's per-Shot Stations after success. On conflict or commit failure it leaves Herdr tabs, Stations and Brew state intact. | Merge, integrate, squash, publish |
+| **Blend** | An explicit operation that combines 2 to 20 Pull commits into one commit on a new branch, in a temporary worktree, then removes the worktree and keeps the branch. A conflict removes both. It never pushes. | Merge, squash, publish |
+| **pr** | The explicit command that verifies a Pull from history, fast-forwards the developer's branch, pushes it, and opens a PR with `gh`. | Publish, release |
+| **cleanup** | The explicit command that removes one run's worktrees and keeps every branch. | Garbage collection |
 
 ## Software concept matches
 
-These are working mappings for the option-2 design, not a requirement to use every café noun in commands or code.
-
 | Coffee-shop term | Software concept | Fit |
 | --- | --- | --- |
-| **Beans** | The target repository and the context a Worker needs to work on it. | Good input metaphor; keep “repository” in technical interfaces. |
+| **Beans** | The target repository and the context a Station needs to work on it. | Good input metaphor; keep "repository" in technical interfaces. |
 | **Menu** | Coffee Shop's CLI commands and supported options. | Good user-interface metaphor. |
-| **Grinder** | The Grind step: the Barista's split of an Order into small pieces tagged research or execution. | Name only; the step is Grind. |
-| **Machine** | The Pi CLI runtime used to launch Workers. | Clear enough in architecture prose; use “Pi” in implementation details. |
-| **Filter** | Reviews selected changes against the Beans repository's root `standards.md`, discovers and runs its existing unit/component and end-to-end test commands, and reports evidence without changing test configuration. | Good verification metaphor; it does not author tests or hide failures. |
-| **Taste-Driven Development (TDD)** | The optional Worker skill for deriving and authoring tests from the Order and `standards.md`: test-first unit/component coverage and behavior-focused E2E scenarios using the repository's existing conventions. | TDD is the skill name; it does not change how test commands are discovered or run. |
-| **Scale** | A configured limit on concurrent Workers. | Strong fit for bounded parallelism. |
-| **Timer** | A timeout or deadline for a Worker or Brew. | Direct mapping. |
-| **Register** | The durable local index of active Brews and their current status. | Good state-store metaphor. |
-| **Receipt** | The append-only event history for a Brew. | Distinct from current status and the final review packet. |
-| **Tray** | The final review packet: outcome, evidence, and decisions needed. | A coffee-shop serving metaphor; not a storage format. |
-| **Knock box** | Possible name for a cleanup/retirement area for completed Stations. | Tentative; only useful if cleanup becomes a distinct lifecycle step. |
-
-**Not mapped yet:** drink varieties, ingredients, cups and mugs, tables and chairs, tills, card readers, pastries, and other food. They have no clear unique software concept in the current scope; avoid using them just to fill out the vocabulary.
+| **Machine** | The Pi runtime that runs a Station's agent. | Clear in prose; use "Pi" in implementation details. |
+| **Taste-Driven Development** | The skill a test-authoring Shot loads, deriving tests from the Order and the Beans' `standards.md` using the repository's own conventions. | A skill name; it changes no test command. |
+| **Timer** | A deadline inside a Station: a turn that gets no reply is stopped and reported `incomplete`. | Direct mapping. |
 
 ## Relationships
 
-- A **Brew** fulfills one **Order** by executing its **Recipe** and produces one **Tray** for review.
-- A **Recipe** contains one or more **Shots**; a Shot is the smallest independently dispatched unit.
-- In a research-then-execute Brew, the phases run in order: **Grind**, then **Cupping** Shots, then **Dial-in**, which adds the **Pull** Shots, then **Blend** after the Barista approves the **Tray**. The full flow and its decision record are in `specs/diagrams/v03-research-flow.png` and `docs/decisions/0001-research-and-execution-phases.md`.
-- Each **Shot** is assigned to one **Worker** and one **Station**; a Worker does not share a Station with another Worker during a Brew.
-- The **Barista** uses the **Beans**, prepares the Recipe, reviews the collected Shot results, and prepares the **Tray**; Coffee Shop does not merge or publish them automatically.
-- After a **Tray** is approved, a proposed **Blend** combines the Brew's Shot changes into one commit in a retained integration worktree. Blend does not merge or publish; those remain the developer's decision.
-- The **Register** tracks current Brew and Shot status; the **Receipt** records status events; the **Tray** summarizes the outcome for human review.
-- The **Scale** bounds concurrent Workers. The **Filter** reviews changes and reports existing test results before a Tray is served.
-- The **Barista** may assign a normal **Shot** to add tests using **Taste-Driven Development**; Filter remains responsible for running the repository's existing test commands.
+- A **Brew** is retired; an **Order** is now just what the developer told the Barista, and it becomes a **Dispatch** with one or more **Shots**.
+- Each **Shot** runs in one **Station**, which owns one Git worktree and one agent process.
+- A **Cupping** Shot reports its findings and changes nothing. A **Pull** runs its **Taste** and commits only if it passes.
+- The **Barista** reads the host's **events** (or `status`, `log`, `reply`), answers questions with `coffee-shop reply`, and reports the outcome to the developer.
+- After review, **pr** opens the pull request, **Blend** combines a multi-Pull run first, and **cleanup** removes a finished run's worktrees. Coffee Shop never merges or publishes on its own.
 
-## Shot states
+## A Shot's life
 
 | State | Meaning |
 | --- | --- |
-| **queued** | Waiting for a Scale slot. |
-| **running** | The Worker has started and no outcome is confirmed. |
-| **completed** | The Worker finished with its completion marker, verified. |
-| **incomplete** | The Worker finished without a marker, or with `CS-BLOCKED`, or missed an expected change. |
-| **failed** | Pi exited with an error. |
-| **interrupted** | The Worker's exit was not seen, or was not confirmed after a cancel request. |
-| **cancelled** | Stopped on request, or cancelled before it started. |
+| **queued** | Waiting for a Slot; the host emitted `dispatch_queued`. |
+| **running** | The host emitted `session_started` and the Station has not reported a terminal outcome. |
+| **needs_input** | The Station asked a question and is waiting for a reply. |
+| **released** | A terminal report (`pulled`, `taste_failed`, `incomplete`, `session_failed`) or process exit freed the Slot. |
 
-## Diagrams
-
-![Vocabulary map: Order, Recipe, Brew, Shots, Workers, Stations, Tray, Register and Receipt](diagrams/vocabulary-map.png)
-
-*How the parts fit. Source: `diagrams/vocabulary-map.html`.*
-
-![v0.3 flow: Grind, Cupping, Dial-in, Pull and Blend](diagrams/v03-research-flow.png)
-
-*The research-then-execute flow. Cupping has no side effects; each Pull commits after Taste. Source: `diagrams/v03-research-flow.html`.*
-
-![Shot states and their transitions](diagrams/shot-lifecycle.png)
-
-*The states a Shot moves through. Source: `diagrams/shot-lifecycle.html`.*
+A released Station can neither warn nor alert again; its worktree and branch stay until `pr` or
+`cleanup` removes them.
 
 ## Characters
 
-Each role has a character in the shared mascot style. Coffee, Oreo, and Rachel are family members; the other roles are regular people with their own props.
+Each role has a character in the shared mascot style. Coffee, Oreo and Rachel are family members.
 
 | Role | Character | Drawn as |
 | --- | --- | --- |
 | **Barista** | Coffee | a black German Shepherd and Golden Retriever mix with floppy ears and a charcoal muzzle, in a coffee-brown apron |
-| **Oreo** (the cat who reviews a finished Brew) | Oreo | a black-and-white American Shorthair holding an Oreo cookie |
-| **Rachel** (developer companion) | Rachel | a university student with round glasses, a laptop, and a cat-paw remembrance pin |
-| **Worker** | a person | a brown shirt, holding a coffee cup |
-| **Cupper** | a person | a grey shirt, holding a tasting spoon |
-| **Filter** | a person | a slate-blue shirt, holding a magnifying glass |
+| **Reviewer** | Oreo | a black-and-white American Shorthair holding an Oreo cookie |
+| **Developer companion** | Rachel | a university student with round glasses, a laptop, and a cat-paw remembrance pin |
 
 <p>
   <img src="../assets/characters/coffee.svg" alt="Coffee, the Barista" width="120">
-  <img src="../assets/characters/oreo.svg" alt="Oreo, the cat who reviews a finished Brew" width="120">
+  <img src="../assets/characters/oreo.svg" alt="Oreo, the reviewer" width="120">
   <img src="../assets/characters/rachel.svg" alt="Rachel, the developer companion" width="120">
-  <img src="../assets/characters/worker.svg" alt="Worker" width="120">
-  <img src="../assets/characters/cupper.svg" alt="Cupper" width="120">
-  <img src="../assets/characters/filter.svg" alt="Filter" width="120">
 </p>
+
+The Worker, Cupper and Filter drawings stay in `assets/characters/` as the retired roles' artwork.
 
 ## Example dialogue
 
-> **Developer:** “Order: fix the flaky login test and explain the cause.”
+> **Developer:** "Order: fix the flaky login test and explain the cause."
 >
-> **Barista:** “I’ll make a Recipe with two independent Shots: investigate the flake, and inspect the test history.”
+> **Barista:** "I'll dispatch two Shots: one Cups the test history, one makes the fix."
 >
-> **Developer:** “Brew those in parallel.”
+> **Developer:** "Run them in parallel."
 >
-> **Barista:** “Each Worker has its own Station. I’ll review both reports and put the outcome, evidence, and any decision into the Tray.”
+> **Barista:** "Each Shot has its own Station and worktree. I'll report what each one found, and
+> the Pull will commit only after its Taste passes."
 
 ## Coffee-shop word bank
 
-Candidate words for future product vocabulary. These are a naming palette, not additional software concepts; only terms defined above have a Coffee Shop meaning. The list covers common shop items and is not an exhaustive inventory of every café.
+Candidate words for future product vocabulary. These are a naming palette, not additional software
+concepts; only terms defined above have a Coffee Shop meaning.
 
 - **Drinks:** espresso, ristretto, lungo, americano, cappuccino, latte, flat white, mocha, macchiato, cortado, cold brew, drip coffee, pour-over, tea, chai, matcha, hot chocolate.
 - **Ingredients:** coffee beans, grounds, roast, water, milk, oat milk, cream, foam, sugar, syrup, cocoa, cinnamon, ice.
@@ -129,14 +109,28 @@ Candidate words for future product vocabulary. These are a naming palette, not a
 - **Food:** pastry, croissant, muffin, scone, cookie, cake, toast, sandwich.
 - **Shop fixtures and tools:** counter, menu, menu board, table, chair, stool, till, card reader, receipt, tip jar, display case, water jug, condiment station.
 
+## Retired terms
+
+These described the one-shot `brew` pipeline, which was removed in #172, and the Herdr pane layer,
+removed in #174. They appear in `PLAN.md`'s historical sections and in old code names, so they are
+listed here to be recognised, not used.
+
+| Retired | Meant | Today |
+| --- | --- | --- |
+| **Recipe** | A JSON file describing an Order and its Shots. | A Dispatch request carries the Shots directly. |
+| **Brew** | One execution of a Recipe, with a supervisor and tabs. | A Dispatch request; the host keeps its history. |
+| **Worker** | A non-interactive Pi process run per Shot. | A Station, which is interactive. |
+| **Filter** | An advisory review run after a Brew. | A review Shot, if the Barista asks for one. |
+| **Tray** | A review packet assembled per Brew. | The Barista's own summary. |
+| **Register / Receipt** | Durable Brew state and its event history. | `history.ndjson` per request. |
+| **Scale** | The concurrent-Worker limit. | Slots: five per host, bounded machine-wide. |
+| **Pane / tab / workspace** | Herdr's presentation layer. | A Station is a headless process. |
+
 ## Flagged ambiguities
 
-- **Brew** means the full lifecycle, not a Pi process or a single worker attempt. Use **Worker** for the Pi process and **Shot** for its assigned unit of work.
-- **Recipe** is the explicit task breakdown, not a guarantee that tasks are independent. The Barista must keep dependent work in sequence rather than dispatching it as parallel Shots.
-- **Tray** is the review packet presented for a completed Brew; it is not a new data format or a required file type.
+- **Shot** is the unit of work; **Station** is the process that runs it. Do not use them interchangeably.
+- **Report** comes from a Station; **event** comes from the host. The activity socket carries reports, stdout carries events.
+- **Taste** is a Pull's own check before its commit. A review Shot is separate work; do not treat one as the other.
+- **Cupping** must not change the source. Scratch files under `.scratch/` are allowed; anything else makes the Shot `incomplete`.
+- **Blend** never pushes and is never needed for a single Pull.
 - The word bank is a candidate palette only; do not assign software meanings to these words without a concrete concept that needs naming.
-- **Taste-Driven Development** is a Worker skill name, not a new lifecycle component; test-authoring remains ordinary Shot work.
-- **Taste** is a Pull's own check before its commit. **Filter** is the independent review after a Shot. Do not treat one as the other.
-- **Cupping** must not write anywhere, not even a cache. A Cupping Shot that changes its Station is `incomplete`.
-- **Blend** is implemented. It combines the commits of one Brew's Pulls into one reviewed commit, and is never needed for a single Pull. Blend integrates one Brew only, and it is not a merge or a publish.
-- Coffee and snack terms are product vocabulary, not a reason to rename common engineering concepts in code or logs when that would reduce clarity.
