@@ -2,6 +2,7 @@ set shell := ["sh", "-cu"]
 
 check:
     odin check src
+    odin check e2e -no-entry-point
 
 # ODIN_TEST_FAIL_ON_BAD_MEMORY makes leaks and bad frees test failures, so a
 # memory error cannot ride along with "All tests were successful."
@@ -15,10 +16,13 @@ build: check
 run directory:
     odin run src -- "{{directory}}"
 
+# Process-level tests: build the real binary and drive it against temporary
+# projects. Kept out of `test` so the unit suite stays fast.
 e2e:
-    sh e2e/watcher_e2e.sh
+    odin test e2e
+
 typing-e2e:
-    sh e2e/typing_e2e.sh
+    odin test e2e -define:ODIN_TEST_NAMES=rachel_e2e.test_human_speed_typing_never_reports_a_broken_file
 
 watchexec-e2e:
-    sh e2e/watchexec_e2e.sh
+    odin test e2e -define:ODIN_TEST_NAMES=rachel_e2e.test_watchexec_batches_narrow_the_check

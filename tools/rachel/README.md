@@ -95,11 +95,18 @@ Generated tests are written directly to the working tree. Rachel rechecks the so
 
 The watcher, compile/test feedback loop, missing-intent warnings, test-filename conflict warnings, companion-test creation, and provider-neutral test-generation adapter are implemented. The adapter can use any trusted local command; Rachel does not own model credentials or depend on Pi. Further test-generation quality tuning and Linux verification remain open.
 
-`cd tools/rachel && just test` passes 14 tests without allocator-leak warnings; `just build` succeeds. Linux verification remains outstanding.
+`cd tools/rachel && just test` passes 24 tests without allocator-leak warnings; `just build` succeeds. Linux verification remains outstanding.
 
-`just e2e` runs the compiled binary against temporary Odin projects and checks the real watch loop, which the in-process tests cannot cover: debounced re-check after a save, the missing-intent warning, companion test creation without a recreate loop, the starter justfile path, and clean shutdown on SIGTERM. It passes on macOS; it has not been run on Linux.
+`just e2e` runs the process-level tests in the `e2e` package (`odin test e2e`). They build the real binary and drive it against temporary projects, which the in-process tests cannot cover:
 
-`just typing-e2e` is the human-speed check. Two station processes share one worktree: one types a code fragment into `dummy.odin` about eleven characters per second with a pause after each line, the other runs Rachel on the same checkout. The driver asserts both stations resolved the same worktree, then reports what Rachel said while the file was half-typed. Expect failed checks mid-typing: Rachel's 350 ms pause is one fixed wait rather than a quiet window that restarts per edit. No agent session or pane manager is involved.
+- the watch loop: startup check, a saved file, the missing-intent warning, companion test creation exactly once, and the package test;
+- clean shutdown on SIGTERM;
+- one-shot verdicts: every distinct error, relative paths, no snippets, and `--max-errors`;
+- narrowing a check to the package of a changed file;
+- a real `watchexec` run: `ok (2 checked)` at startup, a narrowed failure, recovery, and no banner lines in the verdict stream;
+- human-speed typing: a fragment is written one byte at a time with pauses at line ends, and no check may fail while it is half-written.
+
+`just typing-e2e` and `just watchexec-e2e` run those single tests by name. Everything is Odin: there are no shell scripts, and the only external dependencies are the `odin` and `watchexec` binaries. Tests pass on macOS; they have not been run on Linux.
 
 The watcher overlaps with [watchexec](watchexec.md); that document compares them and records the integration options and the decision to keep the built-in watcher for now.
 
