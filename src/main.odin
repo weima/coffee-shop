@@ -54,7 +54,7 @@ run_cli :: proc(args: []string) -> int {
 		return run_pr(command.run_id, command.shot_id, command.branch, command.remote, command.message, command.blend)
 	}
 	if command.kind == .Cleanup {
-		return run_cleanup(command.run_id, command.branch, command.workspace)
+		return run_cleanup(command.run_id, command.branch)
 	}
 	if command.kind == .Station {
 		return run_station(command.report_path, command.shot_id, command.brew_id, command.prompt, command.prompt_file, command.shot_kind, command.taste, command.message, Shot_Options{interactive = command.interactive, codemode = command.codemode}, command.agent)

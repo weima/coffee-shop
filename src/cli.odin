@@ -42,7 +42,6 @@ Command :: struct {
 	run_id: string,
 	branch: string,
 	remote: string,
-	workspace: string,
 	blend: bool,
 	stations: bool,
 	host_impl: Host_Impl,
@@ -102,9 +101,8 @@ Reply_Arguments :: struct {
 }
 
 Cleanup_Arguments :: struct {
-	run_id:    string `args:"pos=0,required" usage:"Run identifier."`,
-	branch:    string `usage:"Base branch whose worktree to remove; discovered from the PR record when omitted."`,
-	workspace: string `usage:"Herdr workspace to consider; discovered from the run's Stations when omitted."`,
+	run_id: string `args:"pos=0,required" usage:"Run identifier."`,
+	branch: string `usage:"Base branch whose worktree to remove; discovered from the PR record when omitted."`,
 }
 
 Station_Arguments :: struct {
@@ -177,7 +175,7 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 		if flags.parse(&options, args[1:], .Unix) != nil {
 			return Command{kind = .Help}, "invalid cleanup arguments"
 		}
-		return Command{kind = .Cleanup, run_id = options.run_id, branch = options.branch, workspace = options.workspace}, ""
+		return Command{kind = .Cleanup, run_id = options.run_id, branch = options.branch}, ""
 	case "prepare":
 		options: Seam_Arguments
 		if flags.parse(&options, args[1:], .Unix) != nil {

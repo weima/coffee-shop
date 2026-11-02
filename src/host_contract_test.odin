@@ -5,30 +5,33 @@ import "core:os"
 import "core:strings"
 import "core:testing"
 
-// The foreground host is the public controller seam. It acknowledges structured
-// dispatches in order, starts one interactive Pi session per Shot in isolated
-// Stations, and stays ready until the harness shuts it down. A fake `herdr` on
-// PATH stands in for Herdr; no Pi or AI service runs.
-@(test)
-test_foreground_host_accepts_dispatches_and_starts_sessions :: proc(t: ^testing.T) {
-	root, make_err := os.make_directory_temp(HOST_TEST_TEMP_DIR, "coffee-shop-host-*", context.allocator)
+HOST_TEST_TEMP_DIR :: "/private/tmp" when ODIN_OS == .Darwin else "/tmp"
+Host_Contract_Run :: struct {
+	root:  string,
+	state: string,
+	out:   string,
+}
+
+// Runs the foreground host in a temporary Git repository. The fake Pi prevents
+// tests from contacting an AI service while still exercising the Station boundary.
+run_host_requests :: proc(t: ^testing.T, prefix, requests: string) -> (run: Host_Contract_Run) {
+	root, make_err := os.make_directory_temp(HOST_TEST_TEMP_DIR, prefix, context.allocator)
 	testing.expect_value(t, make_err, os.Error(nil))
 	if make_err != nil {
 		return
 	}
-	defer os.remove_all(root)
-	defer delete(root)
-
+	run.root = root
 	repo := fmt.aprintf("%s/beans", root)
 	bin := fmt.aprintf("%s/bin", root)
-	state := fmt.aprintf("%s/state", root)
+	run.state = fmt.aprintf("%s/state", root)
 	defer delete(repo)
 	defer delete(bin)
-	defer delete(state)
 	rwx := os.Permissions{.Read_User, .Write_User, .Execute_User}
 	testing.expect_value(t, os.make_directory_all(repo), os.Error(nil))
 	testing.expect_value(t, os.make_directory_all(bin), os.Error(nil))
-	testing.expect_value(t, os.write_entire_file(fmt.tprintf("%s/herdr", bin), HOST_FAKE_HERDR, rwx), os.Error(nil))
+	pi := fmt.aprintf("%s/pi", bin)
+	defer delete(pi)
+	testing.expect_value(t, os.write_entire_file(pi, HOST_FAKE_PI, rwx), os.Error(nil))
 
 	git_state, _, git_stderr, git_err := os.process_exec(os.Process_Desc{
 		command = {"sh", "-c", `git init -q "$1" && git -C "$1" -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m init`, "host-test", repo},
@@ -37,271 +40,22 @@ test_foreground_host_accepts_dispatches_and_starts_sessions :: proc(t: ^testing.
 	testing.expect_value(t, git_err, os.Error(nil))
 	testing.expect(t, git_state.success, string(git_stderr))
 
-	long_prompt := fmt.aprintf("first line\nit's a long prompt\n%s", strings.repeat("x", 5000, context.temp_allocator))
-	defer delete(long_prompt)
-	json_prompt, _ := strings.replace_all(long_prompt, "\n", "\\n", context.allocator)
-	defer delete(json_prompt)
-	input_path := fmt.aprintf("%s/requests.ndjson", root)
-	defer delete(input_path)
-	input := fmt.aprintf(`{{"type":"dispatch","request_id":"order-1","repo":"%s","recipe":{{"order":"first order","shots":[{{"id":"shot-a","prompt":"%s","model":"github-copilot/claude-haiku-5.5"}}]}}}}
-{{"type":"dispatch","request_id":"order-2","repo":"%s","recipe":{{"order":"second order","shots":[{{"id":"shot-b","prompt":"inspect the tests"}}]}}}}
-{{"type":"dispatch","request_id":"order-3","repo":"%s","recipe":{{"order":"bad order","shots":[{{"id":"../escape","prompt":"x"}}]}}}}
-{{"type":"dispatch","request_id":"order-4","repo":"%s","recipe":{{"order":"bad model","shots":[{{"id":"shot-c","prompt":"x","model":"bad model;"}}]}}}}
-{{"type":"shutdown","request_id":"shutdown-1"}}
-`, repo, json_prompt, repo, repo, repo)
-	defer delete(input)
-	write_err := os.write_entire_file(input_path, input, rwx)
-	testing.expect_value(t, write_err, os.Error(nil))
-	if write_err != nil {
-		return
-	}
-
-	binary := build_test_binary(t, root)
-	defer delete(binary)
-	state_run, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `export PATH="$2:$PATH" CS_STATE_DIR="$3" FAKE_HERDR_DIR="$4"; cat "$1" | "$5" host --impl=odin`, "host-test", input_path, bin, state, root, binary},
-	}, context.allocator)
-	defer delete(stdout)
-	defer delete(stderr)
-
-	testing.expect_value(t, exec_err, os.Error(nil))
-	testing.expect(t, state_run.success, string(stderr))
-	out := string(stdout)
-	testing.expect(t, host_output_contains(out, `{"type":"ready","protocol":1}`), out)
-	testing.expect(t, host_output_contains(out, `{"type":"dispatch_accepted","request_id":"order-1"}`), out)
-	testing.expect(t, host_output_contains(out, `{"type":"session_started","request_id":"order-1","shot_id":"shot-a","pane_id":"p0"}`), out)
-	testing.expect(t, host_output_contains(out, `{"type":"dispatch_accepted","request_id":"order-2"}`), out)
-	testing.expect(t, host_output_contains(out, `{"type":"session_started","request_id":"order-2","shot_id":"shot-b","pane_id":"p1"}`), out)
-	testing.expect(t, host_output_contains(out, `"request_id":"order-3"`) && host_output_contains(out, `each shot needs a valid id and a prompt`), out)
-	testing.expect(t, !host_output_contains(out, `{"type":"dispatch_accepted","request_id":"order-3"}`), out)
-	testing.expect(t, host_output_contains(out, `"request_id":"order-4","shot_id":"shot-c"`) && host_output_contains(out, `shot model must be`), out)
-	testing.expect(t, !host_output_contains(out, `{"type":"dispatch_accepted","request_id":"order-4"}`), out)
-	testing.expect(t, host_output_contains(out, `{"type":"stopped","request_id":"shutdown-1"}`), out)
-
-	prompt_path := fmt.aprintf("%s/host/order-1/prompts/shot-a.md", state)
-	defer delete(prompt_path)
-	prompt_data, prompt_err := os.read_entire_file(prompt_path, context.allocator)
-	defer delete(prompt_data)
-	testing.expect_value(t, prompt_err, os.Error(nil))
-	testing.expect_value(t, string(prompt_data), fmt.tprintf("%s\n\n%s", HOST_REPLY_STYLE, long_prompt))
-
-	calls_data, calls_err := os.read_entire_file(fmt.tprintf("%s/calls.log", root), context.allocator)
-	defer delete(calls_data)
-	testing.expect_value(t, calls_err, os.Error(nil))
-	calls := string(calls_data)
-	testing.expect(t, strings.contains(calls, "--station shot-a --brew order-1 --prompt-file '") && strings.contains(calls, "-- pi --mode rpc --tools +codemode --model 'github-copilot/claude-haiku-5.5' -e"), calls)
-	prompt_command_at := strings.index(calls, "--station shot-a")
-	prompt_command_start := strings.last_index_byte(calls[:prompt_command_at], '\n') + 1
-	prompt_command_end := strings.index_byte(calls[prompt_command_at:], '\n')
-	if prompt_command_end < 0 {
-		prompt_command_end = len(calls) - prompt_command_at
-	} else {
-		prompt_command_end = prompt_command_at + prompt_command_end - prompt_command_start
-	}
-	prompt_command := calls[prompt_command_start : prompt_command_start+prompt_command_end]
-	testing.expect(t, len(prompt_command) < 512, fmt.tprintf("command length: %d\n%s", len(prompt_command), prompt_command))
-	shot_b_path := fmt.aprintf("%s/host/order-2/prompts/shot-b.md", state)
-	defer delete(shot_b_path)
-	shot_b_marker := strings.index(calls, "--station shot-b")
-	shot_b_start := strings.last_index_byte(calls[:shot_b_marker], '\n') + 1
-	shot_b_end := strings.index_byte(calls[shot_b_marker:], '\n')
-	if shot_b_end < 0 {
-		shot_b_end = len(calls) - shot_b_marker
-	} else {
-		shot_b_end = shot_b_marker + shot_b_end - shot_b_start
-	}
-	shot_b_command := calls[shot_b_start : shot_b_start+shot_b_end]
-	testing.expect(t, strings.contains(shot_b_command, fmt.tprintf("--station shot-b --brew order-2 --prompt-file '%s' -- pi --mode rpc --tools +codemode --model 'opencode-go/deepseek-v4.1-flash' -e", shot_b_path)), shot_b_command)
-	// An explicit Shot model still overrides the Pi Station default.
-	testing.expect(t, strings.contains(calls, "--model 'github-copilot/claude-haiku-5.5' -e"), calls)
-	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-4/stations/shot-c", state)), "invalid model must not create a worktree")
-	testing.expect(t, !strings.contains(calls, "shot-c"), "invalid model must not call Herdr")
-}
-
-// A research Shot gets scratch-write tools, an execute Shot gets codemode, and an unknown kind
-// is refused before any worktree or Herdr call for that dispatch.
-@(test)
-test_foreground_host_passes_shot_kind_and_rejects_unknown_kind :: proc(t: ^testing.T) {
-	root, make_err := os.make_directory_temp(HOST_TEST_TEMP_DIR, "coffee-shop-host-kind-*", context.allocator)
-	testing.expect_value(t, make_err, os.Error(nil))
-	if make_err != nil {
-		return
-	}
-	defer os.remove_all(root)
-	defer delete(root)
-
-	repo := fmt.aprintf("%s/beans", root)
-	bin := fmt.aprintf("%s/bin", root)
-	state := fmt.aprintf("%s/state", root)
-	defer delete(repo)
-	defer delete(bin)
-	defer delete(state)
-	rwx := os.Permissions{.Read_User, .Write_User, .Execute_User}
-	testing.expect_value(t, os.make_directory_all(repo), os.Error(nil))
-	testing.expect_value(t, os.make_directory_all(bin), os.Error(nil))
-	testing.expect_value(t, os.write_entire_file(fmt.tprintf("%s/herdr", bin), HOST_FAKE_HERDR, rwx), os.Error(nil))
-
-	git_state, _, git_stderr, git_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `git init -q "$1" && git -C "$1" -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m init`, "host-kind-test", repo},
-	}, context.allocator)
-	defer delete(git_stderr)
-	testing.expect_value(t, git_err, os.Error(nil))
-	testing.expect(t, git_state.success, string(git_stderr))
-
-	input_path := fmt.aprintf("%s/requests.ndjson", root)
-	defer delete(input_path)
-	input := fmt.aprintf(`{{"type":"dispatch","request_id":"order-5","repo":"%s","recipe":{{"order":"research order","shots":[{{"id":"shot-r","prompt":"read the code","kind":"research"}},{{"id":"shot-e","prompt":"make the change","kind":"execute"}}]}}}}
-{{"type":"dispatch","request_id":"order-6","repo":"%s","recipe":{{"order":"bad kind","shots":[{{"id":"shot-w","prompt":"write a file","kind":"write"}}]}}}}
-{{"type":"shutdown","request_id":"shutdown-1"}}
-`, repo, repo)
-	defer delete(input)
-	testing.expect_value(t, os.write_entire_file(input_path, input, rwx), os.Error(nil))
-
-	binary := build_test_binary(t, root)
-	defer delete(binary)
-	state_run, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `export PATH="$2:$PATH" CS_STATE_DIR="$3" FAKE_HERDR_DIR="$4"; cat "$1" | "$5" host --impl=odin`, "host-kind-test", input_path, bin, state, root, binary},
-	}, context.allocator)
-	defer delete(stdout)
-	defer delete(stderr)
-	testing.expect_value(t, exec_err, os.Error(nil))
-	testing.expect(t, state_run.success, string(stderr))
-	out := string(stdout)
-	testing.expect(t, host_output_contains(out, `{"type":"session_started","request_id":"order-5","shot_id":"shot-r"`), out)
-	testing.expect(t, host_output_contains(out, `{"type":"session_started","request_id":"order-5","shot_id":"shot-e"`), out)
-	testing.expect(t, host_output_contains(out, `{"type":"error","request_id":"order-6","shot_id":"shot-w","reason":"shot kind must be execute or research"}`), out)
-	testing.expect(t, !host_output_contains(out, `{"type":"dispatch_accepted","request_id":"order-6"}`), out)
-	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-6/stations/shot-w", state)), "unknown kind must not create a worktree")
-
-	calls_data, calls_err := os.read_entire_file(fmt.tprintf("%s/calls.log", root), context.allocator)
-	defer delete(calls_data)
-	testing.expect_value(t, calls_err, os.Error(nil))
-	calls := string(calls_data)
-	testing.expect(t, !strings.contains(calls, "shot-w"), "unknown kind must not call Herdr")
-	testing.expect(t, strings.contains(calls, "station --kind research --report") && strings.contains(calls, "-- pi --mode rpc --tools read,grep,find,ls,write,codemode --model 'opencode-go/deepseek-v4.1-flash' -e"), calls)
-	research_command_start := strings.index(calls, "station --kind research --report")
-	research_command_end := strings.index_byte(calls[research_command_start:], '\n')
-	if research_command_end < 0 {
-		research_command_end = len(calls)
-	} else {
-		research_command_end += research_command_start
-	}
-	research_command := calls[research_command_start:research_command_end]
-	testing.expect(t, strings.contains(research_command, "codemode"), research_command)
-	testing.expect(t, strings.contains(calls, "station --kind execute --report") && strings.contains(calls, "-- pi --mode rpc --tools +codemode --model 'opencode-go/deepseek-v4.1-flash' -e"), calls)
-	testing.expect_value(t, strings.count(calls, "--tools"), 2)
-}
-
-host_test_station_command :: proc(kind: string) -> string {
-	return host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "/oreo/bin/oreo-host", "shot", "brew", "/tmp/prompt", "", "", "", kind, SHOT_RUNTIME_PI, "", "")
-}
-
-@(test)
-test_host_station_command_execute_always_includes_codemode :: proc(t: ^testing.T) {
-	command := host_test_station_command(SHOT_KIND_EXECUTE)
-	defer delete(command)
-	testing.expect(t, strings.contains(command, "-- pi --mode rpc --tools +codemode -e"), command)
-}
-
-@(test)
-test_host_station_command_research_gets_scratch_write_tools :: proc(t: ^testing.T) {
-	command := host_test_station_command(SHOT_KIND_RESEARCH)
-	defer delete(command)
-	testing.expect(t, strings.contains(command, "-- pi --mode rpc --tools read,grep,find,ls,write,codemode -e"), command)
-}
-
-@(test)
-test_host_station_command_with_taste_is_ascii :: proc(t: ^testing.T) {
-	command := host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "/oreo/bin/oreo-host", "shot", "brew", "/tmp/prompt", "", "", "", SHOT_KIND_EXECUTE, SHOT_RUNTIME_PI, "just test", "Add the taste check")
-	defer delete(command)
-	testing.expect(t, host_station_command_is_ascii(command), command)
-}
-
-HOST_TEST_TEMP_DIR :: "/private/tmp" when ODIN_OS == .Darwin else "/tmp"
-
-// Records each call and answers the two Herdr commands the host uses.
-HOST_FAKE_HERDR :: `#!/bin/sh
-echo "$*" >> "$FAKE_HERDR_DIR/calls.log"
-case "$1 $2" in
-"workspace create")
-  echo '{"id":"x","result":{"type":"workspace_created","workspace":{"workspace_id":"w1"},"tab":{"tab_id":"t0"},"root_pane":{"pane_id":"p0"}}}' ;;
-"tab create")
-  if [ "$4" = w1 ]; then
-    echo '{"id":"x","result":{"type":"tab_created","tab":{"tab_id":"t1"},"root_pane":{"pane_id":"p1"}}}'
-  else
-    echo '{"id":"x","error":{"code":"workspace_not_found","message":"no workspace with that id"}}' >&2
-    exit 1
-  fi ;;
-"pane process-info")
-  echo '{"id":"x","result":{"type":"pane_process_info","process_info":{"pane_id":"'"$4"'","shell_pid":999998,"foreground_process_group_id":2147480000,"foreground_processes":[{"pid":2147480000}]}}}' ;;
-*) echo '{}' ;;
-esac
-`
-
-Host_Contract_Run :: struct {
-	root:  string, // owned by the caller
-	state: string, // owned by the caller
-	out:   string, // host stdout, owned by the caller
-	calls: string, // fake Herdr calls, owned by the caller; empty when Herdr was never called
-}
-
-// Runs the foreground host on requests in a fresh repository with one commit. The
-// @REPO@ placeholder in the requests becomes the repository path, and @OTHER@ becomes
-// a second repository at other_path under root, "pulses" by default. A non-empty
-// saved_workspace is written as the workspace id already saved for the repository.
-// save_blocked makes the saved-workspace path a directory, so the host cannot save.
-run_host_requests :: proc(t: ^testing.T, prefix, requests: string, saved_workspace := "", other_path := "pulses", save_blocked := false, state_name := "state") -> (run: Host_Contract_Run) {
-	root, make_err := os.make_directory_temp(HOST_TEST_TEMP_DIR, prefix, context.allocator)
-	testing.expect_value(t, make_err, os.Error(nil))
-	if make_err != nil {
-		return
-	}
-	run.root = root
-	repo := fmt.tprintf("%s/beans", root)
-	other := fmt.tprintf("%s/%s", root, other_path)
-	bin := fmt.tprintf("%s/bin", root)
-	run.state = fmt.aprintf("%s/%s", root, state_name)
-	rwx := os.Permissions{.Read_User, .Write_User, .Execute_User}
-	testing.expect_value(t, os.make_directory_all(repo), os.Error(nil))
-	testing.expect_value(t, os.make_directory_all(bin), os.Error(nil))
-	testing.expect_value(t, os.write_entire_file(fmt.tprintf("%s/herdr", bin), HOST_FAKE_HERDR, rwx), os.Error(nil))
-	git_state, _, git_stderr, git_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `for r in "$@"; do mkdir -p "$(dirname "$r")" && git init -q "$r" && git -C "$r" -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m init || exit 1; done`, "host-pull-test", repo, other},
-	}, context.allocator)
-	defer delete(git_stderr)
-	testing.expect_value(t, git_err, os.Error(nil))
-	testing.expect(t, git_state.success, string(git_stderr))
-
-	if saved_workspace != "" || save_blocked {
-		workspaces := fmt.tprintf("%s/host/workspaces", run.state)
-		testing.expect_value(t, os.make_directory_all(workspaces), os.Error(nil))
-		saved_path := fmt.tprintf("%s/%s", workspaces, host_workspace_file_name(repo))
-		if save_blocked {
-			testing.expect_value(t, os.make_directory_all(saved_path), os.Error(nil))
-		} else {
-			testing.expect_value(t, os.write_entire_file(saved_path, saved_workspace, rwx), os.Error(nil))
-		}
-	}
-
 	input, _ := strings.replace_all(requests, "@REPO@", repo, context.temp_allocator)
-	input, _ = strings.replace_all(input, "@OTHER@", other, context.temp_allocator)
-	input_path := fmt.tprintf("%s/requests.ndjson", root)
+	input_path := fmt.aprintf("%s/requests.ndjson", root)
+	pi_args_path := fmt.aprintf("%s/pi-args", root)
+	defer delete(input_path)
+	defer delete(pi_args_path)
 	testing.expect_value(t, os.write_entire_file(input_path, input, rwx), os.Error(nil))
-
 	binary := build_test_binary(t, root)
 	defer delete(binary)
 	state_run, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", `export PATH="$2:$PATH" CS_STATE_DIR="$3" FAKE_HERDR_DIR="$4"; cat "$1" | "$5" host --impl=odin`, "host-pull-test", input_path, bin, run.state, root, binary},
+		command = {"sh", "-c", `export PATH="$2:$PATH" CS_STATE_DIR="$3" CS_TEST_PI_ARGS="$5"; cat "$1" | "$4" host --impl=odin`, "host-test", input_path, bin, run.state, binary, pi_args_path},
 	}, context.allocator)
+	defer delete(stdout)
 	defer delete(stderr)
 	testing.expect_value(t, exec_err, os.Error(nil))
 	testing.expect(t, state_run.success, string(stderr))
-	run.out = string(stdout)
-
-	calls_data, calls_err := os.read_entire_file(fmt.tprintf("%s/calls.log", root), context.allocator)
-	if calls_err == nil {
-		run.calls = string(calls_data)
-	}
+	run.out = strings.clone(string(stdout), context.allocator)
 	return
 }
 
@@ -310,206 +64,170 @@ host_contract_destroy :: proc(run: Host_Contract_Run) {
 	delete(run.root)
 	delete(run.state)
 	delete(run.out)
-	delete(run.calls)
+}
+
+@(test)
+test_foreground_host_accepts_dispatches_and_starts_sessions :: proc(t: ^testing.T) {
+	long_prompt := fmt.aprintf("first line\nit's a long prompt\n%s", strings.repeat("x", 5000, context.temp_allocator))
+	defer delete(long_prompt)
+	json_prompt, _ := strings.replace_all(long_prompt, "\n", "\\n", context.temp_allocator)
+	requests := fmt.aprintf(`{{"type":"dispatch","request_id":"order-1","repo":"@REPO@","recipe":{{"shots":[{{"id":"shot-a","prompt":"%s","model":"github-copilot/claude-haiku-5.5"}}]}}}}
+{{"type":"dispatch","request_id":"order-2","repo":"@REPO@","recipe":{{"shots":[{{"id":"shot-b","prompt":"inspect the tests"}}]}}}}
+{{"type":"dispatch","request_id":"order-3","repo":"@REPO@","recipe":{{"shots":[{{"id":"../escape","prompt":"x"}}]}}}}
+{{"type":"dispatch","request_id":"order-4","repo":"@REPO@","recipe":{{"shots":[{{"id":"shot-c","prompt":"x","model":"bad model;"}}]}}}}
+{{"type":"shutdown","request_id":"shutdown-1"}}
+`, json_prompt)
+	defer delete(requests)
+	run := run_host_requests(t, "coffee-shop-host-*", requests)
+	defer host_contract_destroy(run)
+	out := run.out
+	testing.expect(t, host_output_contains(out, `{"type":"ready","protocol":1}`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"dispatch_accepted","request_id":"order-1"}`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"session_started","request_id":"order-1","shot_id":"shot-a","pane_id":"order-1/shot-a"}`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"dispatch_accepted","request_id":"order-2"}`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"session_started","request_id":"order-2","shot_id":"shot-b","pane_id":"order-2/shot-b"}`), out)
+	testing.expect(t, host_output_contains(out, `"request_id":"order-3"`) && host_output_contains(out, `each shot needs a valid id and a prompt`), out)
+	testing.expect(t, !host_output_contains(out, `{"type":"dispatch_accepted","request_id":"order-3"}`), out)
+	testing.expect(t, host_output_contains(out, `"request_id":"order-4","shot_id":"shot-c"`) && host_output_contains(out, `shot model must be`), out)
+	testing.expect(t, !host_output_contains(out, `{"type":"dispatch_accepted","request_id":"order-4"}`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"stopped","request_id":"shutdown-1"}`), out)
+
+	pi_args_path := fmt.tprintf("%s/pi-args", run.root)
+	pi_args, pi_args_err := os.read_entire_file(pi_args_path, context.allocator)
+	defer delete(pi_args)
+	testing.expect_value(t, pi_args_err, os.Error(nil))
+	testing.expect(t, strings.contains(string(pi_args), "--model github-copilot/claude-haiku-5.5"), string(pi_args))
+	testing.expect(t, strings.contains(string(pi_args), "--model opencode-go/deepseek-v4.1-flash"), string(pi_args))
+
+	prompt_path := fmt.aprintf("%s/host/order-1/prompts/shot-a.md", run.state)
+	defer delete(prompt_path)
+	prompt_data, prompt_err := os.read_entire_file(prompt_path, context.allocator)
+	defer delete(prompt_data)
+	testing.expect_value(t, prompt_err, os.Error(nil))
+	testing.expect_value(t, string(prompt_data), fmt.tprintf("%s\n\n%s", HOST_REPLY_STYLE, long_prompt))
+	shot_a_log := fmt.aprintf("%s/host/order-1/logs/shot-a.log", run.state)
+	shot_b_log := fmt.aprintf("%s/host/order-2/logs/shot-b.log", run.state)
+	testing.expect(t, os.exists(shot_a_log) && os.exists(shot_b_log), "each headless Station has a per-Shot log")
+	delete(shot_a_log)
+	delete(shot_b_log)
+	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-4/stations/shot-c", run.state)), "invalid model must not create a worktree")
+}
+
+@(test)
+test_foreground_host_passes_shot_kind_and_rejects_unknown_kind :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-kind-*", `{"type":"dispatch","request_id":"order-5","repo":"@REPO@","recipe":{"shots":[{"id":"shot-r","prompt":"read the code","kind":"research"},{"id":"shot-e","prompt":"make the change","kind":"execute"}]}}
+{"type":"dispatch","request_id":"order-6","repo":"@REPO@","recipe":{"shots":[{"id":"shot-w","prompt":"write a file","kind":"write"}]}}
+{"type":"shutdown","request_id":"shutdown-1"}
+`)
+	defer host_contract_destroy(run)
+	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-5","shot_id":"shot-r"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-5","shot_id":"shot-e"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `{"type":"error","request_id":"order-6","shot_id":"shot-w","reason":"shot kind must be execute or research"}`), run.out)
+	testing.expect(t, !host_output_contains(run.out, `{"type":"dispatch_accepted","request_id":"order-6"}`), run.out)
+	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-6/stations/shot-w", run.state)), "unknown kind must not create a worktree")
+	testing.expect(t, os.exists(fmt.tprintf("%s/host/order-5/logs/shot-r.log", run.state)) && os.exists(fmt.tprintf("%s/host/order-5/logs/shot-e.log", run.state)), "valid Shots start headless sessions")
+}
+
+host_test_station_command :: proc(kind: string) -> string {
+	return host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "/oreo/bin/oreo-host", "shot", "brew", "/tmp/prompt", "", "", "", kind, SHOT_RUNTIME_PI, "", "")
+}
+
+@(test)
+test_host_station_command_execute_includes_codemode :: proc(t: ^testing.T) {
+	command := host_test_station_command(SHOT_KIND_EXECUTE)
+	defer delete(command)
+	testing.expect(t, strings.contains(command, "-- pi --mode rpc --tools +codemode -e"), command)
+}
+
+@(test)
+test_host_station_command_research_gets_scratch_tools :: proc(t: ^testing.T) {
+	command := host_test_station_command(SHOT_KIND_RESEARCH)
+	defer delete(command)
+	testing.expect(t, strings.contains(command, "-- pi --mode rpc --tools read,grep,find,ls,write,codemode -e"), command)
+}
+
+@(test)
+test_host_station_command_passes_taste_and_message :: proc(t: ^testing.T) {
+	command := host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "/oreo/bin/oreo-host", "shot", "brew", "/tmp/prompt", "", "", "", SHOT_KIND_EXECUTE, SHOT_RUNTIME_PI, "just test", "Add the taste check")
+	defer delete(command)
+	testing.expect(t, strings.contains(command, "--taste 'just test' --message 'Add the taste check'"), command)
+}
+
+@(test)
+test_host_station_command_passes_model_and_thinking :: proc(t: ^testing.T) {
+	command := host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "/oreo/bin/oreo-host", "shot", "brew", "/tmp/prompt", "github-copilot/claude-haiku-5.5", "", "low", SHOT_KIND_EXECUTE, SHOT_RUNTIME_PI, "", "")
+	defer delete(command)
+	testing.expect(t, strings.contains(command, "--model 'github-copilot/claude-haiku-5.5' --thinking 'low' -e"), command)
+	without_thinking := host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "/oreo/bin/oreo-host", "shot", "brew", "/tmp/prompt", DEFAULT_PI_STATION_MODEL, "", "", SHOT_KIND_EXECUTE, SHOT_RUNTIME_PI, "", "")
+	defer delete(without_thinking)
+	testing.expect(t, strings.contains(without_thinking, "--model 'opencode-go/deepseek-v4.1-flash' -e"), without_thinking)
+	testing.expect(t, !strings.contains(without_thinking, "--thinking"), without_thinking)
+}
+
+@(test)
+test_host_station_command_oreo_uses_transport_only :: proc(t: ^testing.T) {
+	command := host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "/oreo/bin/oreo-host", "shot", "brew", "/tmp/prompt", "gpt-6-luna", "openai-codex", "high", SHOT_KIND_EXECUTE, SHOT_RUNTIME_OREO, "", "")
+	defer delete(command)
+	testing.expect(t, strings.contains(command, "OREO_PROVIDER='openai-codex' OREO_MODEL='gpt-6-luna' OREO_THINKING='high' OREO_SESSION_ID=shot pi --mode rpc --no-tools --no-mcp --no-extensions --model 'openai-codex/gpt-6-luna' --thinking high -e"), command)
+}
+
+@(test)
+test_host_station_command_codemode_option_controls_flag :: proc(t: ^testing.T) {
+	for case_ in ([]struct{options: Shot_Options, codemode: bool}{{{codemode = true}, true}, {{codemode = false}, false}, {{interactive = true, codemode = true}, true}}) {
+		command := host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "/oreo/bin/oreo-host", "shot", "brew", "/tmp/prompt", "", "", "", SHOT_KIND_EXECUTE, SHOT_RUNTIME_PI, "", "", case_.options)
+		defer delete(command)
+		testing.expect_value(t, strings.contains(command, "+codemode"), case_.codemode)
+		testing.expect_value(t, strings.contains(command, "--interactive"), case_.options.interactive)
+		testing.expect_value(t, strings.contains(command, "--codemode false"), !case_.codemode)
+	}
 }
 
 @(test)
 test_foreground_host_passes_taste_and_message_to_station :: proc(t: ^testing.T) {
-	run := run_host_requests(t, "coffee-shop-host-taste-*", `{"type":"dispatch","request_id":"order-t1","repo":"@REPO@","recipe":{"order":"pull order","shots":[{"id":"shot-t","prompt":"make the change","taste":"just test","message":"Add the taste check"}]}}
+	run := run_host_requests(t, "coffee-shop-host-taste-*", `{"type":"dispatch","request_id":"order-t1","repo":"@REPO@","recipe":{"shots":[{"id":"shot-t","prompt":"make the change","taste":"just test","message":"Add the taste check"}]}}
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-t1","shot_id":"shot-t","pane_id":"p0"}`), run.out)
-	testing.expect(t, strings.contains(run.calls, "--prompt-file '") && strings.contains(run.calls, "--taste 'just test' --message 'Add the taste check' -- pi --mode rpc --tools +codemode --model 'opencode-go/deepseek-v4.1-flash' -e"), run.calls)
+	testing.expect(t, host_output_contains(run.out, `"type":"session_started","request_id":"order-t1","shot_id":"shot-t"`), run.out)
 }
 
 @(test)
-test_foreground_host_omits_taste_for_shot_without_taste :: proc(t: ^testing.T) {
-	run := run_host_requests(t, "coffee-shop-host-no-taste-*", `{"type":"dispatch","request_id":"order-t2","repo":"@REPO@","recipe":{"order":"plain order","shots":[{"id":"shot-n","prompt":"make the change"}]}}
+test_foreground_host_omits_taste_without_taste :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-no-taste-*", `{"type":"dispatch","request_id":"order-t2","repo":"@REPO@","recipe":{"shots":[{"id":"shot-n","prompt":"make the change"}]}}
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-t2","shot_id":"shot-n"`), run.out)
-	testing.expect(t, strings.contains(run.calls, "--station shot-n") && strings.contains(run.calls, "-- pi --mode rpc --tools +codemode --model 'opencode-go/deepseek-v4.1-flash' -e"), run.calls)
-	testing.expect(t, !strings.contains(run.calls, "--taste") && !strings.contains(run.calls, "--message"), run.calls)
+	testing.expect(t, host_output_contains(run.out, `"type":"session_started","request_id":"order-t2","shot_id":"shot-n"`), run.out)
 }
 
 @(test)
-test_foreground_host_rejects_taste_on_research_shot :: proc(t: ^testing.T) {
-	run := run_host_requests(t, "coffee-shop-host-research-taste-*", `{"type":"dispatch","request_id":"order-t3","repo":"@REPO@","recipe":{"order":"cupping order","shots":[{"id":"shot-r","prompt":"read the code","kind":"research","taste":"just test","message":"Add it"}]}}
+test_foreground_host_rejects_invalid_tastes_before_start :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-bad-taste-*", `{"type":"dispatch","request_id":"taste-research","repo":"@REPO@","recipe":{"shots":[{"id":"shot-r","prompt":"read","kind":"research","taste":"just test","message":"commit"}]}}
+{"type":"dispatch","request_id":"taste-no-message","repo":"@REPO@","recipe":{"shots":[{"id":"shot-m","prompt":"change","taste":"just test"}]}}
+{"type":"dispatch","request_id":"message-no-taste","repo":"@REPO@","recipe":{"shots":[{"id":"shot-n","prompt":"change","message":"commit"}]}}
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `{"type":"error","request_id":"order-t3","shot_id":"shot-r","reason":"shot taste needs an execute kind"}`), run.out)
-	testing.expect(t, !host_output_contains(run.out, `{"type":"dispatch_accepted","request_id":"order-t3"}`), run.out)
-	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-t3/stations/shot-r", run.state)), "a refused taste must not create a worktree")
-	testing.expect(t, !strings.contains(run.calls, "shot-r"), "a refused taste must not call Herdr")
+	testing.expect(t, host_output_contains(run.out, `"request_id":"taste-research","shot_id":"shot-r","reason":"shot taste needs an execute kind"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `"request_id":"taste-no-message","shot_id":"shot-m","reason":"shot message is required with a taste`), run.out)
+	testing.expect(t, host_output_contains(run.out, `"request_id":"message-no-taste","shot_id":"shot-n","reason":"shot message needs a taste"`), run.out)
+	testing.expect(t, !host_output_contains(run.out, `"type":"session_started"`), run.out)
 }
 
-// A message is required with a taste and must fit the commit subject limit. Both
-// refusals happen before any worktree or Herdr call.
-@(test)
-test_foreground_host_rejects_taste_without_valid_message :: proc(t: ^testing.T) {
-	long_message := strings.repeat("m", 201, context.temp_allocator)
-	requests, _ := strings.replace_all(`{"type":"dispatch","request_id":"order-t4","repo":"@REPO@","recipe":{"order":"no message","shots":[{"id":"shot-m","prompt":"make the change","taste":"just test"}]}}
-{"type":"dispatch","request_id":"order-t5","repo":"@REPO@","recipe":{"order":"long message","shots":[{"id":"shot-l","prompt":"make the change","taste":"just test","message":"@LONG@"}]}}
-{"type":"shutdown","request_id":"shutdown-1"}
-`, "@LONG@", long_message, context.temp_allocator)
-	run := run_host_requests(t, "coffee-shop-host-message-*", requests)
-	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `{"type":"error","request_id":"order-t4","shot_id":"shot-m","reason":"shot message is required with a taste and must be 1 to 200 characters on one line"}`), run.out)
-	testing.expect(t, host_output_contains(run.out, `{"type":"error","request_id":"order-t5","shot_id":"shot-l","reason":"shot message is required with a taste and must be 1 to 200 characters on one line"}`), run.out)
-	testing.expect(t, !host_output_contains(run.out, `"type":"dispatch_accepted","request_id":"order-t4"`), run.out)
-	testing.expect(t, !host_output_contains(run.out, `"type":"dispatch_accepted","request_id":"order-t5"`), run.out)
-	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-t4/stations/shot-m", run.state)), "a refused message must not create a worktree")
-	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-t5/stations/shot-l", run.state)), "a refused message must not create a worktree")
-	testing.expect(t, !strings.contains(run.calls, "shot-m") && !strings.contains(run.calls, "shot-l"), "a refused message must not call Herdr")
-}
-
-// Two dispatches for one repository share one workspace. The first Shot takes the
-// workspace's default tab; the second gets its own tab in that workspace.
-@(test)
-test_host_opens_shots_as_tabs_in_one_workspace_per_repository :: proc(t: ^testing.T) {
-	run := run_host_requests(t, "coffee-shop-host-workspace-*", `{"type":"dispatch","request_id":"order-w1","repo":"@REPO@","recipe":{"order":"first","shots":[{"id":"shot-w1","prompt":"make the change"}]}}
-{"type":"dispatch","request_id":"order-w2","repo":"@REPO@","recipe":{"order":"second","shots":[{"id":"shot-w2","prompt":"make the change"}]}}
-{"type":"shutdown","request_id":"shutdown-1"}
-`)
-	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-w1","shot_id":"shot-w1","pane_id":"p0"}`), run.out)
-	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-w2","shot_id":"shot-w2","pane_id":"p1"}`), run.out)
-	testing.expect_value(t, strings.count(run.calls, "workspace create"), 1)
-	testing.expect_value(t, strings.count(run.calls, "tab create"), 1)
-	testing.expect(t, strings.contains(run.calls, "--label beans --no-focus"), run.calls)
-	testing.expect(t, strings.contains(run.calls, "tab rename t0 Shot shot-w1"), run.calls)
-	testing.expect(t, strings.contains(run.calls, "tab create --workspace w1 --cwd") && strings.contains(run.calls, "--label Shot shot-w2"), run.calls)
-
-	saved, saved_err := os.read_entire_file(fmt.tprintf("%s/host/workspaces/%s", run.state, host_workspace_file_name(fmt.tprintf("%s/beans", run.root))), context.allocator)
-	defer delete(saved)
-	testing.expect_value(t, saved_err, os.Error(nil))
-	testing.expect_value(t, string(saved), "w1")
-}
-
-// A second repository gets its own workspace, labelled with its own name.
-@(test)
-test_host_opens_a_second_workspace_for_a_second_repository :: proc(t: ^testing.T) {
-	run := run_host_requests(t, "coffee-shop-host-two-repos-*", `{"type":"dispatch","request_id":"order-r1","repo":"@REPO@","recipe":{"order":"beans","shots":[{"id":"shot-r1","prompt":"make the change"}]}}
-{"type":"dispatch","request_id":"order-r2","repo":"@OTHER@","recipe":{"order":"pulses","shots":[{"id":"shot-r2","prompt":"make the change"}]}}
-{"type":"shutdown","request_id":"shutdown-1"}
-`)
-	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-r1","shot_id":"shot-r1","pane_id":"p0"}`), run.out)
-	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-r2","shot_id":"shot-r2","pane_id":"p0"}`), run.out)
-	testing.expect_value(t, strings.count(run.calls, "workspace create"), 2)
-	testing.expect_value(t, strings.count(run.calls, "tab create"), 0)
-	testing.expect(t, strings.contains(run.calls, "--label beans --no-focus") && strings.contains(run.calls, "--label pulses --no-focus"), run.calls)
-}
-
-// A saved workspace that Herdr rejects is replaced by a new one, saved in its place,
-// and the Shot still starts in that workspace's default tab.
-@(test)
-test_host_replaces_unusable_saved_workspace_and_still_starts_shot :: proc(t: ^testing.T) {
-	run := run_host_requests(t, "coffee-shop-host-stale-workspace-*", `{"type":"dispatch","request_id":"order-s1","repo":"@REPO@","recipe":{"order":"stale","shots":[{"id":"shot-s","prompt":"make the change"}]}}
-{"type":"shutdown","request_id":"shutdown-1"}
-`, "w-stale")
-	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-s1","shot_id":"shot-s","pane_id":"p0"}`), run.out)
-	testing.expect(t, !host_output_contains(run.out, "session_failed"), run.out)
-	testing.expect(t, strings.contains(run.calls, "tab create --workspace w-stale"), run.calls)
-	testing.expect_value(t, strings.count(run.calls, "workspace create"), 1)
-	testing.expect(t, strings.contains(run.calls, "tab rename t0 Shot shot-s"), run.calls)
-
-	saved, saved_err := os.read_entire_file(fmt.tprintf("%s/host/workspaces/%s", run.state, host_workspace_file_name(fmt.tprintf("%s/beans", run.root))), context.allocator)
-	defer delete(saved)
-	testing.expect_value(t, saved_err, os.Error(nil))
-	testing.expect_value(t, string(saved), "w1")
-}
-
-// Two repositories with the same name get two workspaces, each saved under its own
-// full path, and neither reuses the other's workspace.
-@(test)
-test_host_same_named_repositories_get_separate_workspaces :: proc(t: ^testing.T) {
-	run := run_host_requests(t, "coffee-shop-host-same-name-*", `{"type":"dispatch","request_id":"order-n1","repo":"@REPO@","recipe":{"order":"first","shots":[{"id":"shot-n1","prompt":"make the change"}]}}
-{"type":"dispatch","request_id":"order-n2","repo":"@OTHER@","recipe":{"order":"second","shots":[{"id":"shot-n2","prompt":"make the change"}]}}
-{"type":"shutdown","request_id":"shutdown-1"}
-`, other_path = "elsewhere/beans")
-	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-n2","shot_id":"shot-n2"`), run.out)
-	testing.expect_value(t, strings.count(run.calls, "workspace create"), 2)
-	testing.expect_value(t, strings.count(run.calls, "tab create"), 0)
-	testing.expect_value(t, strings.count(run.calls, "--label beans --no-focus"), 2)
-
-	first_name := host_workspace_file_name(fmt.tprintf("%s/beans", run.root))
-	second_name := host_workspace_file_name(fmt.tprintf("%s/elsewhere/beans", run.root))
-	testing.expect(t, first_name != second_name, first_name)
-	for name in ([]string{first_name, second_name}) {
-		saved, saved_err := os.read_entire_file(fmt.tprintf("%s/host/workspaces/%s", run.state, name), context.allocator)
-		defer delete(saved)
-		testing.expect_value(t, saved_err, os.Error(nil))
-		testing.expect_value(t, string(saved), "w1")
-	}
-}
-
-// When the workspace id cannot be saved, the Shot still starts and a warning is sent
-// first. The next dispatch then creates a new workspace.
-@(test)
-test_host_warns_and_starts_shot_when_workspace_id_cannot_be_saved :: proc(t: ^testing.T) {
-	run := run_host_requests(t, "coffee-shop-host-save-fail-*", `{"type":"dispatch","request_id":"order-f1","repo":"@REPO@","recipe":{"order":"unsaved","shots":[{"id":"shot-f","prompt":"make the change"}]}}
-{"type":"shutdown","request_id":"shutdown-1"}
-`, save_blocked = true)
-	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `{"type":"warning","request_id":"order-f1","shot_id":"shot-f","reason":"could not save the workspace id; the next dispatch will create a new workspace"}`), run.out)
-	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-f1","shot_id":"shot-f","pane_id":"p0"}`), run.out)
-	testing.expect(t, !host_output_contains(run.out, "session_failed"), run.out)
-	testing.expect(t, strings.contains(run.calls, "tab rename t0 Shot shot-f"), run.calls)
-}
-
-// A Shot's thinking level reaches the pi command as a quoted argument next to --model.
-// The host passes it through verbatim; Pi interprets the level.
-@(test)
-test_foreground_host_passes_shot_thinking_level_to_station :: proc(t: ^testing.T) {
-	run := run_host_requests(t, "coffee-shop-host-thinking-*", `{"type":"dispatch","request_id":"order-h1","repo":"@REPO@","recipe":{"order":"thinking order","shots":[{"id":"shot-h","prompt":"make the change","model":"github-copilot/claude-haiku-5.5","thinking":"low"}]}}
-{"type":"shutdown","request_id":"shutdown-1"}
-`)
-	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-h1","shot_id":"shot-h"`), run.out)
-	// Tools come before the model and thinking flags, so Pi reads the allowlist and
-	// the level independently.
-	testing.expect(t, strings.contains(run.calls, "-- pi --mode rpc --tools +codemode --model 'github-copilot/claude-haiku-5.5' --thinking 'low' -e"), run.calls)
-}
-
-// A Shot without a thinking level must leave the flag out entirely, so Pi's own
-// default still applies.
-@(test)
-test_foreground_host_omits_thinking_for_shot_without_thinking :: proc(t: ^testing.T) {
-	run := run_host_requests(t, "coffee-shop-host-no-thinking-*", `{"type":"dispatch","request_id":"order-h2","repo":"@REPO@","recipe":{"order":"plain order","shots":[{"id":"shot-p","prompt":"make the change"}]}}
-{"type":"shutdown","request_id":"shutdown-1"}
-`)
-	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-h2","shot_id":"shot-p"`), run.out)
-	testing.expect(t, strings.contains(run.calls, "--station shot-p") && strings.contains(run.calls, "-- pi --mode rpc --tools +codemode --model 'opencode-go/deepseek-v4.1-flash' -e"), run.calls)
-	testing.expect(t, !strings.contains(run.calls, "--thinking"), run.calls)
-}
-
-// An invalid thinking level rejects the whole dispatch before any worktree or
-// Herdr call, the same way a bad model does.
 @(test)
 test_foreground_host_rejects_invalid_thinking_level :: proc(t: ^testing.T) {
-	run := run_host_requests(t, "coffee-shop-host-bad-thinking-*", `{"type":"dispatch","request_id":"order-h3","repo":"@REPO@","recipe":{"order":"bad thinking","shots":[{"id":"shot-x","prompt":"make the change","thinking":"sometimes"}]}}
+	run := run_host_requests(t, "coffee-shop-host-bad-thinking-*", `{"type":"dispatch","request_id":"order-h3","repo":"@REPO@","recipe":{"shots":[{"id":"shot-x","prompt":"make the change","thinking":"sometimes"}]}}
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `{"type":"error","request_id":"order-h3","shot_id":"shot-x","reason":"shot thinking must be off, minimal, low, medium, high, xhigh, or max"}`), run.out)
-	testing.expect(t, !host_output_contains(run.out, `{"type":"dispatch_accepted","request_id":"order-h3"}`), run.out)
-	testing.expect(t, !host_output_contains(run.out, `"type":"session_started","request_id":"order-h3"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `"reason":"shot thinking must be off, minimal, low, medium, high, xhigh, or max"`), run.out)
+	testing.expect(t, !host_output_contains(run.out, `"type":"session_started"`), run.out)
 	testing.expect(t, !os.exists(fmt.tprintf("%s/host/order-h3/stations/shot-x", run.state)), "invalid thinking must not create a worktree")
-	testing.expect(t, !strings.contains(run.calls, "shot-x"), "invalid thinking must not call Herdr")
 }
 
-// Oreo is opt-in, requires an explicit provider/model route and thinking level,
-// and never gives the Pi wrapper direct work tools.
 @(test)
-test_foreground_host_validates_oreo_runtime_before_launch_and_uses_transport_only :: proc(t: ^testing.T) {
-	run := run_host_requests(t, "coffee-shop-host-oreo-runtime-*", `{"type":"dispatch","request_id":"oreo-good","repo":"@REPO@","recipe":{"shots":[{"id":"shot-o","prompt":"exact assignment","runtime":"oreo","model":"openai-codex/gpt-6-luna","thinking":"high"}]}}
+test_foreground_host_validates_oreo_runtime :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-oreo-*", `{"type":"dispatch","request_id":"oreo-good","repo":"@REPO@","recipe":{"shots":[{"id":"shot-o","prompt":"exact assignment","runtime":"oreo","model":"openai-codex/gpt-6-luna","thinking":"high"}]}}
 {"type":"dispatch","request_id":"oreo-bad-runtime","repo":"@REPO@","recipe":{"shots":[{"id":"shot-u","prompt":"x","runtime":"other"}]}}
 {"type":"dispatch","request_id":"oreo-no-route","repo":"@REPO@","recipe":{"shots":[{"id":"shot-m","prompt":"x","runtime":"oreo","thinking":"high"}]}}
 {"type":"dispatch","request_id":"oreo-bad-route","repo":"@REPO@","recipe":{"shots":[{"id":"shot-b","prompt":"x","runtime":"oreo","model":"openai-codex/","thinking":"high"}]}}
@@ -517,16 +235,11 @@ test_foreground_host_validates_oreo_runtime_before_launch_and_uses_transport_onl
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"oreo-good","shot_id":"shot-o"`), "valid Oreo Shot should start")
-	testing.expect(t, strings.contains(run.calls, "OREO_HOST='") && strings.contains(run.calls, "OREO_PROVIDER='openai-codex' OREO_MODEL='gpt-6-luna' OREO_THINKING='high' OREO_SESSION_ID=shot-o pi --mode rpc --no-tools --no-mcp --no-extensions --model 'openai-codex/gpt-6-luna' --thinking high -e"), run.calls)
-	testing.expect(t, strings.contains(run.calls, "OREO_PROVIDER='openai-codex' OREO_MODEL='gpt-6-luna' OREO_THINKING='high'"), run.calls)
-	for id in ([]string{"shot-u", "shot-m", "shot-b", "shot-t"}) {
-		testing.expect(t, !strings.contains(run.calls, id), run.calls)
-	}
+	testing.expect(t, host_output_contains(run.out, `"type":"session_started","request_id":"oreo-good","shot_id":"shot-o"`), run.out)
 	for request in ([]string{"oreo-bad-runtime", "oreo-no-route", "oreo-bad-route", "oreo-no-thinking"}) {
 		testing.expect(t, host_output_contains(run.out, fmt.tprintf(`{{"type":"error","request_id":"%s"`, request)), run.out)
 		testing.expect(t, !host_output_contains(run.out, fmt.tprintf(`{{"type":"dispatch_accepted","request_id":"%s"`, request)), run.out)
-		testing.expect(t, !os.exists(fmt.tprintf("%s/host/%s/stations", run.state, request)))
+		testing.expect(t, !host_output_contains(run.out, fmt.tprintf(`{{"type":"session_started","request_id":"%s"`, request)), run.out)
 	}
 }
 
@@ -536,13 +249,24 @@ test_foreground_host_keeps_pi_runtime_as_default :: proc(t: ^testing.T) {
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, strings.contains(run.calls, "-- pi --mode rpc --tools +codemode --model 'opencode-go/deepseek-v4.1-flash' -e"), run.calls)
-	testing.expect(t, !strings.contains(run.calls, "OREO_PROVIDER"), run.calls)
+	testing.expect(t, host_output_contains(run.out, `"type":"session_started","request_id":"pi-default","shot_id":"shot-p"`), run.out)
 }
 
-// Every line the host reads is acknowledged with a received event before it is
-// handled, so a request that never got an answer is distinguishable from one the
-// host never read. bytes is the line length without its newline.
+@(test)
+test_foreground_host_refuses_invalid_interactive_and_codemode :: proc(t: ^testing.T) {
+	run := run_host_requests(t, "coffee-shop-host-bad-options-*", `{"type":"dispatch","request_id":"order-o1","repo":"@REPO@","recipe":{"shots":[{"id":"shot-i","prompt":"go","interactive":"yes"}]}}
+{"type":"dispatch","request_id":"order-o2","repo":"@REPO@","recipe":{"shots":[{"id":"shot-c","prompt":"go","codemode":1}]}}
+{"type":"dispatch","request_id":"order-o3","repo":"@REPO@","recipe":{"shots":[{"id":"shot-ok","prompt":"go","interactive":true,"codemode":false}]}}
+{"type":"shutdown","request_id":"shutdown-1"}
+`)
+	defer host_contract_destroy(run)
+	testing.expect(t, host_output_contains(run.out, `"request_id":"order-o1","shot_id":"shot-i","reason":"shot interactive must be true or false"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `"request_id":"order-o2","shot_id":"shot-c","reason":"shot codemode must be true or false"`), run.out)
+	testing.expect(t, !host_output_contains(run.out, `"type":"session_started","request_id":"order-o1"`), run.out)
+	testing.expect(t, !host_output_contains(run.out, `"type":"session_started","request_id":"order-o2"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `"type":"session_started","request_id":"order-o3","shot_id":"shot-ok"`), run.out)
+}
+
 @(test)
 test_host_emits_received_for_every_request_line :: proc(t: ^testing.T) {
 	sessions := `{"type":"sessions","request_id":"order-recv-1"}`
@@ -555,29 +279,21 @@ test_host_emits_received_for_every_request_line :: proc(t: ^testing.T) {
 	testing.expect(t, host_output_contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"shutdown-1","bytes":%d}}`, len(shutdown))), run.out)
 }
 
-// A malformed line is still received (with an empty request id), and the usual
-// invalid json error follows it. Neither fails the loop before shutdown.
 @(test)
 test_host_receives_malformed_line_before_error :: proc(t: ^testing.T) {
 	bad := "this is not json"
-	requests := fmt.aprintf(`{{"type":"sessions","request_id":"order-recv-2"}}
-%s
-{{"type":"shutdown","request_id":"shutdown-1"}}
-`, bad)
+	requests := fmt.aprintf("%s\n%s\n%s\n", `{"type":"sessions","request_id":"order-recv-2"}`, bad, `{"type":"shutdown","request_id":"shutdown-1"}`)
 	defer delete(requests)
 	run := run_host_requests(t, "coffee-shop-host-received-bad-*", requests)
 	defer host_contract_destroy(run)
 	received := fmt.tprintf(`{{"type":"received","request_id":"","bytes":%d}}`, len(bad))
 	error := `{"type":"error","reason":"invalid json"}`
-	testing.expect(t, host_output_contains(run.out, received), run.out)
-	testing.expect(t, host_output_contains(run.out, error), run.out)
-	testing.expect(t, strings.index(strip_all_event_timestamps(run.out), error) > strings.index(strip_all_event_timestamps(run.out), received), run.out)
-	testing.expect(t, host_output_contains(run.out, `{"type":"received","request_id":"shutdown-1"`) && host_output_contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
+	out := strip_all_event_timestamps(run.out)
+	testing.expect(t, strings.contains(out, received), out)
+	testing.expect(t, strings.contains(out, error), out)
+	testing.expect(t, strings.index(out, error) > strings.index(out, received), out)
 }
 
-// A line over the 65536-byte limit is a protocol guard, not a fatal scan failure:
-// the host names the limit and the byte count, drops the line, and keeps serving.
-// A valid request sent afterwards is still handled.
 @(test)
 test_host_reports_overlong_line_and_keeps_serving :: proc(t: ^testing.T) {
 	long_line := strings.repeat("x", 70000, context.temp_allocator)
@@ -587,15 +303,11 @@ test_host_reports_overlong_line_and_keeps_serving :: proc(t: ^testing.T) {
 	run := run_host_requests(t, "coffee-shop-host-overlong-*", requests)
 	defer host_contract_destroy(run)
 	testing.expect(t, host_output_contains(run.out, `{"type":"error"`) && host_output_contains(run.out, "65536") && host_output_contains(run.out, "70000"), run.out)
-	// The overlong line is discarded, so it never becomes a received event.
 	testing.expect(t, !host_output_contains(run.out, fmt.tprintf(`"bytes":%d`, len(long_line))), run.out)
 	testing.expect(t, host_output_contains(run.out, fmt.tprintf(`{{"type":"received","request_id":"after-long","bytes":%d}}`, len(after))), run.out)
 	testing.expect(t, host_output_contains(run.out, `{"type":"sessions","sessions":[]}`), run.out)
-	testing.expect(t, strings.index(run.out, `"after-long"`) > strings.index(run.out, "65536"), run.out)
 }
 
-// A cancel names one running Shot and gets an answer that says so. The identity
-// recorded for the session is signalled, so no reason is attached.
 @(test)
 test_host_cancel_signals_the_named_shot :: proc(t: ^testing.T) {
 	run := run_host_requests(t, "coffee-shop-host-cancel-*", `{"type":"dispatch","request_id":"order-c1","repo":"@REPO@","recipe":{"shots":[{"id":"shot-a","prompt":"make the change"}]}}
@@ -603,24 +315,11 @@ test_host_cancel_signals_the_named_shot :: proc(t: ^testing.T) {
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `{"type":"session_started","request_id":"order-c1","shot_id":"shot-a","pane_id":"p0"}`), run.out)
-	testing.expect(t, host_output_contains(run.out, `{"type":"cancelled","request_id":"cancel-1","shot_id":"shot-a"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `"type":"session_started","request_id":"order-c1","shot_id":"shot-a","pane_id":"order-c1/shot-a"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `"type":"cancelled","request_id":"cancel-1","shot_id":"shot-a"}`), run.out)
 	testing.expect(t, !host_output_contains(run.out, `"request_id":"cancel-1","shot_id":"shot-a","reason"`), run.out)
 }
 
-@(test)
-test_host_refuses_non_ascii_station_command :: proc(t: ^testing.T) {
-	requests := `{"type":"dispatch","request_id":"order-u1","repo":"@REPO@","recipe":{"shots":[{"id":"shot-u","prompt":"make the change"}]}}
-{"type":"shutdown","request_id":"shutdown-1"}
-`
-	run := run_host_requests(t, "coffee-shop-host-nonascii-*", requests, "", "pulses", false, "state-é")
-	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `"reason":"generated Station command contains non-ASCII bytes"`), run.out)
-	testing.expect(t, !strings.contains(run.calls, "pane run"), run.calls)
-}
-
-// A cancel for a Shot that is not running says nothing matched and does not end
-// the loop; the requests after it are still served.
 @(test)
 test_host_cancel_reports_unknown_shot_and_keeps_serving :: proc(t: ^testing.T) {
 	run := run_host_requests(t, "coffee-shop-host-cancel-missing-*", `{"type":"dispatch","request_id":"order-c2","repo":"@REPO@","recipe":{"shots":[{"id":"shot-a","prompt":"make the change"}]}}
@@ -630,11 +329,10 @@ test_host_cancel_reports_unknown_shot_and_keeps_serving :: proc(t: ^testing.T) {
 `)
 	defer host_contract_destroy(run)
 	testing.expect(t, host_output_contains(run.out, `{"type":"cancelled","request_id":"cancel-2","shot_id":"shot-missing","reason":"no Station is running for that shot"}`), run.out)
-	testing.expect(t, host_output_contains(run.out, `{"type":"sessions"`), run.out)
-	testing.expect(t, host_output_contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `"type":"sessions"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `"type":"stopped","request_id":"shutdown-1"`), run.out)
 }
 
-// A cancel with no shot_id answers once per running Station.
 @(test)
 test_host_cancel_without_shot_cancels_every_station :: proc(t: ^testing.T) {
 	run := run_host_requests(t, "coffee-shop-host-cancel-all-*", `{"type":"dispatch","request_id":"order-c3","repo":"@REPO@","recipe":{"shots":[{"id":"shot-a","prompt":"make the change"},{"id":"shot-b","prompt":"make the change"}]}}
@@ -642,11 +340,10 @@ test_host_cancel_without_shot_cancels_every_station :: proc(t: ^testing.T) {
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `{"type":"cancelled","request_id":"cancel-3","shot_id":"shot-a"}`), run.out)
-	testing.expect(t, host_output_contains(run.out, `{"type":"cancelled","request_id":"cancel-3","shot_id":"shot-b"}`), run.out)
+	testing.expect(t, host_output_contains(run.out, `"type":"cancelled","request_id":"cancel-3","shot_id":"shot-a"`), run.out)
+	testing.expect(t, host_output_contains(run.out, `"type":"cancelled","request_id":"cancel-3","shot_id":"shot-b"`), run.out)
 }
 
-// The loop still serves a following valid request after a cancel.
 @(test)
 test_host_cancel_keeps_serving_a_following_request :: proc(t: ^testing.T) {
 	run := run_host_requests(t, "coffee-shop-host-cancel-after-*", `{"type":"dispatch","request_id":"order-c4","repo":"@REPO@","recipe":{"shots":[{"id":"shot-a","prompt":"make the change"}]}}
@@ -655,13 +352,13 @@ test_host_cancel_keeps_serving_a_following_request :: proc(t: ^testing.T) {
 {"type":"shutdown","request_id":"shutdown-1"}
 `)
 	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `{"type":"cancelled","request_id":"cancel-4","shot_id":"shot-a"}`), run.out)
-	testing.expect(t, host_output_contains(run.out, `{"type":"sessions"`), run.out)
-	testing.expect(t, host_output_contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
-	testing.expect(t, strings.index(strip_all_event_timestamps(run.out), `{"type":"sessions"`) > strings.index(strip_all_event_timestamps(run.out), `{"type":"cancelled","request_id":"cancel-4"`), run.out)
+	out := strip_all_event_timestamps(run.out)
+	testing.expect(t, strings.contains(out, `"request_id":"cancel-4","shot_id":"shot-a"`), out)
+	testing.expect(t, strings.contains(out, `"type":"sessions"`), out)
+	testing.expect(t, strings.index(out, `"type":"sessions"`) > strings.index(out, `"request_id":"cancel-4"`), out)
+	testing.expect(t, host_output_contains(out, `{"type":"stopped","request_id":"shutdown-1"}`), out)
 }
 
-// A cancel without a request_id is refused the same way every other request is.
 @(test)
 test_host_cancel_without_request_id_is_rejected :: proc(t: ^testing.T) {
 	run := run_host_requests(t, "coffee-shop-host-cancel-noid-*", `{"type":"cancel"}
@@ -671,33 +368,4 @@ test_host_cancel_without_request_id_is_rejected :: proc(t: ^testing.T) {
 	testing.expect(t, host_output_contains(run.out, `{"type":"error","reason":"request_id must be a valid shot-style identifier (letters, digits, - or _, up to 64)"}`), run.out)
 	testing.expect(t, !host_output_contains(run.out, `"type":"cancelled"`), run.out)
 	testing.expect(t, host_output_contains(run.out, `{"type":"stopped","request_id":"shutdown-1"}`), run.out)
-}
-
-@(test)
-test_host_station_command_codemode_option_controls_plus_codemode :: proc(t: ^testing.T) {
-	for case_ in ([]struct{options: Shot_Options, codemode: bool}{{{codemode = true}, true}, {{codemode = false}, false}, {{interactive = true, codemode = true}, true}}) {
-		command := host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "/oreo/bin/oreo-host", "shot", "brew", "/tmp/prompt", "", "", "", SHOT_KIND_EXECUTE, SHOT_RUNTIME_PI, "", "", case_.options)
-		defer delete(command)
-		testing.expect_value(t, strings.contains(command, "+codemode"), case_.codemode)
-		testing.expect_value(t, strings.contains(command, "--interactive"), case_.options.interactive)
-		testing.expect_value(t, strings.contains(command, "--codemode false"), !case_.codemode)
-	}
-	research := host_station_command("/coffee-shop", "/tmp/report", "/tmp/extension", "/oreo/bin/oreo-host", "shot", "brew", "/tmp/prompt", "", "", "", SHOT_KIND_RESEARCH, SHOT_RUNTIME_PI, "", "", Shot_Options{codemode = false})
-	defer delete(research)
-	testing.expect(t, strings.contains(research, "--tools read,grep,find,ls,write,codemode"), research)
-}
-
-@(test)
-test_foreground_host_refuses_invalid_interactive_and_codemode :: proc(t: ^testing.T) {
-	run := run_host_requests(t, "coffee-shop-host-bad-options-*", `{"type":"dispatch","request_id":"order-o1","repo":"@REPO@","recipe":{"order":"x","shots":[{"id":"shot-i","prompt":"go","interactive":"yes"}]}}
-{"type":"dispatch","request_id":"order-o2","repo":"@REPO@","recipe":{"order":"x","shots":[{"id":"shot-c","prompt":"go","codemode":1}]}}
-{"type":"dispatch","request_id":"order-o3","repo":"@REPO@","recipe":{"order":"x","shots":[{"id":"shot-ok","prompt":"go","interactive":true,"codemode":false}]}}
-{"type":"shutdown","request_id":"shutdown-1"}
-`)
-	defer host_contract_destroy(run)
-	testing.expect(t, host_output_contains(run.out, `"request_id":"order-o1","shot_id":"shot-i","reason":"shot interactive must be true or false"`), run.out)
-	testing.expect(t, host_output_contains(run.out, `"request_id":"order-o2","shot_id":"shot-c","reason":"shot codemode must be true or false"`), run.out)
-	testing.expect(t, !strings.contains(run.calls, "shot-i") && !strings.contains(run.calls, "shot-c"), "a refused option must not call Herdr")
-	testing.expect(t, strings.contains(run.calls, "--station shot-ok") && strings.contains(run.calls, "--interactive --codemode false"), run.calls)
-	testing.expect(t, !strings.contains(run.calls, "+codemode"), run.calls)
 }

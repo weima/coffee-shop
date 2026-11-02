@@ -4,10 +4,10 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
+import "core:time"
 
-// A Station that reported its own pid is cancelled by that pid; the session's pane
-// ("" here, and no herdr exists) is never consulted. `sleep 3` exits 0 by itself, so
-// an unsent signal shows as exit code 0 instead of SIGTERM (15) rather than a hang.
+// A Station-reported process identity takes precedence over the session child.
+// `sleep 3` exits 0 by itself, so a missing signal differs from SIGTERM (15).
 @(test)
 test_cancel_signals_pid_the_station_reported :: proc(t: ^testing.T) {
 	host_pool_test_lock()
@@ -33,12 +33,48 @@ test_cancel_signals_pid_the_station_reported :: proc(t: ^testing.T) {
 	testing.expect_value(t, state.exit_code, 15)
 }
 
-// A Station that never reported keeps the Herdr fallback: with no pid recorded the
-// cancel signals nothing and says why.
+// Without a Station report, cancellation identifies and signals the headless child.
 @(test)
-test_cancel_without_reported_pid_signals_nothing :: proc(t: ^testing.T) {
-	session := Host_Session{request_id = "req-1", shot_id = "shot-a"}
+test_cancel_without_reported_pid_signals_headless_session :: proc(t: ^testing.T) {
+	host_pool_test_lock()
+	defer host_pool_test_unlock()
+	root, make_err := os.make_directory_temp(HOST_TEST_TEMP_DIR, "coffee-shop-cancel-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	old_state, state_set := os.lookup_env("CS_STATE_DIR", context.allocator)
+	_ = os.set_env("CS_STATE_DIR", root)
+	defer {
+		if state_set {
+			_ = os.set_env("CS_STATE_DIR", old_state)
+		} else {
+			_ = os.unset_env("CS_STATE_DIR")
+		}
+		delete(old_state)
+	}
+
+	surface := headless_session_surface(root)
+	opened, open_err := surface.ops.tab_create(surface, "req-1", "shot-a", root, context.temp_allocator)
+	testing.expect_value(t, open_err, "")
+	testing.expect_value(t, surface.ops.pane_run(surface, opened.pane_id, "exec sleep 30"), "")
+	identity := surface.ops.pane_process_info(surface, opened.pane_id)
+	testing.expect(t, identity.pid > 0, "headless child has a process identity")
+	session := Host_Session{request_id = "req-1", shot_id = "shot-a", session_id = opened.pane_id}
 	testing.expect_value(t, session_station_pid(session), 0)
+	host_cancel_session("cancel-1", session)
+
+	for _ in 0..<100 {
+		if identity_liveness(identity) == .Gone {
+			break
+		}
+		time.sleep(10 * time.Millisecond)
+	}
+	testing.expect_value(t, identity_liveness(identity), Liveness.Gone)
+	_ = headless_close(opened.pane_id)
 }
 
 @(test)

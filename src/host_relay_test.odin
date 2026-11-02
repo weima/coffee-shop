@@ -575,9 +575,7 @@ test_host_recovers_multiple_unrelayed_spooled_reports :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(spooled), 0)
 }
 
-// Drives one terminal report through host_relay_message with the pool, a session and a
-// queued Shot in place. A bad free (temp-allocator dequeue strings, freed pane_id) fails
-// under ODIN_TEST_FAIL_ON_BAD_MEMORY. A fake herdr on PATH keeps the test off real panes.
+// Drives terminal reports through the live headless slot and queued-Station lifecycle.
 @(test)
 test_host_terminal_report_frees_only_owned_strings :: proc(t: ^testing.T) {
 	host_pool_test_lock()
@@ -590,42 +588,39 @@ test_host_terminal_report_frees_only_owned_strings :: proc(t: ^testing.T) {
 	}
 	defer os.remove_all(root)
 	defer delete(root)
-	bin_dir, _ := filepath.join({root, "bin"})
-	defer delete(bin_dir)
-	_ = os.make_directory_all(bin_dir, os.Permissions{.Read_User, .Write_User, .Execute_User})
-	fake, _ := filepath.join({bin_dir, "herdr"})
-	defer delete(fake)
-	_ = os.write_entire_file(fake, "#!/bin/sh\nexit 1\n", os.Permissions{.Read_User, .Write_User, .Execute_User})
-	old_path := os.get_env("PATH", context.temp_allocator)
-	_ = os.set_env("PATH", fmt.tprintf("%s:%s", bin_dir, old_path))
 	_ = os.set_env("CS_STATE_DIR", root)
-	defer {
-		_ = os.set_env("PATH", old_path)
-		_ = os.unset_env("CS_STATE_DIR")
-	}
+	defer _ = os.unset_env("CS_STATE_DIR")
 	host_history_root = strings.clone(root, context.allocator)
 	defer {
 		delete(host_history_root)
 		host_history_root = ""
 	}
 
-	host_dispatch_init_at("ws-terminal", root)
-	defer host_dispatch_cleanup(fake)
+	host_dispatch_init_at(root)
 	defer {
 		for s in host_sessions {
+			_ = headless_close(s.session_id)
+			_ = headless_slot_release(s.session_id)
 			delete(s.request_id)
 			delete(s.shot_id)
-			delete(s.pane_id)
+			delete(s.session_id)
 		}
 		delete(host_sessions)
 		host_sessions = nil
 	}
+	defer host_dispatch_cleanup()
 
 	// Fill the pool; the sixth Shot queues and is dequeued when shot-0 ends.
 	for i in 0..<5 {
 		id := fmt.aprintf("shot-%d", i)
-		pane, _, _ := host_dispatch_acquire("req-1", id)
-		append(&host_sessions, Host_Session{request_id = strings.clone("req-1"), shot_id = strings.clone(id), pane_id = pane})
+		session_id, _, _ := host_dispatch_acquire("req-1", id)
+		surface := headless_session_surface(root)
+		opened, open_err := surface.ops.tab_create(surface, "req-1", id, "/repo", context.allocator)
+		assert(open_err == "")
+		append(&host_sessions, Host_Session{request_id = strings.clone("req-1"), shot_id = strings.clone(id), session_id = session_id})
+		delete(opened.workspace_id)
+		delete(opened.tab_id)
+		delete(opened.pane_id)
 		delete(id)
 	}
 	_, queued, _ := host_dispatch_acquire("req-1", "shot-queued")

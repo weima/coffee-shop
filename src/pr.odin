@@ -14,13 +14,12 @@ import "core:strings"
 // base branch's worktree is the developer's own worktree that the Station was
 // branched from; `pr` fast-forwards it and `cleanup` removes it.
 //
-// Every Git, gh, Herdr and process call goes through Pr_Backend, so a test can
-// substitute them and needs no GitHub remote, Herdr server, or live Station.
+// Every Git, gh, and process call goes through Pr_Backend, so tests need no
+// GitHub remote or live Station.
 
 Pr_Backend :: struct {
 	git:       proc(directory: string, args: []string) -> (out, detail: string, ok: bool),
 	gh:        proc(directory: string, args: []string) -> (out, detail: string, ok: bool),
-	herdr:     proc(args: []string) -> (out, detail: string, ok: bool),
 	processes: proc() -> []Process_Command,
 }
 
@@ -65,8 +64,7 @@ default_pr_backend :: proc() -> Pr_Backend {
 	return Pr_Backend{
 		git = real_git,
 		gh = real_gh,
-		herdr = herdr_cli_call,
-		processes = default_process_commands,
+			processes = default_process_commands,
 	}
 }
 
@@ -269,23 +267,6 @@ shot_evidence :: proc(events: []Run_Event, shot_id: string) -> Shot_Evidence {
 	return evidence
 }
 
-run_panes :: proc(events: []Run_Event) -> []string {
-	panes := make([dynamic]string, 0, 4, context.temp_allocator)
-	for event in events {
-		if event.type == "session_started" && event.pane_id != "" {
-			append(&panes, event.pane_id)
-		}
-	}
-	return panes[:]
-}
-
-workspace_of_pane :: proc(pane: string) -> string {
-	if colon := strings.index_byte(pane, ':'); colon >= 0 {
-		return pane[:colon]
-	}
-	return ""
-}
-
 // ---------------------------------------------------------------------------
 // Git helpers
 
@@ -318,47 +299,6 @@ remove_worktree :: proc(directory, path: string, backend: Pr_Backend) -> string 
 		return fmt.tprintf("could not remove worktree %s: %s", path, detail)
 	}
 	return ""
-}
-
-// Closes only the run's own tabs. A workspace is closed only when those tabs
-// were its last, so a workspace shared with the developer is never removed.
-close_run_herdr :: proc(events: []Run_Event, extra_workspace: string, backend: Pr_Backend) -> (tabs_closed, workspaces_closed: int) {
-	surface := session_surface_over("herdr", backend.herdr)
-	tabs := make([dynamic]string, 0, 4, context.temp_allocator)
-	workspaces := make([dynamic]string, 0, 2, context.temp_allocator)
-	for event in events {
-		if event.type != "session_started" || event.pane_id == "" {
-			continue
-		}
-		tab_id, workspace_id, ok := surface.ops.pane_get(surface, event.pane_id)
-		if !ok {
-			continue
-		}
-		if tab_id != "" && !slice_contains(tabs[:], tab_id) {
-			append(&tabs, tab_id)
-		}
-		if workspace_id != "" && !slice_contains(workspaces[:], workspace_id) {
-			append(&workspaces, workspace_id)
-		}
-	}
-	if extra_workspace != "" && !slice_contains(workspaces[:], extra_workspace) {
-		append(&workspaces, extra_workspace)
-	}
-	for tab in tabs {
-		if surface.ops.tab_close(surface, tab) {
-			tabs_closed += 1
-		}
-	}
-	for workspace in workspaces {
-		count, ok := surface.ops.tab_count(surface, workspace)
-		if !ok || count != 0 {
-			continue
-		}
-		if surface.ops.workspace_close(surface, workspace) {
-			workspaces_closed += 1
-		}
-	}
-	return tabs_closed, workspaces_closed
 }
 
 // ---------------------------------------------------------------------------
@@ -430,14 +370,14 @@ run_pr :: proc(run_id, shot_id, branch, remote, message: string, blend: bool) ->
 	return 0
 }
 
-run_cleanup :: proc(run_id, branch, workspace: string) -> int {
+run_cleanup :: proc(run_id, branch: string) -> int {
 	state_root, state_err := default_state_root()
 	if state_err != "" {
 		write_error(state_err)
 		return 2
 	}
 	defer delete(state_root)
-	output, err := cleanup_operation(state_root, run_id, branch, workspace, default_pr_backend())
+	output, err := cleanup_operation(state_root, run_id, branch, default_pr_backend())
 	if err != "" {
 		write_error(err)
 		return 1
@@ -500,13 +440,10 @@ pr_operation :: proc(
 		return "", fmt.tprintf("the Station HEAD %s is not the recorded Pull commit %s", short_commit(head), evidence.commit)
 	}
 
-	dev_branch := branch
-	if dev_branch == "" {
-		dev_branch, err = discover_branch(events[:], backend)
-		if err != "" {
-			return "", err
-		}
+	if branch == "" {
+		return "", "branch must be explicit; pass --branch"
 	}
+	dev_branch := branch
 	dev_worktree, find_err := find_worktree_for_branch(station, dev_branch, backend)
 	if find_err != "" {
 		return "", find_err
@@ -562,28 +499,6 @@ pr_operation :: proc(
 	fmt.sbprintfln(&builder, "%s", url)
 	fmt.sbprintfln(&builder, "Waiting on the developer to merge the PR.")
 	return strings.to_string(builder), ""
-}
-
-discover_branch :: proc(events: []Run_Event, backend: Pr_Backend) -> (branch, err: string) {
-	for event in events {
-		if event.type != "session_started" || event.pane_id == "" {
-			continue
-		}
-		workspace := workspace_of_pane(event.pane_id)
-		if workspace == "" {
-			continue
-		}
-		surface := session_surface_over("herdr", backend.herdr)
-		label, detail, ok := surface.ops.workspace_label(surface, workspace)
-		if !ok {
-			return "", fmt.tprintf("could not read the run's workspace: %s", detail)
-		}
-		if label == "" {
-			return "", "the run's workspace has no label to name the base branch; pass --branch"
-		}
-		return label, ""
-	}
-	return "", "the run has no started Station to name the base branch; pass --branch"
 }
 
 run_pull_commits :: proc(events: []Run_Event, station: string, backend: Pr_Backend) -> (commits: []string, err: string) {
@@ -659,7 +574,7 @@ short_commit :: proc(commit: string) -> string {
 	return commit[:8]
 }
 
-cleanup_operation :: proc(state_root, run_id, branch, workspace: string, backend: Pr_Backend) -> (output, err: string) {
+cleanup_operation :: proc(state_root, run_id, branch: string, backend: Pr_Backend) -> (output, err: string) {
 	if !valid_shot_id(run_id) {
 		return "", "run ID is invalid"
 	}
@@ -703,7 +618,6 @@ cleanup_operation :: proc(state_root, run_id, branch, workspace: string, backend
 		}
 	}
 
-	tabs_closed, workspaces_closed := close_run_herdr(events[:], workspace, backend)
 
 	removed_stations := 0
 	stations_dir := state_file_path(run_dir, "stations", context.temp_allocator)
@@ -728,7 +642,7 @@ cleanup_operation :: proc(state_root, run_id, branch, workspace: string, backend
 	}
 
 	builder := strings.builder_make(context.temp_allocator)
-	fmt.sbprintfln(&builder, "Cleaned run %s: closed %d tab(s) and %d workspace(s), removed %d Station worktree(s) and %d base worktree(s).", run_id, tabs_closed, workspaces_closed, removed_stations, removed_base)
+	fmt.sbprintfln(&builder, "Cleaned run %s: removed %d Station worktree(s) and %d base worktree(s).", run_id, removed_stations, removed_base)
 	fmt.sbprintln(&builder, "Brew state, reports and prompts were kept.")
 	return strings.to_string(builder), ""
 }

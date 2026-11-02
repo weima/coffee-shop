@@ -11,10 +11,10 @@ and the wall-clock comparison against the Odin baseline.
 Host: `csd` in a fresh state root, headless, no Herdr in `PATH`, extensions pre-installed
 (`csd` does this itself since #168, so add nothing).
 
-1. Wall-clock per Shot: `dispatch_accepted` → `taste_passed` / `agent_exited`, from the
-   `at` field on the event stream. Use the same `sleep 30` Taste so the work is identical
-   on both sides. **Not** `sleep 90`; five at 30 s is enough to observe scheduling noise,
-   and the total runtime stays under 3 minutes.
+1. Wall-clock per Shot: `session_started` → Taste result (`pulled`, `taste_passed`, or
+   `taste_failed`), from event timestamps. The measurement agent answers the post-turn
+   `get_session_stats` request and then exits; otherwise the Station never reaches Taste.
+   Use the same `sleep 30` Taste on both sides. Five at 30 s keeps the run under 3 minutes.
 2. Host-process peaks: resident memory, CPU seconds, open file descriptors, live children.
    One sample per second is enough; write to `<state>/host/<request>/workers/<shot>.resource`
    in the format the Odin host already uses, or to a separate file the comparison script

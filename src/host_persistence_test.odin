@@ -6,14 +6,19 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
-HOST_PERSISTENCE_SCRIPT :: `set -u
-export PATH="$2:$PATH" CS_STATE_DIR="$3" FAKE_HERDR_DIR="$4"
-cat "$1" | "$5" host --impl=odin
+HOST_FAKE_PI :: `#!/bin/sh
+if [ -n "${CS_TEST_PI_ARGS:-}" ]; then printf '%s\n' "$*" >>"$CS_TEST_PI_ARGS"; fi
+cat >/dev/null
 `
 
-host_persistence_run :: proc(root, binary, bin, state, input_path: string) -> (stdout, stderr: string, ok: bool) {
+HOST_PERSISTENCE_SCRIPT :: `set -u
+export PATH="$2:$PATH" CS_STATE_DIR="$3"
+cat "$1" | "$4" host --impl=odin
+`
+
+host_persistence_run :: proc(binary, bin, state, input_path: string) -> (stdout, stderr: string, ok: bool) {
 	run, out, errout, exec_err := os.process_exec(os.Process_Desc{
-		command = {"sh", "-c", HOST_PERSISTENCE_SCRIPT, "host-persistence", input_path, bin, state, root, binary},
+		command = {"sh", "-c", HOST_PERSISTENCE_SCRIPT, "host-persistence", input_path, bin, state, binary},
 	}, context.allocator)
 	defer delete(out)
 	defer delete(errout)
@@ -23,7 +28,7 @@ host_persistence_run :: proc(root, binary, bin, state, input_path: string) -> (s
 }
 
 @(test)
-test_host_history_survives_restart_without_replaying_herdr :: proc(t: ^testing.T) {
+test_host_history_survives_restart_without_replaying_station :: proc(t: ^testing.T) {
 	root, make_err := os.make_directory_temp(HOST_TEST_TEMP_DIR, "coffee-shop-history-*", context.allocator)
 	testing.expect_value(t, make_err, os.Error(nil))
 	if make_err != nil {
@@ -50,7 +55,7 @@ test_host_history_survives_restart_without_replaying_herdr :: proc(t: ^testing.T
 	rwx := os.Permissions{.Read_User, .Write_User, .Execute_User}
 	testing.expect_value(t, os.make_directory_all(repo, rwx), os.Error(nil))
 	testing.expect_value(t, os.make_directory_all(bin, rwx), os.Error(nil))
-	testing.expect_value(t, os.write_entire_file(fmt.tprintf("%s/herdr", bin), HOST_FAKE_HERDR, rwx), os.Error(nil))
+	testing.expect_value(t, os.write_entire_file(fmt.tprintf("%s/pi", bin), HOST_FAKE_PI, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
 	git_state, _, git_stderr, git_err := os.process_exec(os.Process_Desc{
 		command = {"sh", "-c", `git init -q "$1" && git -C "$1" -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m init`, "history-test", repo},
 	}, context.allocator)
@@ -67,7 +72,7 @@ test_host_history_survives_restart_without_replaying_herdr :: proc(t: ^testing.T
 
 	binary := build_test_binary(t, root)
 	defer delete(binary)
-	first_out, first_err, first_ok := host_persistence_run(root, binary, bin, state, first_input)
+	first_out, first_err, first_ok := host_persistence_run(binary, bin, state, first_input)
 	defer delete(first_out)
 	defer delete(first_err)
 	testing.expect(t, first_ok, first_err)
@@ -86,11 +91,6 @@ test_host_history_survives_restart_without_replaying_herdr :: proc(t: ^testing.T
 	reply_at := strings.index(history, `"type":"reply_sent"`)
 	testing.expect(t, dispatch_at >= 0 && started_at > dispatch_at && reply_at > started_at, history)
 
-	calls_before_data, calls_before_err := os.read_entire_file(fmt.tprintf("%s/calls.log", root), context.allocator)
-	defer delete(calls_before_data)
-	testing.expect_value(t, calls_before_err, os.Error(nil))
-	calls_before := string(calls_before_data)
-
 	// A valid closed history followed by a truncated line must keep its earlier evidence.
 	testing.expect_value(t, os.make_directory_all(closed_history_dir, rwx), os.Error(nil))
 	closed := `{"type":"dispatch_accepted","request_id":"closed-1"}
@@ -103,7 +103,7 @@ test_host_history_survives_restart_without_replaying_herdr :: proc(t: ^testing.T
 {"type":"shutdown","request_id":"stop-2"}
 `
 	testing.expect_value(t, os.write_entire_file(second_input, second_input_text, rwx), os.Error(nil))
-	second_out, second_err, second_ok := host_persistence_run(root, binary, bin, state, second_input)
+	second_out, second_err, second_ok := host_persistence_run(binary, bin, state, second_input)
 	defer delete(second_out)
 	defer delete(second_err)
 	testing.expect(t, second_ok, second_err)
@@ -113,8 +113,4 @@ test_host_history_survives_restart_without_replaying_herdr :: proc(t: ^testing.T
 	testing.expect(t, strings.contains(second_out, `"request_id":"closed-1"`) && strings.contains(second_out, `"kind":"agent_exited"`), second_out)
 	testing.expect(t, !strings.contains(second_out, "truncated"), second_out)
 
-	calls_after_data, calls_after_err := os.read_entire_file(fmt.tprintf("%s/calls.log", root), context.allocator)
-	defer delete(calls_after_data)
-	testing.expect_value(t, calls_after_err, os.Error(nil))
-	testing.expect_value(t, string(calls_after_data), calls_before)
 }

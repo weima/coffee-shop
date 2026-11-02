@@ -26,18 +26,6 @@ headless_wait_for :: proc(path, want: string) -> bool {
 }
 
 @(test)
-test_pane_backend_parse :: proc(t: ^testing.T) {
-	backend, err := pane_backend_parse("")
-	testing.expect(t, err == "" && backend == .HERDR, "empty selects Herdr")
-	backend, err = pane_backend_parse("herdr")
-	testing.expect(t, err == "" && backend == .HERDR, "herdr")
-	backend, err = pane_backend_parse("headless")
-	testing.expect(t, err == "" && backend == .HEADLESS, "headless")
-	_, err = pane_backend_parse("tmux")
-	testing.expect(t, strings.contains(err, "tmux") && strings.contains(err, "herdr or headless"), "unknown value fails with a reason")
-}
-
-@(test)
 test_headless_start_output_input_close :: proc(t: ^testing.T) {
 	root := headless_test_root()
 	defer delete(root)

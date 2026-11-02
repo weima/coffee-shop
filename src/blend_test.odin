@@ -6,7 +6,7 @@ import "core:strings"
 import "core:testing"
 
 // Blend tests drive the host over stdin and stdout with temporary Git repositories.
-// No Herdr or Pi process runs: Blend only uses Git.
+// No agent process runs: Blend only uses Git.
 BLEND_TEST_SCRIPT :: `set -u
 export CS_STATE_DIR="$2"
 cat "$1" | "$3" host --impl=odin

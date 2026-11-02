@@ -45,7 +45,7 @@ child_launch_argv_for :: proc(mode, repo: string, has_src: bool, exe, out: strin
 }
 
 // The dev launcher is the fixed command `odin run`; keep those command words
-// bare for Herdr, and quote every path and argument.
+// bare and quote every path and argument.
 child_shell_prefix :: proc(argv: []string) -> string {
 	parts := make([dynamic]string, 0, len(argv), context.temp_allocator)
 	odin_run := len(argv) >= 2 && argv[0] == "odin" && argv[1] == "run"
