@@ -30,8 +30,7 @@ import (
 	"time"
 )
 
-// TasteHold is what each Shot "works" on: long enough that scheduling noise shows, short
-// enough that the whole run stays under three minutes.
+// TasteHold matches the sustained v0.6 measurement plan.
 const TasteHold = "sleep 30"
 
 type config struct {
@@ -64,14 +63,13 @@ func run() error {
 		return err
 	}
 
-	repo, err := os.Getwd()
+	wd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("resolve working directory: %w", err)
 	}
-	// The caller is expected to run this from the repository root (where `go/` lives),
-	// because the tool builds csd from there.
-	if _, err := os.Stat(filepath.Join(repo, "go", "go.mod")); err != nil {
-		return fmt.Errorf("run from the repository root; missing %s", filepath.Join(repo, "go", "go.mod"))
+	repo, err := findRepoRoot(wd)
+	if err != nil {
+		return err
 	}
 	cfg.out = abs(cfg.out)
 	repo = abs(repo)
@@ -128,7 +126,7 @@ func run() error {
 		terminal := 0
 		for _, line := range events {
 			e := parse(line)
-			if e.Type == "station_report" && terminalKind(e.Kind) {
+			if e.Type == "station_report" && measurementShotTerminal(e.Kind) {
 				terminal++
 			}
 		}
@@ -142,7 +140,7 @@ func run() error {
 	terminal := 0
 	for _, line := range events {
 		e := parse(line)
-		if e.Type == "station_report" && terminalKind(e.Kind) {
+		if e.Type == "station_report" && measurementShotTerminal(e.Kind) {
 			terminal++
 		}
 	}
@@ -192,6 +190,23 @@ func run() error {
 
 // --- helpers -------------------------------------------------------------------------
 
+func findRepoRoot(start string) (string, error) {
+	current, err := filepath.Abs(start)
+	if err != nil {
+		return "", fmt.Errorf("resolve repository search path: %w", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(current, "go", "go.mod")); err == nil {
+			return current, nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("run from inside the repository; no go/go.mod found above %s", start)
+		}
+		current = parent
+	}
+}
+
 func checkTools() error {
 	for _, tool := range []string{"go", "pi"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -240,13 +255,13 @@ func makeBeans(out string) (string, error) {
 
 // startHost launches csd as a subprocess and returns a stdin writer for it.
 func startHost(repo, statePath, beans, out string) (io.WriteCloser, *exec.Cmd, error) {
-	cs_cli := fmt.Sprintf("odin run %s --", filepath.Join(repo, "src"))
+	cs_cli := filepath.Join(out, "coffee-shop-cli")
+	cliScript := fmt.Sprintf("#!/bin/sh\nexec %s run %s -- \"$@\"\n", shellQuote(lookPath("odin")), shellQuote(filepath.Join(repo, "src")))
+	if err := os.WriteFile(cs_cli, []byte(cliScript), 0o700); err != nil {
+		return nil, nil, fmt.Errorf("write Odin CLI wrapper: %w", err)
+	}
 	cs_agent := filepath.Join(out, "agent.sh")
-	script := fmt.Sprintf(`#!/bin/sh
-IFS= read -r _line
-printf '%%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"measured"}]}]}'
-`)
-	if err := os.WriteFile(cs_agent, []byte(script), 0o700); err != nil {
+	if err := os.WriteFile(cs_agent, []byte(measurementAgentScript()), 0o700); err != nil {
 		return nil, nil, fmt.Errorf("write agent: %w", err)
 	}
 
@@ -292,6 +307,21 @@ printf '%%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{
 	return stdin, cmd, nil
 }
 
+func lookPath(name string) string {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return name
+	}
+	return path
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
 func dispatch(stdin io.Writer, beans string, shots int, hold string) error {
 	var shotJSON []string
 	for i := 0; i < shots; i++ {
@@ -321,7 +351,7 @@ func waitForSocket(path string, timeout time.Duration) error {
 type Event struct {
 	Type        string `json:"type"`
 	RequestID   string `json:"request_id"`
-	ShotID      string `json:"shot_id,string,omitempty"`
+	ShotID      string `json:"shot_id,omitempty"`
 	Kind        string `json:"kind,omitempty"`
 	Description string `json:"description,omitempty"`
 	At          string `json:"at"`
@@ -340,6 +370,30 @@ func terminalKind(kind string) bool {
 		return true
 	}
 	return false
+}
+
+// A Taste hold completes at turn_done on the host's normal interactive path.
+func measurementShotTerminal(kind string) bool {
+	// Wait for the post-turn Taste result, not turn_done or agent_exited.
+	switch kind {
+	case "pulled", "taste_passed", "taste_failed", "incomplete", "session_failed":
+		return true
+	}
+	return false
+}
+
+func measurementAgentScript() string {
+	return `#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+  *get_session_stats*) continue ;;
+  esac
+  printf '%s\n' '{"type":"message_start","message":{"role":"assistant"}}'
+  printf '%s\n' '{"type":"text_delta","text":"measured"}'
+  printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"measured"}]}}'
+  printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"measured"}]}]}'
+done
+`
 }
 
 func readLines(path string) []string {
@@ -384,7 +438,7 @@ func writePerShot(outDir string, events []string) (Rows, error) {
 				kinds[e.ShotID] = "started"
 			}
 		}
-		if e.Type == "station_report" && terminalKind(e.Kind) && e.ShotID != "" {
+		if e.Type == "station_report" && measurementShotTerminal(e.Kind) && e.ShotID != "" {
 			if prev, ok := ends[e.ShotID]; !ok || t.After(prev) {
 				ends[e.ShotID] = t
 				kinds[e.ShotID] = e.Kind
