@@ -208,3 +208,68 @@ test_failing_verify_writes_evidence_and_passing_writes_none :: proc(t: ^testing.
 	testing.expect_value(t, last.exit_code, 0)
 	testing.expectf(t, strings.contains(last.stdout, ".rachel/evidence/"), "evidence last printed no path: %q", last.stdout)
 }
+
+TS_CONFIG :: `{
+  "compilerOptions": { "strict": true, "noEmit": true, "target": "ES2020" },
+  "files": ["a.ts"]
+}
+`
+
+BAD_TS :: `const value: number = "not a number";
+export { value };
+`
+
+GOOD_TS :: `const value: number = 1;
+export { value };
+`
+
+@(test)
+test_typescript_project_compiles_with_tsc :: proc(t: ^testing.T) {
+	if !require_layout(t) {
+		return
+	}
+	if !has_tool("tsc") {
+		fmt.println("SKIP: tsc is not installed")
+		return
+	}
+	build := build_rachel(t)
+	defer build_destroy(&build)
+	if build.binary == "" {
+		return
+	}
+	project := make_project(t)
+	defer project_destroy(&project)
+	if project == "" {
+		return
+	}
+	tsconfig_path := fmt.aprintf("%s/tsconfig.json", project, allocator = context.allocator)
+	defer delete(tsconfig_path, context.allocator)
+	source_path := fmt.aprintf("%s/a.ts", project, allocator = context.allocator)
+	defer delete(source_path, context.allocator)
+	justfile_path := fmt.aprintf("%s/justfile", project, allocator = context.allocator)
+	defer delete(justfile_path, context.allocator)
+	write_file(t, tsconfig_path, TS_CONFIG)
+	write_file(t, source_path, BAD_TS)
+
+	failing, failing_err := run_to_output([]string{build.binary, "check", project})
+	defer output_destroy(&failing)
+	testing.expectf(t, failing_err == nil, "check would not run: %v", failing_err)
+	testing.expect_value(t, failing.exit_code, 1)
+	testing.expectf(t, strings.contains(failing.stdout, "rachel: fail"), "no failure verdict: %q", failing.stdout)
+	testing.expectf(t, strings.contains(failing.stdout, "error TS2322"), "tsc diagnostic missing: %q", failing.stdout)
+
+	// The starter justfile must match the language.
+	testing.expectf(t, os.is_file(justfile_path), "no starter justfile for a TS project")
+	generated, generated_err := os.read_entire_file(justfile_path, context.allocator)
+	if generated_err == nil {
+		defer delete(generated)
+		testing.expectf(t, strings.contains(transmute(string)generated, "tsc --noEmit"), "starter justfile is not a TS one")
+	}
+
+	write_file(t, source_path, GOOD_TS)
+	passing, passing_err := run_to_output([]string{build.binary, "check", project})
+	defer output_destroy(&passing)
+	testing.expectf(t, passing_err == nil, "check would not run: %v", passing_err)
+	testing.expect_value(t, passing.exit_code, 0)
+	testing.expectf(t, strings.contains(passing.stdout, "rachel: ok"), "no passing verdict: %q", passing.stdout)
+}

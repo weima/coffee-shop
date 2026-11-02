@@ -214,6 +214,16 @@ cannot pass with no verdict, a stale verdict, or a merged branch.
 
 ## Findings from dogfooding
 
+- **Rachel was Odin-only.** `check` claimed to run the project's recipe, but
+  language leaked in four places: the starter justfile was always
+  `odin check`; the diagnostic filter only matched `Error:`, so `tsc`'s
+  `error TS2322:` lines were invisible; a generated recipe was called once per Odin
+  package, so a TypeScript project ran zero checks and reported `ok (0 checked)`;
+  and a missing `tsc` surfaced as a recipe failure rather than a precondition.
+  Detection now prefers Odin when the root has Odin sources, and TypeScript
+  otherwise via `tsconfig.json` or `package.json`. The built-in polling watcher
+  remains Odin-only; the watchexec path is language-agnostic.
+
 Recorded as they were found, because each one changed the design.
 
 - **The check stage ran twice.** This repository's justfile declares `test: check`,

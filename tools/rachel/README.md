@@ -111,6 +111,26 @@ stripped, duplicates removed and the list capped.
 `odin run src -- verify .` on this repository reports `check ok (1 checked)` and
 `test ok (24 tests)` in under two seconds.
 
+## Languages
+
+Rachel runs the project's `check` and `test` recipes, so any toolchain works when
+the project writes them. Two languages are first-class:
+
+| | Odin | TypeScript |
+| --- | --- | --- |
+| Detection | any `.odin` at the project root | `tsconfig.json` or `package.json`, when the root has no `.odin` |
+| Starter recipe | `odin check -no-entry-point <package>` per package | `tsc --noEmit` |
+| Diagnostics | `file(line:col) Error: ...` | `file(line,col): error TSxxxx: ...` |
+| Precondition | the Odin toolchain, implied | `tsc` on PATH, checked only when Rachel generated the recipe |
+
+A generated TypeScript recipe takes and ignores the package argument, so the
+per-package call path is unchanged, and a project with no Odin packages still gets
+one whole-project call instead of "0 checked". There is no default `test` recipe
+for TypeScript: add one for your runner and `verify` will use it.
+
+The built-in polling watcher (`rachel <dir>`) still detects only `.odin` files.
+For TypeScript use the watchexec form below, which is language-agnostic.
+
 ## Evidence
 
 A failing stage writes a run directory and prints where it went:
@@ -143,7 +163,7 @@ Generated tests are written directly to the working tree. Rachel rechecks the so
 
 The watcher, compile/test feedback loop, missing-intent warnings, test-filename conflict warnings, companion-test creation, and provider-neutral test-generation adapter are implemented. The adapter can use any trusted local command; Rachel does not own model credentials or depend on Pi. Further test-generation quality tuning and Linux verification remain open.
 
-`cd tools/rachel && just test` passes 24 tests without allocator-leak warnings; `just build` succeeds. Linux verification remains outstanding.
+`cd tools/rachel && just test` passes 34 tests without allocator-leak warnings; `just e2e` runs 9 process-level tests. `just build` succeeds. Linux verification remains outstanding.
 
 `just e2e` runs the process-level tests in the `e2e` package (`odin test e2e`). They build the real binary and drive it against temporary projects, which the in-process tests cannot cover:
 
