@@ -143,6 +143,9 @@ activity_duration_label :: proc(seconds: i64) -> string {
 }
 
 
+// A watch command beside the agent reported a new verdict. Relayed to the parent.
+ACTIVITY_KIND_RACHEL_VERDICT :: "rachel_verdict"
+
 // The Station tells the host who it is. Internal: the host records it and does not relay it.
 ACTIVITY_KIND_STATION_PID :: "station_pid"
 

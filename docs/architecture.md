@@ -136,6 +136,12 @@ until its `stale_warning` fires.
 5. A dialog from the `coffee_shop_ask` extension reaches the Barista as `needs_input`; the
    Station keeps it until a reply arrives.
 
+6. `--watch <command>` runs a checker beside the agent and reports each distinct stdout line
+   as `rachel_verdict`, so a Station can surface a watcher's verdict without the agent spending a
+   call on it. Equal consecutive lines are dropped, and a line is capped at 400 bytes. The
+   command should exit when its stdin closes (`watchexec --exit-on-eof` does); the Station closes
+   it, then signals the immediate child, matching the agent's own shortcut.
+
 The Station is harness-neutral: it starts whatever argv it is given, so Oreo can take the same
 role when it speaks the same RPC subset.
 
