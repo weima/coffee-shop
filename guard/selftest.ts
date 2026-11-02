@@ -1,5 +1,6 @@
 // Self-test for the guard's pure logic. Run with: bun run guard/selftest.ts
 import { execFileSync } from "node:child_process";
+import { existsSync as existsSyncFn } from "node:fs";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,8 +18,10 @@ import {
   shouldAnnotate,
   shouldPush,
   lastSignal,
+  projectKey,
   newestSourceMtime,
   pickPush,
+  signalLine,
   commitGate,
   currentBranch,
   prState,
@@ -171,12 +174,12 @@ try {
   );
   const signal = lastSignal(signalProject, 3_000);
   check("signal id is the run start", signal?.id, "2000000000");
-  check("signal line is the summary", signal?.line, "rachel: check ok (1 checked)");
+  check("signal line is the deepest stage", signal?.line, "rachel: test ok (29 tests)");
   check("signal age", signal?.ageMs, 1_000);
   check("signal ok", signal?.ok, true);
   check("a new signal pushes", shouldPush("", signal), true);
   check("the same signal does not push twice", shouldPush("2000000000", signal), false);
-  check("a passing verdict is annotated as ok", verdictNote(signalProject).includes("check ok"), true);
+  check("a passing verdict is annotated as ok", verdictNote(signalProject).includes("test ok"), true);
 } finally {
   rmSync(signalProject, { recursive: true, force: true });
 }
@@ -250,6 +253,32 @@ try {
   check("prState skips main", prState("main", repo), "");
 } finally {
   rmSync(repo, { recursive: true, force: true });
+}
+
+// The pushed line must be the failing stage, not the first stage.
+check(
+  "a failing later stage wins",
+  signalLine(
+    ["rachel: check ok (1 checked)", "rachel: test fail (1 of 1 tests)", "rachel: error a.odin:1:t() boom"],
+    false,
+  ),
+  "rachel: test fail (1 of 1 tests) — a.odin:1:t() boom",
+);
+check(
+  "a passing run reports the deepest stage",
+  signalLine(["rachel: check ok (1 checked)", "rachel: test ok (3 tests)"], true),
+  "rachel: test ok (3 tests)",
+);
+check(
+  "a check-only run reports check",
+  signalLine(["rachel: check ok (1 checked)"], true),
+  "rachel: check ok (1 checked)",
+);
+check("an empty verdict still says something", signalLine([], false), "no verdict");
+
+// The same directory under two spellings is one project.
+if (existsSyncFn("/private/tmp") && existsSyncFn("/tmp")) {
+  check("symlinked spellings share a project key", projectKey("/tmp") === projectKey("/private/tmp"), true);
 }
 
 if (failures > 0) {

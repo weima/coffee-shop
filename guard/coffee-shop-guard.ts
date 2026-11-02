@@ -16,7 +16,7 @@
  */
 import { execFileSync } from "node:child_process";
 import type { Dirent } from "node:fs";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export type Mode = "annotate" | "block";
@@ -166,6 +166,19 @@ export function hasJustfile(dir: string): boolean {
  * its ancestor a "project", and /tmp is not one. Rachel creates the justfile on
  * the first `rachel verify`, so a fresh project becomes resolvable then.
  */
+/**
+ * projectKey canonicalises a project path for dedupe. macOS reports /tmp and
+ * /private/tmp as the same directory; two spellings looked like two projects and
+ * pushed the same verdict twice.
+ */
+export function projectKey(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
 export function isRachelProject(dir: string): boolean {
   return hasJustfile(dir);
 }
@@ -242,6 +255,23 @@ export interface Signal {
  * lastSignal reads .rachel/last.json, which Rachel writes after every verify,
  * pass or fail. This is the cheap current signal: one file, one line.
  */
+/**
+ * signalLine picks the line a reader needs from a verdict array. Rachel writes one
+ * line per stage plus error lines; taking the first line reported "check ok" while a
+ * later stage failed, which is worse than pushing nothing.
+ */
+export function signalLine(verdict: string[], ok: boolean): string {
+  const stages = verdict.filter((line) => /^rachel: (check|test|e2e) (ok|fail)/.test(line));
+  const errors = verdict.filter((line) => /^rachel: error /.test(line));
+  if (stages.length === 0) return verdict[0] ?? "no verdict";
+  const failing = stages.find((line) => line.includes(" fail "));
+  const summary = failing ?? stages[stages.length - 1];
+  if (!ok && errors.length > 0) {
+    return `${summary} — ${errors[0].replace(/^rachel: error /, "")}`;
+  }
+  return summary;
+}
+
 export function lastSignal(project: string, now = Date.now()): Signal | null {
   try {
     const raw = JSON.parse(readFileSync(join(project, ".rachel", "last.json"), "utf8"));
@@ -250,7 +280,7 @@ export function lastSignal(project: string, now = Date.now()): Signal | null {
     const newest = newestSourceMtime(project);
     return {
       id: String(raw?.started_ns ?? 0),
-      line: verdict[0] ?? "no verdict",
+      line: signalLine(verdict, raw?.ok === true),
       ageMs: started > 0 ? Math.max(0, now - started) : 0,
       ok: raw?.ok === true,
       stages: Array.isArray(raw?.stages) ? raw.stages : [],
@@ -432,7 +462,9 @@ export function rulesSummary(policy: Policy): string {
 export default function (pi: any) {
   // Deliberately the session directory, not a target project: the guard is
   // installed in Coffee Shop only, and resolves target projects per command.
-  const sessionDir = process.env.COFFEE_SHOP_GUARD_PROJECT || process.cwd();
+  // Canonicalised for the same reason as resolved projects: /tmp and /private/tmp
+  // are one project, and two spellings pushed the same verdict twice.
+  const sessionDir = projectKey(process.env.COFFEE_SHOP_GUARD_PROJECT || process.cwd());
   const policy = loadPolicy(join(sessionDir, ".pi", "coffee-shop-guard.json"));
 
   pi.on("session_start", async () => {
@@ -479,7 +511,7 @@ export default function (pi: any) {
     if (event?.toolName !== "bash") return;
     const command = String(event?.input?.command ?? "");
     const project = resolveProject(command, sessionDir);
-    if (project) observed.add(project);
+    if (project) observed.add(projectKey(project));
 
     // The escape token wins over every rule, including the commit gates.
     if (policy.escape && command.includes(policy.escape)) return;
