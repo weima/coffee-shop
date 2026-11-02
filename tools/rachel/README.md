@@ -111,6 +111,25 @@ stripped, duplicates removed and the list capped.
 `odin run src -- verify .` on this repository reports `check ok (1 checked)` and
 `test ok (24 tests)` in under two seconds.
 
+## Evidence
+
+A failing stage writes a run directory and prints where it went:
+
+```
+rachel: evidence .rachel/evidence/01793595995993020000-test
+```
+
+```
+.rachel/evidence/<id>/
+  manifest.json   stage, status, recipe, exit code, started_ns, duration_ms,
+                  tests, failure_count, verdict lines, and the paths checked
+  verdict.txt     the same verdict lines, one per line
+```
+
+Only failures write evidence; a passing stage leaves nothing. The newest 10 run
+directories are kept and older ones are deleted on write. `rachel evidence last
+<project>` prints the newest run directory. `.rachel/` is gitignored.
+
 ## Test-file convention
 
 - Production source uses names such as `memory_usage.odin`.

@@ -14,6 +14,7 @@ CLI_Options :: struct {
 	paths:      [dynamic]string,
 	check_once: bool,
 	verify:     bool,
+	evidence_last: bool,
 	from_env:   bool,
 	stage_check: bool,
 	stage_test:  bool,
@@ -40,6 +41,16 @@ test package=".":
 `
 
 parse_cli_args :: proc(args: []string, allocator := context.allocator) -> (options: CLI_Options, err: os.Error) {
+	if len(args) >= 4 && args[1] == "evidence" && args[2] == "last" {
+		if !os.is_dir(args[3]) {
+			return {}, os.Error(.Invalid_Dir)
+		}
+		root, clone_err := strings.clone(args[3], allocator)
+		if clone_err != nil {
+			return {}, os.Error(clone_err)
+		}
+		return CLI_Options{root = root, evidence_last = true}, nil
+	}
 	rest := args[1:]
 	if len(rest) > 0 && (rest[0] == "check" || rest[0] == "verify") {
 		options.check_once = rest[0] == "check"
@@ -226,10 +237,14 @@ run_cli :: proc(args: []string) -> int {
 		fmt.eprintln("Usage: rachel <odin-project-directory>")
 		fmt.eprintln("       rachel check <odin-project-directory> [path ...]")
 		fmt.eprintln("       rachel verify <odin-project-directory> [path ...]")
+		fmt.eprintln("       rachel evidence last <odin-project-directory>")
 		fmt.eprintfln("[ERROR] %s", os.error_string(parse_err))
 		return 2
 	}
 	defer options_destroy(&options)
+	if options.evidence_last {
+		return print_evidence_last(options)
+	}
 	if options.check_once {
 		return check_once(options)
 	}
@@ -983,23 +998,34 @@ run_checks :: proc(options: CLI_Options, allocator := context.allocator) -> (sum
 	return summary, false
 }
 
-print_check_verdict :: proc(summary: Check_Summary, tag: string) {
+// verdict lines are built once so printing and evidence cannot disagree.
+check_verdict_lines :: proc(summary: Check_Summary, tag: string, allocator := context.allocator) -> (lines: [dynamic]string) {
+	lines = make([dynamic]string, 0, allocator)
 	if summary.ok {
-		fmt.printfln("%sok (%d checked)", tag, summary.checked)
-		return
+		_ = append(&lines, fmt.aprintf("%sok (%d checked)", tag, summary.checked, allocator = allocator))
+		return lines
 	}
 	if summary.error_count == 1 {
-		fmt.printfln("%sfail (%d of %d, 1 error)", tag, summary.failures, summary.checked)
+		_ = append(&lines, fmt.aprintf("%sfail (%d of %d, 1 error)", tag, summary.failures, summary.checked, allocator = allocator))
 	} else if summary.error_count > 1 {
-		fmt.printfln("%sfail (%d of %d, %d errors)", tag, summary.failures, summary.checked, summary.error_count)
+		_ = append(&lines, fmt.aprintf("%sfail (%d of %d, %d errors)", tag, summary.failures, summary.checked, summary.error_count, allocator = allocator))
 	} else {
-		fmt.printfln("%sfail (%d of %d)", tag, summary.failures, summary.checked)
+		_ = append(&lines, fmt.aprintf("%sfail (%d of %d)", tag, summary.failures, summary.checked, allocator = allocator))
 	}
 	for line in summary.diagnostics {
-		fmt.printfln("rachel: error %s", line)
+		_ = append(&lines, fmt.aprintf("rachel: error %s", line, allocator = allocator))
 	}
 	if summary.error_count > len(summary.diagnostics) {
-		fmt.printfln("rachel: error ... (%d more)", summary.error_count - len(summary.diagnostics))
+		_ = append(&lines, fmt.aprintf("rachel: error ... (%d more)", summary.error_count - len(summary.diagnostics), allocator = allocator))
+	}
+	return lines
+}
+
+print_check_verdict :: proc(summary: Check_Summary, tag: string) {
+	lines := check_verdict_lines(summary, tag, context.temp_allocator)
+	defer free_all(context.temp_allocator)
+	for line in lines {
+		fmt.println(line)
 	}
 }
 
@@ -1274,9 +1300,11 @@ run_recipe_stage :: proc(
 			summary.ok = false
 			continue
 		}
-		print_command_output(result)
 		summary.tests += parse_test_count(transmute(string)result.stdout, transmute(string)result.stderr)
 		if !odin_command_succeeded(result) {
+			// Raw output is only useful when the stage failed; a passing stage that
+			// prints its whole log buries the verdict lines a reader came for.
+			print_command_output(result)
 			summary.ok = false
 			lines, total := collect_test_failures(
 				transmute(string)result.stdout,
@@ -1300,41 +1328,90 @@ run_recipe_stage :: proc(
 	return summary, false
 }
 
-print_stage_verdict :: proc(summary: Test_Summary, tag: string) {
+stage_verdict_lines :: proc(summary: Test_Summary, tag: string, allocator := context.allocator) -> (lines: [dynamic]string) {
+	lines = make([dynamic]string, 0, allocator)
 	if summary.skipped {
-		fmt.printfln("%sskip (no recipe)", tag)
-		return
+		_ = append(&lines, fmt.aprintf("%sskip (no recipe)", tag, allocator = allocator))
+		return lines
 	}
 	if summary.ok {
 		switch summary.tests {
 		case 0:
-			fmt.printfln("%sok", tag)
+			_ = append(&lines, fmt.aprintf("%sok", tag, allocator = allocator))
 		case 1:
-			fmt.printfln("%sok (1 test)", tag)
+			_ = append(&lines, fmt.aprintf("%sok (1 test)", tag, allocator = allocator))
 		case:
-			fmt.printfln("%sok (%d tests)", tag, summary.tests)
+			_ = append(&lines, fmt.aprintf("%sok (%d tests)", tag, summary.tests, allocator = allocator))
 		}
-		return
+		return lines
 	}
 	if summary.tests > 0 {
 		if summary.failure_count == 1 {
-			fmt.printfln("%sfail (1 of %d tests)", tag, summary.tests)
+			_ = append(&lines, fmt.aprintf("%sfail (1 of %d tests)", tag, summary.tests, allocator = allocator))
 		} else {
-			fmt.printfln("%sfail (%d of %d tests)", tag, summary.failure_count, summary.tests)
+			_ = append(&lines, fmt.aprintf("%sfail (%d of %d tests)", tag, summary.failure_count, summary.tests, allocator = allocator))
 		}
 	} else if summary.failure_count > 1 {
-		fmt.printfln("%sfail (%d failures)", tag, summary.failure_count)
+		_ = append(&lines, fmt.aprintf("%sfail (%d failures)", tag, summary.failure_count, allocator = allocator))
 	} else if summary.failure_count == 1 {
-		fmt.printfln("%sfail (1 failure)", tag)
+		_ = append(&lines, fmt.aprintf("%sfail (1 failure)", tag, allocator = allocator))
 	} else {
-		fmt.printfln("%sfail (exit code only)", tag)
+		_ = append(&lines, fmt.aprintf("%sfail (exit code only)", tag, allocator = allocator))
 	}
 	for line in summary.failures {
-		fmt.printfln("rachel: error %s", line)
+		_ = append(&lines, fmt.aprintf("rachel: error %s", line, allocator = allocator))
 	}
 	if summary.failure_count > len(summary.failures) {
-		fmt.printfln("rachel: error ... (%d more)", summary.failure_count - len(summary.failures))
+		_ = append(&lines, fmt.aprintf("rachel: error ... (%d more)", summary.failure_count - len(summary.failures), allocator = allocator))
 	}
+	return lines
+}
+
+print_stage_verdict :: proc(summary: Test_Summary, tag: string) {
+	lines := stage_verdict_lines(summary, tag, context.temp_allocator)
+	defer free_all(context.temp_allocator)
+	for line in lines {
+		fmt.println(line)
+	}
+}
+
+// record_evidence writes the failing stage and prints where it went.
+@(private)
+record_evidence :: proc(
+	root, stage, recipe: string,
+	started: time.Time,
+	duration: time.Duration,
+	tests, failures: int,
+	lines: []string,
+	paths: []string,
+	allocator := context.allocator,
+) {
+	dir, ok := evidence_write(root, stage, recipe, 1, started, duration, tests, failures, lines, paths, allocator)
+	if !ok {
+		fmt.eprintfln("[ERROR] could not write evidence for the %s stage", stage)
+		return
+	}
+	defer delete(dir, allocator)
+	display := dir
+	if strings.has_prefix(display, root) {
+		display = strings.trim_prefix(display[len(root):], "/")
+	}
+	fmt.printfln("rachel: evidence %s", display)
+}
+
+print_evidence_last :: proc(options: CLI_Options, allocator := context.allocator) -> int {
+	dir, ok := evidence_last(options.root, allocator)
+	if !ok {
+		fmt.printfln("rachel: no evidence")
+		return 1
+	}
+	defer delete(dir, allocator)
+	display := dir
+	if strings.has_prefix(display, options.root) {
+		display = strings.trim_prefix(display[len(options.root):], "/")
+	}
+	fmt.println(display)
+	return 0
 }
 
 // verify_stage runs one recipe stage and reports whether verify should continue.
@@ -1346,30 +1423,44 @@ verify_stage :: proc(
 	failed: ^bool,
 	allocator := context.allocator,
 ) -> bool {
+	started := time.now()
 	summary, fatal := run_recipe_stage(recipe, options.root, options.max_errors, per_package, true, allocator)
+	duration := time.since(started)
 	defer test_summary_destroy(&summary, allocator)
 	if fatal {
 		return false
 	}
-	print_stage_verdict(summary, fmt.tprintf("rachel: %s ", recipe))
+	lines := stage_verdict_lines(summary, fmt.tprintf("rachel: %s ", recipe), allocator)
+	defer delete_string_slice(lines, allocator)
+	for line in lines {
+		fmt.println(line)
+	}
 	if summary.ok {
 		return true
 	}
 	failed^ = true
+	record_evidence(options.root, recipe, recipe, started, duration, summary.tests, summary.failure_count, lines[:], options.paths[:], allocator)
 	return options.all_stages
 }
 
 verify_once :: proc(options: CLI_Options, allocator := context.allocator) -> int {
 	failed := false
 	if options.stage_check {
+		started := time.now()
 		check_summary, check_fatal := run_checks(options, allocator)
+		duration := time.since(started)
 		defer check_summary_destroy(&check_summary, allocator)
 		if check_fatal {
 			return 1
 		}
-		print_check_verdict(check_summary, "rachel: check ")
+		lines := check_verdict_lines(check_summary, "rachel: check ", allocator)
+		defer delete_string_slice(lines, allocator)
+		for line in lines {
+			fmt.println(line)
+		}
 		if !check_summary.ok {
 			failed = true
+			record_evidence(options.root, "check", "check", started, duration, check_summary.checked, check_summary.failures, lines[:], options.paths[:], allocator)
 			if !options.all_stages {
 				return 1
 			}

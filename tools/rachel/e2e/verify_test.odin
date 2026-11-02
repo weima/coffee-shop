@@ -138,3 +138,61 @@ test_verify_stage_selection_all_and_skip :: proc(t: ^testing.T) {
 	testing.expect_value(t, skipped.exit_code, 0)
 	testing.expectf(t, strings.contains(skipped.stdout, "rachel: e2e skip (no recipe)"), "missing skip line: %q", skipped.stdout)
 }
+
+@(test)
+test_failing_verify_writes_evidence_and_passing_writes_none :: proc(t: ^testing.T) {
+	if !require_layout(t) {
+		return
+	}
+	build := build_rachel(t)
+	defer build_destroy(&build)
+	if build.binary == "" {
+		return
+	}
+	project := make_project(t)
+	defer project_destroy(&project)
+	if project == "" {
+		return
+	}
+	justfile_path := fmt.aprintf("%s/justfile", project, allocator = context.allocator)
+	defer delete(justfile_path, context.allocator)
+	module_path := fmt.aprintf("%s/module.odin", project, allocator = context.allocator)
+	defer delete(module_path, context.allocator)
+	evidence_root := fmt.aprintf("%s/.rachel/evidence", project, allocator = context.allocator)
+	defer delete(evidence_root, context.allocator)
+	write_file(t, justfile_path, CUSTOM_JUSTFILE)
+
+	write_file(t, module_path, PASSING_TEST_MODULE)
+	passing, passing_err := run_to_output([]string{build.binary, "verify", project})
+	defer output_destroy(&passing)
+	testing.expectf(t, passing_err == nil, "verify would not run: %v", passing_err)
+	testing.expect_value(t, passing.exit_code, 0)
+	testing.expectf(t, !os.exists(evidence_root), "a passing stage wrote evidence")
+
+	write_file(t, module_path, FAILING_TEST_MODULE)
+	failing, failing_err := run_to_output([]string{build.binary, "verify", project})
+	defer output_destroy(&failing)
+	testing.expectf(t, failing_err == nil, "verify would not run: %v", failing_err)
+	testing.expect_value(t, failing.exit_code, 1)
+	testing.expectf(t, strings.contains(failing.stdout, "rachel: evidence .rachel/evidence/"), "no evidence line: %q", failing.stdout)
+
+	entries, read_err := os.read_all_directory_by_path(evidence_root, context.allocator)
+	testing.expectf(t, read_err == nil, "no evidence directory: %v", read_err)
+	if read_err != nil {
+		return
+	}
+	defer os.file_info_slice_delete(entries, context.allocator)
+	runs := 0
+	for entry in entries {
+		if entry.type == .Directory {
+			runs += 1
+		}
+	}
+	testing.expect_value(t, runs, 1)
+
+	last, last_err := run_to_output([]string{build.binary, "evidence", "last", project})
+	defer output_destroy(&last)
+	testing.expectf(t, last_err == nil, "evidence last would not run: %v", last_err)
+	testing.expect_value(t, last.exit_code, 0)
+	testing.expectf(t, strings.contains(last.stdout, ".rachel/evidence/"), "evidence last printed no path: %q", last.stdout)
+}
