@@ -8,6 +8,7 @@ import {
   evaluate,
   humanAge,
   isRachelProject,
+  hasJustfile,
   lastVerdict,
   parsePolicy,
   projectOf,
@@ -42,7 +43,13 @@ const policy = parsePolicy(
         command: "(^|[;&|]\\s*)(odin|go|bun)\\s+(build|check|test)",
         mode: "block",
       },
-      { id: "worktree-via-wt", tool: "bash", command: "git\\s+worktree\\s+(add|remove)", mode: "block" },
+      {
+        id: "worktree-via-wt",
+        tool: "bash",
+        command: "git\\s+worktree\\s+(add|remove)",
+        mode: "block",
+        requiresProject: false,
+      },
     ],
   }),
 );
@@ -52,6 +59,8 @@ check("raw odin check blocks", evaluate(policy, "odin check src").action, "block
 check("raw go test blocks", evaluate(policy, "cd go && go test ./...").action, "block");
 check("raw bun test blocks", evaluate(policy, "bun test").action, "block");
 check("git worktree blocks", evaluate(policy, "git worktree add x").action, "block");
+check("worktree rule needs no project", evaluate(policy, "git worktree add x").requiresProject, false);
+check("raw build rule needs a project", evaluate(policy, "odin check src").requiresProject, true);
 check("escape allows", evaluate(policy, "CS_RAW=1 odin check src").action, "allow");
 
 // Allowed paths.
@@ -121,6 +130,15 @@ try {
   check("projectOf stops at the marker", projectOf(join(target, "src")), target);
   check("plain is not a Rachel project", isRachelProject(plain), false);
   check("guard stays quiet with no project", resolveProject(`cd ${plain} && npm test`, nutrition()), null);
+
+  // A stray .odin file must not turn an ancestor directory into a project.
+  const stray = join(sandbox, "stray");
+  mkdirSync(join(stray, "nested"), { recursive: true });
+  writeFileSync(join(stray, "stray.odin"), "package stray\n");
+  check("odin sources alone are not a project", isRachelProject(stray), false);
+  check("projectOf refuses an odin-only tree", projectOf(stray), null);
+  check("a non-existent path does not resolve via its parent", resolveProject(`git worktree add ${stray}/new y`, coffee), null);
+  check("justfile wins over a sibling odin file", hasJustfile(target), true);
 } finally {
   rmSync(sandbox, { recursive: true, force: true });
 }

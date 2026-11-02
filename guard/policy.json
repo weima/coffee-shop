@@ -15,6 +15,7 @@
       "tool": "bash",
       "command": "git\\s+worktree\\s+(add|remove|list|prune)",
       "mode": "block",
+      "requiresProject": false,
       "message": "use `wt` for worktrees (AGENTS.md)"
     }
   ]

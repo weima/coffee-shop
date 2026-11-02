@@ -25,6 +25,8 @@ export interface Rule {
   command?: string;
   mode?: Mode;
   message?: string;
+  /** Blocking needs a resolved Rachel project to name, so the rule can ask for one. */
+  requiresProject?: boolean;
 }
 
 export interface Policy {
@@ -38,6 +40,7 @@ export interface Decision {
   action: "allow" | "block" | "annotate";
   rule?: string;
   reason?: string;
+  requiresProject?: boolean;
 }
 
 export interface LastVerdict {
@@ -97,6 +100,7 @@ export function evaluate(policy: Policy, command: string, tool = "bash"): Decisi
       return {
         action: "block",
         rule: rule.id,
+        requiresProject: rule.requiresProject ?? true,
         reason:
           `Coffee Shop rule "${rule.id}": ${rule.message ?? "this command is not allowed here."}` +
           ` If the user explicitly asked for this command, re-run it with ${policy.escape}.`,
@@ -146,38 +150,28 @@ export function hasJustfile(dir: string): boolean {
   return PROJECT_MARKERS.some((marker) => existsSync(join(dir, marker)));
 }
 
-export function hasOdinSources(dir: string): boolean {
-  try {
-    return readdirSync(dir).some((name) => name.endsWith(".odin"));
-  } catch {
-    return false;
-  }
-}
-
-/** A directory is a Rachel project when it has a justfile or any .odin file. */
-export function isRachelProject(dir: string): boolean {
-  return hasJustfile(dir) || hasOdinSources(dir);
-}
-
 /**
- * projectOf walks up to the nearest justfile, because that is the directory whose
- * recipes Rachel runs. A subdirectory with .odin files must not shadow it: a
- * repository with src/ and a root justfile is one project, not two. Only when no
- * ancestor has a justfile does the nearest directory with Odin sources count.
+ * A Rachel project is a directory with a justfile, because that is what Rachel
+ * runs. Odin sources alone are not enough: a stray .odin file anywhere would make
+ * its ancestor a "project", and /tmp is not one. Rachel creates the justfile on
+ * the first `rachel verify`, so a fresh project becomes resolvable then.
  */
+export function isRachelProject(dir: string): boolean {
+  return hasJustfile(dir);
+}
+
+/** projectOf walks up from an existing path to the nearest justfile, or null. */
 export function projectOf(start: string): string | null {
   let dir = resolve(start);
   try {
     if (!statSync(dir).isDirectory()) dir = dirname(dir);
   } catch {
-    dir = dirname(dir);
+    return null;
   }
-  let odinFallback: string | null = null;
   for (;;) {
     if (hasJustfile(dir)) return dir;
-    if (odinFallback === null && hasOdinSources(dir)) odinFallback = dir;
     const parent = dirname(dir);
-    if (parent === dir) return odinFallback;
+    if (parent === dir) return null;
     dir = parent;
   }
 }
@@ -213,6 +207,9 @@ export function resolveProject(command: string, sessionDir: string): string | nu
   for (const candidate of candidates) {
     if (!candidate || candidate.startsWith("-")) continue;
     const absolute = isAbsolute(candidate) ? candidate : resolve(sessionDir, candidate);
+    // A path that does not exist yet (an output directory, a worktree target)
+    // must not resolve through its parent: that is how /tmp became a project.
+    if (!existsSync(absolute)) continue;
     const project = projectOf(absolute);
     if (project) return project;
   }
@@ -268,8 +265,9 @@ export default function (pi: any) {
     const command = String(event?.input?.command ?? "");
     const decision = evaluate(policy, command);
     if (decision.action !== "block") return;
-    // No resolved Rachel project means no alternative to offer, so do not block.
-    if (!resolveProject(command, sessionDir)) return;
+    // A rule that needs a project to name must not block when none resolves; a
+    // rule with its own alternative (wt) applies anywhere.
+    if (decision.requiresProject !== false && !resolveProject(command, sessionDir)) return;
     return { block: true, reason: decision.reason };
   });
 
