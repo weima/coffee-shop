@@ -31,7 +31,9 @@ mirror_sprite_row :: proc(row: string) -> string {
 // another test's draw is running.
 capture_lock: sync.Mutex
 
-// Captures what a whole-sprite operation writes by pointing os.stdout at a temp file. The
+// Captures what a whole-sprite operation writes by pointing the display's own sink at a
+// temp file. It must not swap os.stdout: that is process-wide, so another test's print
+// would land inside the capture and the exact-byte assertions would fail under load. The
 // cursor arithmetic is only real in the bytes, so a test reads those rather than trusting
 // bookkeeping with no production reader. The caller owns the returned bytes.
 capture_display_op :: proc(t: ^testing.T, display: ^Station_Display, label: string, clear: bool) -> []u8 {
@@ -50,14 +52,14 @@ capture_display_op :: proc(t: ^testing.T, display: ^Station_Display, label: stri
 	defer os.close(out)
 	defer os.remove(name)
 
-	old := os.stdout
-	os.stdout = out
+	old := display_output
+	display_output = out
 	if clear {
 		station_display_clear_locked(display)
 	} else {
 		station_display_draw_locked(display)
 	}
-	os.stdout = old
+	display_output = old
 
 	os.seek(out, 0, .Start)
 	data, read_err := os.read_entire_file_from_file(out, context.allocator)
@@ -66,6 +68,23 @@ capture_display_op :: proc(t: ^testing.T, display: ^Station_Display, label: stri
 		return nil
 	}
 	return data
+}
+
+// A capture must go through the display's own sink and leave it as it found it. Swapping
+// os.stdout also captured every other test's output, which is how this file's exact-byte
+// assertions failed under a ten-thread suite: a foreign print landed between the swap and
+// the read.
+@(test)
+test_capture_uses_the_display_sink_and_restores_it :: proc(t: ^testing.T) {
+	display := Station_Display{live = true}
+	display.sprite = station_sprite_new()
+	station_display_draw_locked(&display)
+
+	before := display_output
+	data := capture_display_op(t, &display, "sink", false)
+	defer delete(data)
+	testing.expect_value(t, display_output, before)
+	testing.expect(t, len(data) > 0, "the capture must return the display's bytes")
 }
 
 // The rows each "\x1b[<n>A" cursor-up escape in text moves over. Erase and SGR
@@ -243,8 +262,8 @@ test_station_display_frames_are_bounded_and_clear_the_sprite :: proc(t: ^testing
 	display.sprite = station_sprite_new()
 	display.status = strings.clone(strings.repeat("x", STATION_STATUS_MAX, context.temp_allocator))
 	defer delete(display.status)
-	old_stdout := os.stdout
-	os.stdout = out
+	old_output := display_output
+	display_output = out
 	station_styles_on = false
 	for frame := 0; frame < frame_count; frame += 1 {
 		if frame > 0 {
@@ -255,7 +274,7 @@ test_station_display_frames_are_bounded_and_clear_the_sprite :: proc(t: ^testing
 	// Exercise the same whole-sprite clear used when permanent output replaces the
 	// animation. Its bytes remain in the exact stream, after the 200 frame proof.
 	station_display_clear_locked(&display)
-	os.stdout = old_stdout
+	display_output = old_output
 	_ = os.close(out)
 
 	data, read_err := os.read_entire_file(path, context.temp_allocator)

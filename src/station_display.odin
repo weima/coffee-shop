@@ -83,7 +83,7 @@ station_sprite_text :: proc(sprite: ^Station_Sprite, row: int) -> string {
 station_sprite_draw :: proc(sprite: ^Station_Sprite) {
 	for row in 0 ..< station_sprite_row_count(sprite) {
 		style := ansi.FG_YELLOW if row < STATION_CAT_ROWS else ansi.FAINT
-		fmt.printf("\r\x1b[2K%s\n", station_style(style, station_sprite_text(sprite, row)))
+		fmt.fprintf(display_file(), "\r\x1b[2K%s\n", station_style(style, station_sprite_text(sprite, row)))
 	}
 	sprite.on_pane = true
 }
@@ -94,9 +94,20 @@ station_sprite_clear :: proc(sprite: ^Station_Sprite) {
 		return
 	}
 	for _ in 0 ..< station_sprite_row_count(sprite) {
-		fmt.print("\r\x1b[2K\n")
+		fmt.fprint(display_file(), "\r\x1b[2K\n")
 	}
 	sprite.on_pane = false
+}
+
+// Where the display writes: nil means os.stdout, read at call time. Production leaves it
+// nil. A test that captures one operation points it at a file instead of swapping
+// os.stdout, because swapping the process-wide stream also captured every other test's
+// output — which is how the sprite assertions failed under a ten-thread suite. Leaving it
+// a pointer captured once would break the tests that do swap os.stdout for a whole run.
+display_output: ^os.File
+
+display_file :: proc() -> ^os.File {
+	return display_output if display_output != nil else os.stdout
 }
 
 // One block of lines at the bottom of the pane, animated while the agent works.
@@ -136,9 +147,9 @@ station_display_start :: proc(display: ^Station_Display, title: string) {
 	display.status = strings.clone("thinking")
 	display.sprite = station_sprite_new()
 	if display.live {
-		fmt.print(station_display_start_sequence())
-		fmt.println(station_style(ansi.BOLD + ";" + ansi.FG_CYAN, title))
-		fmt.println(station_style(ansi.FAINT, "────────────────────────────────────────"))
+		fmt.fprint(display_file(), station_display_start_sequence())
+		fmt.fprintln(display_file(), station_style(ansi.BOLD + ";" + ansi.FG_CYAN, title))
+		fmt.fprintln(display_file(), station_style(ansi.FAINT, "────────────────────────────────────────"))
 		display.animation_thread = thread.create_and_start_with_data(display, station_display_animate, self_cleanup = false)
 	}
 }
@@ -188,7 +199,7 @@ station_display_draw_locked :: proc(display: ^Station_Display) {
 		return
 	}
 	if display.sprite.on_pane {
-		fmt.print(station_sprite_cursor_up(&display.sprite))
+		fmt.fprint(display_file(), station_sprite_cursor_up(&display.sprite))
 	}
 	status := station_display_status_line(display, time.now()._nsec)
 	station_sprite_face(&display.sprite, display.dir > 0, status)
@@ -202,9 +213,10 @@ station_display_clear_locked :: proc(display: ^Station_Display) {
 		return
 	}
 	up := station_sprite_cursor_up(&display.sprite)
-	fmt.print(up)
+	out := display_file()
+	fmt.fprint(out, up)
 	station_sprite_clear(&display.sprite)
-	fmt.print(up)
+	fmt.fprint(out, up)
 }
 
 // A drawn row must be exactly one terminal line. Tool descriptions are shell
@@ -298,7 +310,7 @@ station_display_line :: proc(display: ^Station_Display, text: string) {
 	sync.mutex_lock(&display.mutex)
 	defer sync.mutex_unlock(&display.mutex)
 	station_display_clear_locked(display)
-	fmt.printfln("%s %s", log_timestamp(time.now()), text)
+	fmt.fprintfln(display_file(), "%s %s", log_timestamp(time.now()), text)
 	station_display_draw_locked(display)
 }
 
