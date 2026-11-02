@@ -126,7 +126,7 @@ resources_section :: proc(b: ^strings.Builder, state: string, ids: []string) {
 		rss_sum += resource_rows(b, id, rec)
 	}
 	if found == 0 {
-		line(b, "\n%s: no resource records. `record_resource_use` is called only from the Brew settle path (src/settle.odin:147); this report cannot show host-dispatched Stations' peaks until the host calls it.", NM)
+		line(b, "\n%s: no resource records. The Go host writes them on Linux (`go/internal/host/sampler.go`); on a platform without a per-process reader it writes none, so this section stays unmeasured there.", NM)
 		return
 	}
 	line(b, "\nSum of every known rss peak above (Station + tree, peaks not simultaneous): %.1f MiB. A sum of peaks is an upper bound, not a measured simultaneous total.", rss_sum / 1048576)

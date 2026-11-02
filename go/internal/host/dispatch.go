@@ -52,8 +52,9 @@ type dispatcher struct {
 	extension string
 	model     string
 
-	slots *slots
-	w     *writer
+	slots   *slots
+	w       *writer
+	sampler *stationSampler
 
 	mu      sync.Mutex
 	running map[string]*stationRun
@@ -91,6 +92,7 @@ func newDispatcher(root string, cli []string, socket, extension, model string, w
 		model:     model,
 		slots:     newSlots(SlotCapacity).withMachineLimit(root),
 		w:         w,
+		sampler:   newStationSampler(root),
 		running:   make(map[string]*stationRun),
 	}
 }
@@ -279,6 +281,8 @@ func (d *dispatcher) launch(ctx context.Context, requestID string, shot ShotRequ
 	// The slot key is the Station's session id, which is what a reply and a cancel
 	// address; the alert carries it so a reader can act on the same handle.
 	d.w.stationStarted(requestID, shot.ID, slotKey(requestID, shot.ID))
+	// Sampling starts with the process, so the gate's 5.9 record covers the whole Shot.
+	d.sampler.track(requestID, shot.ID, cmd.Process.Pid)
 	d.w.emit(proto.Event{Type: "session_started", RequestID: requestID, ShotID: shot.ID})
 
 	go func() {
@@ -398,6 +402,7 @@ func (d *dispatcher) release(requestID, shotID string) {
 		return // already released by the other path
 	}
 	d.w.stationFinished(requestID, shotID)
+	d.sampler.finish(requestID, shotID)
 	d.drainQueue()
 }
 
@@ -431,6 +436,9 @@ func (d *dispatcher) drainQueue() {
 		}
 	}
 }
+
+// sampleStations reads every live Station once. The host calls it on a ticker.
+func (d *dispatcher) sampleStations() { d.sampler.sample() }
 
 // shutdown returns every machine slot this host holds, so a restart is never blocked by
 // a host that exited while holding them.
