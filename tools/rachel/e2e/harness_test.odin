@@ -252,16 +252,20 @@ project_destroy :: proc(dir: ^string, allocator := context.allocator) {
 	}
 }
 
-has_watchexec :: proc() -> bool {
+has_tool :: proc(name: string) -> bool {
 	path := os.get_env("PATH", context.temp_allocator)
 	separator := fmt.aprintf("%c", rune(os.Path_List_Separator), allocator = context.temp_allocator)
 	for part in strings.split(path, separator, context.temp_allocator) {
 		if part == "" {
 			continue
 		}
-		if os.is_file(fmt.aprintf("%s/watchexec", part, allocator = context.temp_allocator)) {
+		if os.is_file(fmt.aprintf("%s/%s", part, name, allocator = context.temp_allocator)) {
 			return true
 		}
 	}
 	return false
+}
+
+has_watchexec :: proc() -> bool {
+	return has_tool("watchexec")
 }

@@ -30,6 +30,15 @@ Rachel_Justfile :: struct {
 
 RACHEL_DEFAULT_JUSTFILE_MARKER :: "# Rachel-generated defaults"
 
+// The generated TS recipe takes an ignored package argument so the existing
+// per-package call path works unchanged; tsc has no per-package mode.
+RACHEL_DEFAULT_TS_JUSTFILE :: `# Rachel-generated defaults; edit for other tools.
+set shell := ["sh", "-cu"]
+
+check package=".":
+    tsc --noEmit
+`
+
 RACHEL_DEFAULT_JUSTFILE :: `# Rachel-generated defaults; edit for collections or custom linker flags.
 set shell := ["sh", "-cu"]
 
@@ -155,7 +164,11 @@ ensure_project_justfile :: proc(root: string, allocator := context.allocator) ->
 		delete(path, allocator)
 		return {}, open_err
 	}
-	_, write_err := os.write_string(file, RACHEL_DEFAULT_JUSTFILE)
+	template := RACHEL_DEFAULT_JUSTFILE
+	if project_language(root) == .TypeScript {
+		template = RACHEL_DEFAULT_TS_JUSTFILE
+	}
+	_, write_err := os.write_string(file, template)
 	close_err := os.close(file)
 	if write_err != nil {
 		_ = os.remove(path)
@@ -174,6 +187,57 @@ ensure_project_justfile :: proc(root: string, allocator := context.allocator) ->
 // A justfile that still starts with Rachel's marker keeps the per-package
 // behaviour; a hand-written one is run once for the whole project. Detecting the
 // marker matters after the first run, when the created file is no longer new.
+Language :: enum {
+	Odin,
+	TypeScript,
+}
+
+// tool_on_path answers whether Rachel's generated recipe can run at all.
+@(private)
+tool_on_path :: proc(name: string) -> bool {
+	path := os.get_env("PATH", context.temp_allocator)
+	separator := fmt.aprintf("%c", rune(os.Path_List_Separator), allocator = context.temp_allocator)
+	for part in strings.split(path, separator, context.temp_allocator) {
+		if part == "" {
+			continue
+		}
+		candidate, join_err := filepath.join({part, name}, context.temp_allocator)
+		if join_err != nil {
+			continue
+		}
+		if os.is_file(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+/**
+ * project_language decides which starter justfile to write and whether a
+ * generated recipe should be called once when no Odin package is found.
+ * Odin wins when the root has Odin sources, so a mixed repository keeps its
+ * existing behaviour.
+ */
+project_language :: proc(root: string) -> Language {
+	entries, read_err := os.read_all_directory_by_path(root, context.temp_allocator)
+	if read_err == nil {
+		for entry in entries {
+			if strings.has_suffix(entry.name, ".odin") {
+				return .Odin
+			}
+		}
+	}
+	tsconfig, ts_err := filepath.join({root, "tsconfig.json"}, context.temp_allocator)
+	if ts_err == nil && os.is_file(tsconfig) {
+		return .TypeScript
+	}
+	package_json, package_err := filepath.join({root, "package.json"}, context.temp_allocator)
+	if package_err == nil && os.is_file(package_json) {
+		return .TypeScript
+	}
+	return .Odin
+}
+
 @(private)
 justfile_uses_rachel_defaults :: proc(path: string, allocator := context.allocator) -> bool {
 	contents, read_err := os.read_entire_file(path, allocator)
@@ -788,7 +852,7 @@ collect_diagnostics :: proc(
 			trimmed := strings.trim_space(raw)
 			// Odin prints both "Error:" and "Syntax Error:"; a snippet and caret line
 			// contains neither.
-			if !strings.contains(trimmed, "Error:") {
+			if !strings.contains(trimmed, "Error:") && !strings.contains(trimmed, "error TS") {
 				continue
 			}
 			display := trimmed
@@ -907,6 +971,11 @@ run_checks :: proc(options: CLI_Options, allocator := context.allocator) -> (sum
 		return summary, true
 	}
 	defer justfile_destroy(&justfile, allocator)
+	// A missing tool is a precondition, not a mysterious recipe failure.
+	if justfile.generated && project_language(root) == .TypeScript && !tool_on_path("tsc") {
+		fmt.printfln("rachel: fail (precondition): tsc is not on PATH; install TypeScript or write a check recipe")
+		return summary, true
+	}
 
 	paths := options.paths[:]
 	env_paths: [dynamic]string
@@ -962,6 +1031,11 @@ run_checks :: proc(options: CLI_Options, allocator := context.allocator) -> (sum
 	to_check: []string = whole_project_call
 	if justfile.generated {
 		to_check = directories[:]
+		// A TS project has no Odin packages, but its generated recipe still needs
+		// one call. An Odin project with no packages keeps "ok (0 checked)".
+		if len(to_check) == 0 && project_language(root) == .TypeScript {
+			to_check = whole_project_call
+		}
 	}
 	// The compiler prints resolved paths (/private/var on macOS), so strip the
 	// canonical root, not the path the caller typed.

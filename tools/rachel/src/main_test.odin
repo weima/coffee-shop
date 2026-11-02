@@ -834,3 +834,80 @@ test_last_verdict_file_records_a_passing_run :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(text, "rachel: test ok (3 tests)"))
 	testing.expect(t, strings.contains(text, `"check","test"`))
 }
+
+@(test)
+test_project_language_prefers_odin_and_detects_typescript :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp("", "rachel-lang-*", context.allocator)
+	testing.expect(t, make_err == nil)
+	defer {
+		_ = os.remove_all(root)
+		delete(root)
+	}
+	testing.expect_value(t, project_language(root), Language.Odin)
+
+	_ = os.write_entire_file_from_string(fmt.tprintf("%s/tsconfig.json", root), "{}", os.Permissions{.Read_User, .Write_User})
+	testing.expect_value(t, project_language(root), Language.TypeScript)
+
+	// A mixed repository with Odin sources keeps Odin behaviour.
+	_ = os.write_entire_file_from_string(fmt.tprintf("%s/main.odin", root), "package demo\n", os.Permissions{.Read_User, .Write_User})
+	testing.expect_value(t, project_language(root), Language.Odin)
+}
+
+@(test)
+test_collect_diagnostics_reads_typescript_errors :: proc(t: ^testing.T) {
+	// Captured from tsc --noEmit.
+	stderr := strings.concatenate(
+		{
+			"a.ts(1,7): error TS2322: Type 'string' is not assignable to type 'number'.\n",
+			"src/b.ts(4,3): error TS2554: Expected 2 arguments, but got 1.\n",
+			"a.ts(1,7): error TS2322: Type 'string' is not assignable to type 'number'.\n",
+		},
+		context.allocator,
+	)
+	defer delete(stderr)
+	lines, total := collect_diagnostics("", stderr, "", CHECK_DEFAULT_MAX_ERRORS, context.allocator)
+	defer delete_string_slice(lines, context.allocator)
+	testing.expect_value(t, total, 2)
+	testing.expect_value(t, len(lines), 2)
+	testing.expect_value(t, lines[0], "a.ts(1,7): error TS2322: Type 'string' is not assignable to type 'number'.")
+	testing.expect_value(t, lines[1], "src/b.ts(4,3): error TS2554: Expected 2 arguments, but got 1.")
+}
+
+@(test)
+test_generated_justfile_matches_the_project_language :: proc(t: ^testing.T) {
+	odin_root, odin_err := os.make_directory_temp("", "rachel-just-odin-*", context.allocator)
+	testing.expect(t, odin_err == nil)
+	defer {
+		_ = os.remove_all(odin_root)
+		delete(odin_root)
+	}
+	ts_root, ts_err := os.make_directory_temp("", "rachel-just-ts-*", context.allocator)
+	testing.expect(t, ts_err == nil)
+	defer {
+		_ = os.remove_all(ts_root)
+		delete(ts_root)
+	}
+	_ = os.write_entire_file_from_string(fmt.tprintf("%s/tsconfig.json", ts_root), "{}", os.Permissions{.Read_User, .Write_User})
+
+	odin_justfile, odin_justfile_err := ensure_project_justfile(odin_root, context.allocator)
+	defer justfile_destroy(&odin_justfile, context.allocator)
+	testing.expect_value(t, odin_justfile_err, os.Error(nil))
+	odin_contents, _ := os.read_entire_file(odin_justfile.path, context.allocator)
+	defer delete(odin_contents)
+	testing.expect(t, strings.contains(transmute(string)odin_contents, "odin check"))
+
+	ts_justfile, ts_justfile_err := ensure_project_justfile(ts_root, context.allocator)
+	defer justfile_destroy(&ts_justfile, context.allocator)
+	testing.expect_value(t, ts_justfile_err, os.Error(nil))
+	ts_contents, _ := os.read_entire_file(ts_justfile.path, context.allocator)
+	defer delete(ts_contents)
+	testing.expect(t, strings.contains(transmute(string)ts_contents, "tsc --noEmit"))
+	testing.expect(t, justfile_uses_rachel_defaults(ts_justfile.path, context.allocator))
+}
+
+@(test)
+test_tool_on_path_finds_odin_and_rejects_a_missing_tool :: proc(t: ^testing.T) {
+	// The test binary runs under the toolchain, so odin must resolve.
+	testing.expect(t, tool_on_path("odin"))
+	testing.expect(t, !tool_on_path("rachel-definitely-not-a-tool"))
+}
