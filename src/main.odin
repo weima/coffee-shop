@@ -39,10 +39,7 @@ run_cli :: proc(args: []string) -> int {
 		return run_reply(command.brew_id, command.shot_id, command.message, command.print_only)
 	}
 	if command.kind == .Host {
-		if command.host_impl == .Go {
-			return run_host_go(os.get_env("CS_CSD", context.temp_allocator), os.get_env("PATH", context.temp_allocator))
-		}
-		return run_host()
+		return run_host_go(os.get_env("CS_CSD", context.temp_allocator), os.get_env("PATH", context.temp_allocator))
 	}
 	if command.kind == .Prepare {
 		return run_prepare(command.repo, command.branch, command.worktree_dir)

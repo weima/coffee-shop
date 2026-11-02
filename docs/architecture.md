@@ -158,22 +158,22 @@ stateDiagram-v2
     running --> interrupted: exit not seen, or not confirmed after cancel
 ```
 
-### Two host implementations
+### One host implementation
 
-Two implementations exist for the foreground host, and the seam between them is the wire contract in [the v0.6 Go subsystem design](plans/2026-10-31-v0-6-go-subsystem-design.md). Orchestration moves to Go as `csd`: the host loop, the request and activity sockets, dispatch acceptance, the dispatch queue and Slot accounting, the Station process and its bounded log pump, the relay, the spool and the history. The work stays in Odin: a Station's own labour — the agent, its RPC lines and dialogs, the turn deadline, cancel propagation, the Taste and the commit — and the repository work, which is worktrees, Blend, `pr` and cleanup. Go reaches the Odin side through command lines, `prepare` and `release` for the worktree and the unchanged `station` for the Station, so orchestrating one Shot costs one process per call and the two halves share no memory.
+The foreground host is `csd`, written in Go, behind the wire contract in [the v0.6 Go subsystem design](plans/2026-10-31-v0-6-go-subsystem-design.md). The Odin host loop this replaced has been deleted. Orchestration lives in Go: the host loop, the request and activity sockets, dispatch acceptance, the dispatch queue and Slot accounting, the Station process and its bounded log pump, the relay, the spool and the history. The work stays in Odin: a Station's own labour — the agent, its RPC lines and dialogs, the turn deadline, cancel propagation, the Taste and the commit — and the repository work, which is worktrees, Blend, `pr` and cleanup. Go reaches the Odin side through command lines, `prepare` and `release` for the worktree and the unchanged `station` for the Station, so orchestrating one Shot costs one process per call and the two halves share no memory.
 
 ## Components
 
 | Component | Responsibility |
 | --- | --- |
 | **Barista** | The long-lived, user-facing main-agent session. Pi is first; Oreo may take this role later when stable. It receives Orders, owns task decomposition, and relays worker events and human replies. |
-| **Coffee Shop host** | Implemented: a foreground Odin control process started by the Barista. It reads one JSON request per line, launches Stations and relays their reports; it does not interpret natural language. The legacy CLI is one-shot. |
+| **Coffee Shop host** | Implemented: `csd`, a foreground Go control process started by the Barista. It reads one JSON request per line, launches Stations and relays their reports; it does not interpret natural language. The legacy CLI is one-shot. |
 | **Coffee Shop CLI** | Current commands validate inputs, create Stations, start Workers in Herdr, record state, and collect results. |
 | **Beans** | The target repository and task context supplied to workers. |
 | **Recipe** | An Order and its explicit list of Shots. The Barista owns task decomposition. |
 | **Shot** | One unit of work with one prompt and one Worker. |
 | **Station** | A Git worktree isolated to one Shot. |
-| **Worker** | Implemented: an interactive Pi session driven by a Station. The Station runs as a headless child process (`CS_PANE_BACKEND=headless` selects it, and it is now the supported path); its output goes to a bounded per-Shot log under `<state>/host/<request>/logs/<shot>.log`, and the old pane pool and tab lifecycle no longer exist. The one-shot path uses a non-interactive Pi JSON/print process per Shot. Oreo is a later optional alternative, not a prerequisite. |
+| **Worker** | Implemented: an interactive Pi session driven by a Station. The Station runs as a headless child process, started by the Go host; its output goes to a bounded per-Shot log under `<state>/host/<request>/logs/<shot>.log`, and no pane, tab or workspace layer exists. The one-shot path uses a non-interactive Pi JSON/print process per Shot. Oreo is a later optional alternative, not a prerequisite. |
 | **Activity channel** | Current per-Brew Unix-domain socket for best-effort progress summaries. It does not deliver `needs_input` or completion to the main Pi and does not establish liveness. |
 | **Session bridge** | Implemented: the activity socket carries Station reports (`turn_done`, usage, outcome) to the host, and a routed `reply` request is forwarded to the Station and its agent as input. |
 | **Register** | Durable current status for each Brew and Shot. |

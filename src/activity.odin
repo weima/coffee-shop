@@ -170,7 +170,7 @@ parse_station_pid :: proc(description: string) -> (station: Process_Identity, ag
 // Protocol: connect, send ONE JSON line, read ONE JSON line back:
 //   {"ok":true}  or  {"ok":false,"reason":"..."}
 // It is a different socket from activity.sock so a Station report can never be taken
-// for a request. Only `reply` is accepted; see host_handle_request_line.
+// for a request. Only `reply` is accepted.
 
 HOST_REQUEST_SOCKET_NAME :: "requests.sock"
 HOST_REQUEST_MAX_BYTES :: ACTIVITY_MAX_PAYLOAD * 4
@@ -184,72 +184,6 @@ Host_Request_Ack :: struct {
 
 host_request_socket_path :: proc(host_dir: string, allocator := context.allocator) -> string {
 	return state_file_path(host_dir, HOST_REQUEST_SOCKET_NAME, allocator)
-}
-
-// Makes the directory 0700 so no other user can reach the socket, then binds it 0600.
-host_dir_make_private :: proc(directory: string) -> bool {
-	return posix.chmod(strings.clone_to_cstring(directory, context.temp_allocator), {.IRUSR, .IWUSR, .IXUSR}) == .OK
-}
-
-host_request_listener_open :: proc(host_dir: string) -> (listener: Activity_Listener, ok: bool) {
-	path := host_request_socket_path(host_dir, context.temp_allocator)
-	activity_unlink(path) // the host lock proves a leftover socket is stale
-	listener, ok = activity_listener_open(path)
-	if !ok {
-		return
-	}
-	if posix.chmod(strings.clone_to_cstring(path, context.temp_allocator), {.IRUSR, .IWUSR}) != .OK {
-		activity_listener_close(&listener)
-		return Activity_Listener{fd = -1}, false
-	}
-	return
-}
-
-// Handles every waiting connection, one at a time.
-// shortcut: a connection that stalls holds the loop for HOST_REQUEST_READ_MS, upgrade to per-client buffers if requests ever come from untrusted-speed peers.
-host_serve_requests :: proc(listener: ^Activity_Listener) {
-	for {
-		fd := posix.accept(listener.fd, nil, nil)
-		if fd < 0 {
-			return
-		}
-		host_serve_request_conn(fd)
-		posix.close(fd)
-	}
-}
-
-host_serve_request_conn :: proc(fd: posix.FD) {
-	line, got := host_request_read_line(fd)
-	ack := Host_Request_Ack{ok = false, reason = "no complete request line received"}
-	if got {
-		reason := host_handle_request_line(line)
-		ack = Host_Request_Ack{ok = reason == "", reason = reason}
-	}
-	data, err := json.marshal(ack, {}, context.temp_allocator)
-	if err != nil {
-		return
-	}
-	out := strings.concatenate({string(data), "\n"}, context.temp_allocator)
-	_ = posix.send(fd, raw_data(out), len(out), {})
-}
-
-host_request_read_line :: proc(fd: posix.FD) -> (line: string, ok: bool) {
-	buf := make([dynamic]u8, context.temp_allocator)
-	for len(buf) <= HOST_REQUEST_MAX_BYTES {
-		pfd := posix.pollfd{fd = fd, events = {.IN}}
-		if posix.poll(&pfd, 1, HOST_REQUEST_READ_MS) <= 0 {
-			return
-		}
-		b: u8
-		if posix.recv(fd, rawptr(&b), 1, {}) != 1 {
-			return
-		}
-		if b == '\n' {
-			return string(buf[:]), true
-		}
-		append(&buf, b)
-	}
-	return
 }
 
 Host_Send_Result :: enum {

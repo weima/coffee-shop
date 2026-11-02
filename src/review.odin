@@ -11,6 +11,9 @@ Review_Result :: struct {
 	detail:    string,
 }
 
+// A review's agent gets these tools: scratch files only, never a shell or a write to the source.
+SCRATCH_WRITE_TOOLS :: "read,grep,find,ls,write,codemode"
+
 review_station :: proc(station_path, base_ref, pi: string, max_diff_bytes := 60000, allocator := context.allocator, model := "", thinking := "") -> Review_Result {
 	if !os.exists(fmt.tprintf("%s/standards.md", station_path)) {
 		return review_result(false, "", "standards.md is missing in the Beans repository; no review was performed", allocator)

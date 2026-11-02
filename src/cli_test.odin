@@ -71,37 +71,19 @@ test_parse_reply_arguments :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_parse_host_defaults_to_the_go_implementation :: proc(t: ^testing.T) {
+test_parse_host_has_one_implementation :: proc(t: ^testing.T) {
 	parsed, err := parse_args([]string{"host"})
 
 	testing.expect_value(t, err, "")
 	testing.expect_value(t, parsed.kind, Command_Kind.Host)
-	testing.expect_value(t, parsed.host_impl, Host_Impl.Go)
 }
 
 @(test)
-test_parse_host_impl_odin :: proc(t: ^testing.T) {
-	parsed, err := parse_args([]string{"host", "--impl=odin"})
+test_rejects_a_host_implementation_flag :: proc(t: ^testing.T) {
+	// There is one host; a caller asking for another one must be told, not ignored.
+	_, err := parse_args([]string{"host", "--impl=odin"})
 
-	testing.expect_value(t, err, "")
-	testing.expect_value(t, parsed.kind, Command_Kind.Host)
-	testing.expect_value(t, parsed.host_impl, Host_Impl.Odin)
-}
-
-@(test)
-test_parse_host_impl_go :: proc(t: ^testing.T) {
-	parsed, err := parse_args([]string{"host", "--impl=go"})
-
-	testing.expect_value(t, err, "")
-	testing.expect_value(t, parsed.kind, Command_Kind.Host)
-	testing.expect_value(t, parsed.host_impl, Host_Impl.Go)
-}
-
-@(test)
-test_rejects_unknown_host_impl_naming_the_value :: proc(t: ^testing.T) {
-	_, err := parse_args([]string{"host", "--impl=tmux"})
-
-	testing.expect(t, strings.contains(err, "tmux"))
+	testing.expect(t, err != "", "a retired --impl must be refused")
 }
 
 @(test)

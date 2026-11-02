@@ -259,6 +259,27 @@ station_orderly_shutdown :: proc(relay_ptr: ^^Station_Relay, reader: ^thread.Thr
 	return 0
 }
 
+SHOT_KIND_EXECUTE :: "execute"
+SHOT_KIND_RESEARCH :: "research"
+
+// HOST_TASTE_MAX bounds a Pull's Taste command: one line, run through sh.
+HOST_TASTE_MAX :: 512
+
+valid_shot_kind :: proc(kind: string) -> bool {
+	return kind == SHOT_KIND_EXECUTE || kind == SHOT_KIND_RESEARCH
+}
+
+valid_shot_taste :: proc(taste: string) -> bool {
+	return strings.trim_space(taste) != "" && strings.rune_count(taste) <= HOST_TASTE_MAX && !strings.contains_any(taste, "\r\n")
+}
+
+// Per-Shot Station options: what the host asks the Station to run and keep open.
+// Absent fields keep today's behaviour: not interactive, codemode on.
+Shot_Options :: struct {
+	interactive: bool,
+	codemode:    bool,
+}
+
 run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_kind, taste, message: string, options: Shot_Options, agent: []string) -> int {
 	// The pid keeps two Stations with the same id (across Brews) off the same file.
 	_ = spans_init(fmt.tprintf("%s.%d", station_id, posix.getpid()))

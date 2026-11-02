@@ -10,6 +10,9 @@ ACTIVITY_MAX_ID :: 64
 ACTIVITY_MAX_KIND :: 64
 ACTIVITY_MAX_DESCRIPTION :: 1024
 
+// Concurrent clients one activity listener serves; also the listen backlog.
+SCALE :: 5
+
 Activity_Message :: struct {
 	brew_id: string,
 	shot_id: string,

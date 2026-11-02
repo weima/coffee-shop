@@ -103,13 +103,3 @@ test_spans_station_suffixes_write_distinct_valid_files :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, !os.exists(base)) // only suffixed files; the base is the host's alone
 }
-
-@(test)
-test_host_spall_env_prefix_passes_base_only_when_set :: proc(t: ^testing.T) {
-	off := host_spall_env_prefix("", strings.clone("cmd"))
-	defer delete(off)
-	testing.expect_value(t, off, "cmd")
-	on := host_spall_env_prefix("/tmp/t.spall", strings.clone("cmd"))
-	defer delete(on)
-	testing.expect_value(t, on, "CS_SPALL_FILE='/tmp/t.spall' cmd")
-}

@@ -3,12 +3,6 @@ package main
 import "core:flags"
 import "core:fmt"
 
-// Which host implementation `host` runs. The Go host is a separate binary.
-Host_Impl :: enum {
-	Odin,
-	Go,
-}
-
 Command_Kind :: enum {
 	Help,
 	Server,
@@ -44,7 +38,6 @@ Command :: struct {
 	remote: string,
 	blend: bool,
 	stations: bool,
-	host_impl: Host_Impl,
 	tail: int,
 	dump: bool,
 	print_only: bool,
@@ -80,10 +73,6 @@ Seam_Arguments :: struct {
 Release_Arguments :: struct {
 	repo: string `args:"required" usage:"Beans Git repository path (absolute)."`,
 	dir:  string `args:"required" usage:"Worktree directory to remove (absolute)."`,
-}
-
-Host_Arguments :: struct {
-	impl: string `usage:"Host implementation: odin (default) or go."`,
 }
 
 Log_Arguments :: struct {
@@ -133,6 +122,18 @@ Usage:
   coffee-shop --help
 `
 
+// `host` takes no arguments: there is one implementation, csd. Anything else, including
+// the retired --impl, is named rather than ignored, so a stale script learns why.
+parse_host_args :: proc(args: []string) -> (command: Command, err: string) {
+	for arg in args {
+		if arg == "--help" || arg == "-h" {
+			return Command{kind = .Help}, ""
+		}
+		return Command{kind = .Help}, fmt.tprintf("host takes no arguments, got %q; the Odin host was deleted and csd is the only implementation", arg)
+	}
+	return Command{kind = .Host}, ""
+}
+
 parse_args :: proc(args: []string) -> (command: Command, err: string) {
 	if len(args) == 0 {
 		return Command{kind = .Help}, "missing command"
@@ -145,17 +146,7 @@ parse_args :: proc(args: []string) -> (command: Command, err: string) {
 
 	switch name {
 	case "host":
-		options: Host_Arguments
-		if flags.parse(&options, args[1:], .Unix) != nil {
-			return Command{kind = .Help}, "invalid host arguments"
-		}
-		switch options.impl {
-		case "", "go":
-			return Command{kind = .Host, host_impl = .Go}, ""
-		case "odin":
-			return Command{kind = .Host, host_impl = .Odin}, ""
-		}
-		return Command{kind = .Help}, fmt.tprintf("unknown host implementation %q: use odin or go", options.impl)
+		return parse_host_args(args[1:])
 	case "station":
 		return parse_station_args(args[1:])
 	case "__server":
