@@ -41,6 +41,15 @@ Rachel reads `$WATCHEXEC_COMMON_PATH`, `$WATCHEXEC_WRITTEN_PATH`,
 `$WATCHEXEC_CREATED_PATH`, and `$WATCHEXEC_REMOVED_PATH`, maps changed paths to
 packages, and runs one pass.
 
+`rachel check <project> [path ...]` already provides the one-shot half, and the
+quiet rule becomes `--debounce` instead of a hand-rolled window:
+
+```sh
+watchexec --debounce 500ms --exit-on-eof -- rachel check <project>
+```
+
+Passing the changed paths from `$WATCHEXEC_*` into that command is not wired yet.
+
 This deletes roughly 250 lines: the project scan, the snapshot diff, and the
 poll/debounce loop. It adds roughly 50 lines of environment parsing.
 

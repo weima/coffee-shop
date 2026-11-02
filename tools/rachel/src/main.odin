@@ -8,7 +8,9 @@ import "core:strings"
 import "core:time"
 
 CLI_Options :: struct {
-	root: string,
+	root:       string,
+	paths:      [dynamic]string,
+	check_once: bool,
 }
 
 Rachel_Justfile :: struct {
@@ -27,21 +29,45 @@ test package=".":
 `
 
 parse_cli_args :: proc(args: []string, allocator := context.allocator) -> (options: CLI_Options, err: os.Error) {
-	if len(args) != 2 {
+	rest := args[1:]
+	if len(rest) > 0 && rest[0] == "check" {
+		options.check_once = true
+		rest = rest[1:]
+	}
+	if len(rest) < 1 {
 		return {}, os.Error(.Invalid_Command)
 	}
-	if !os.is_dir(args[1]) {
+	if !os.is_dir(rest[0]) {
 		return {}, os.Error(.Invalid_Dir)
 	}
-	root, clone_err := strings.clone(args[1], allocator)
+	root, clone_err := strings.clone(rest[0], allocator)
 	if clone_err != nil {
 		return {}, os.Error(clone_err)
 	}
-	return CLI_Options{root = root}, nil
+	options.root = root
+	if len(rest) > 1 && !options.check_once {
+		options_destroy(&options, allocator)
+		return {}, os.Error(.Invalid_Command)
+	}
+	for path in rest[1:] {
+		cloned, path_err := strings.clone(path, allocator)
+		if path_err != nil {
+			options_destroy(&options, allocator)
+			return {}, os.Error(path_err)
+		}
+		_, append_err := append(&options.paths, cloned)
+		if append_err != nil {
+			delete(cloned, allocator)
+			options_destroy(&options, allocator)
+			return {}, os.Error(append_err)
+		}
+	}
+	return options, nil
 }
 
 options_destroy :: proc(options: ^CLI_Options, allocator := context.allocator) {
 	delete(options.root, allocator)
+	delete_string_slice(options.paths, allocator)
 	options^ = CLI_Options{}
 }
 
@@ -125,10 +151,14 @@ run_cli :: proc(args: []string) -> int {
 	options, parse_err := parse_cli_args(args)
 	if parse_err != nil {
 		fmt.eprintln("Usage: rachel <odin-project-directory>")
+		fmt.eprintln("       rachel check <odin-project-directory> [path ...]")
 		fmt.eprintfln("[ERROR] %s", os.error_string(parse_err))
 		return 2
 	}
 	defer options_destroy(&options)
+	if options.check_once {
+		return check_once(options)
+	}
 	return watch_project(options.root)
 }
 
@@ -531,4 +561,187 @@ print_command_output :: proc(result: Odin_Command_Result) {
 	if len(result.stderr) > 0 {
 		fmt.eprintln(transmute(string)result.stderr)
 	}
+}
+
+Check_Outcome :: struct {
+	ok:     bool,
+	detail: string, // owned; the first compiler diagnostic, or ""
+}
+
+// check_targets narrows a check to the packages of the given .odin paths.
+// Any other path checks the whole project, so a check is never skipped.
+check_targets :: proc(
+	root: string,
+	paths: []string,
+	allocator := context.allocator,
+) -> (targets: [dynamic]string, whole_project: bool, err: os.Error) {
+	targets = make([dynamic]string, 0, allocator)
+	transferred := false
+	defer if !transferred { delete_string_slice(targets, allocator) }
+	if len(paths) == 0 {
+		transferred = true
+		return targets, true, nil
+	}
+	for path in paths {
+		resolved := path
+		owned: string
+		if !filepath.is_abs(path) {
+			joined, join_err := filepath.join({root, path}, allocator)
+			if join_err != nil {
+				return nil, false, os.Error(join_err)
+			}
+			owned = joined
+			resolved = owned
+		}
+		defer if owned != "" { delete(owned, allocator) }
+		if !strings.has_suffix(resolved, ".odin") {
+			transferred = true
+			return targets, true, nil
+		}
+		package_dir := filepath.dir(resolved)
+		if !strings.has_prefix(package_dir, root) {
+			transferred = true
+			return targets, true, nil
+		}
+		if append_err := append_unique_package(&targets, package_dir, allocator); append_err != nil {
+			return nil, false, os.Error(append_err)
+		}
+	}
+	transferred = true
+	return targets, false, nil
+}
+
+// check_package runs one check and keeps the first diagnostic for the verdict.
+// The full compiler output goes to stderr so a caller's stdout stays one line.
+check_package :: proc(
+	justfile: Rachel_Justfile,
+	root, package_dir: string,
+	allocator := context.allocator,
+) -> (outcome: Check_Outcome, err: os.Error) {
+	result := run_just_recipe(justfile, root, "check", package_dir, allocator)
+	defer odin_command_result_destroy(&result, allocator)
+	if result.process_error != nil {
+		return {}, result.process_error
+	}
+	if odin_command_succeeded(result) {
+		return Check_Outcome{ok = true}, nil
+	}
+	print_command_output(result)
+	detail, found := first_diagnostic(transmute(string)result.stdout, transmute(string)result.stderr, allocator)
+	if !found {
+		detail = fmt.aprintf("just check exited %d", result.state.exit_code, allocator = allocator)
+	}
+	return Check_Outcome{ok = false, detail = detail}, nil
+}
+
+@(private)
+first_diagnostic :: proc(stdout, stderr: string, allocator := context.allocator) -> (line: string, found: bool) {
+	for source in ([]string{stdout, stderr}) {
+		lines, split_err := strings.split_lines(source, allocator)
+		if split_err != nil {
+			continue
+		}
+		defer delete(lines, allocator)
+		for raw in lines {
+			trimmed := strings.trim_space(raw)
+			if !strings.contains(trimmed, "Error:") && !strings.contains(trimmed, "error:") {
+				continue
+			}
+			cloned, clone_err := strings.clone(trimmed, allocator)
+			if clone_err != nil {
+				continue
+			}
+			return cloned, true
+		}
+	}
+	return "", false
+}
+
+check_once :: proc(options: CLI_Options, allocator := context.allocator) -> int {
+	root := options.root
+	current, scan_err := scan_odin_project(root, allocator)
+	if scan_err != nil {
+		fmt.eprintfln("[ERROR] cannot scan %s: %s", root, os.error_string(scan_err))
+		return 1
+	}
+	defer project_snapshot_destroy(&current, allocator)
+	justfile, justfile_err := ensure_project_justfile(root, allocator)
+	if justfile_err != nil {
+		fmt.eprintfln("[ERROR] cannot prepare Rachel's justfile in %s: %s", root, os.error_string(justfile_err))
+		return 1
+	}
+	defer justfile_destroy(&justfile, allocator)
+
+	narrowed, whole_project, target_err := check_targets(root, options.paths[:], allocator)
+	if target_err != nil {
+		fmt.eprintfln("[ERROR] cannot resolve check paths: %s", os.error_string(target_err))
+		return 1
+	}
+	defer delete_string_slice(narrowed, allocator)
+
+	// A custom justfile takes no package argument, so it always checks the project.
+	directories := make([dynamic]string, 0, allocator)
+	defer delete_string_slice(directories, allocator)
+	if justfile.generated {
+		if whole_project {
+			package_dirs, package_err := project_package_dirs(current, allocator)
+			if package_err != nil {
+				fmt.eprintfln("[ERROR] cannot list Odin packages: %s", os.error_string(package_err))
+				return 1
+			}
+			defer delete_string_slice(package_dirs, allocator)
+			for package_dir in package_dirs {
+				if append_err := append_unique_package(&directories, package_dir, allocator); append_err != nil {
+					fmt.eprintfln("[ERROR] cannot collect packages: %s", os.error_string(append_err))
+					return 1
+				}
+			}
+		} else {
+			for package_dir in narrowed {
+				if append_err := append_unique_package(&directories, package_dir, allocator); append_err != nil {
+					fmt.eprintfln("[ERROR] cannot collect packages: %s", os.error_string(append_err))
+					return 1
+				}
+			}
+		}
+	}
+
+	whole_project_call := []string{""}
+	to_check: []string = whole_project_call
+	if justfile.generated {
+		to_check = directories[:]
+	}
+	checked := 0
+	failures := 0
+	first_detail := ""
+	for package_dir in to_check {
+		checked += 1
+		outcome, outcome_err := check_package(justfile, root, package_dir, allocator)
+		if outcome_err != nil {
+			fmt.eprintfln("[ERROR] could not run the check: %s", os.error_string(outcome_err))
+			return 1
+		}
+		if outcome.ok {
+			delete(outcome.detail, allocator)
+			continue
+		}
+		failures += 1
+		if first_detail == "" {
+			first_detail = outcome.detail
+		} else {
+			delete(outcome.detail, allocator)
+		}
+	}
+	defer if first_detail != "" { delete(first_detail, allocator) }
+
+	if failures == 0 {
+		fmt.printfln("rachel: ok (%d checked)", checked)
+		return 0
+	}
+	if first_detail != "" {
+		fmt.printfln("rachel: fail (%d of %d): %s", failures, checked, first_detail)
+	} else {
+		fmt.printfln("rachel: fail (%d of %d)", failures, checked)
+	}
+	return 1
 }
