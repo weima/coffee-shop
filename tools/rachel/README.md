@@ -96,6 +96,12 @@ rachel: error module.odin:12:test_wants_two() expected value() to be 2, got 1
 Exit `0` only when every stage passed, `1` when one failed, `2` on a usage error.
 `--max-errors`, `--from-env` and path arguments behave as they do for `check`.
 
+Stages default to `check,test`. `--stages check,e2e` selects explicitly, and
+`--all` keeps going after a failing stage instead of stopping at it. A stage whose
+recipe does not exist prints `skip (no recipe)` and does not change the exit code.
+Stages after the first run with `--no-deps`, because verify already ran the earlier
+one and a `test: check` dependency would repeat it.
+
 The test stage runs the project's `test` recipe for every package that has a
 `*_test.odin` file, or once for the whole project when the justfile is
 hand-written. Odin's `[ERROR] --- [<timestamp>] [<location>] <message>` lines

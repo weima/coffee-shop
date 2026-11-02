@@ -74,3 +74,67 @@ test_verify_runs_check_then_test_and_stops_on_failure :: proc(t: ^testing.T) {
 	testing.expectf(t, strings.contains(fail_output.stdout, "test_wants_two"), "verdict does not name the failing test: %q", fail_output.stdout)
 	testing.expectf(t, !strings.contains(fail_output.stdout, "rachel: test ok"), "failing run also reported test ok: %q", fail_output.stdout)
 }
+
+VERIFY_JUSTFILE :: `check:
+    odin check -no-entry-point .
+
+test:
+    TZ=UTC odin test .
+
+e2e:
+    sh -c "exit 0"
+`
+
+@(test)
+test_verify_stage_selection_all_and_skip :: proc(t: ^testing.T) {
+	if !require_layout(t) {
+		return
+	}
+	build := build_rachel(t)
+	defer build_destroy(&build)
+	if build.binary == "" {
+		return
+	}
+	project := make_project(t)
+	defer project_destroy(&project)
+	if project == "" {
+		return
+	}
+	justfile_path := fmt.aprintf("%s/justfile", project, allocator = context.allocator)
+	defer delete(justfile_path, context.allocator)
+	module_path := fmt.aprintf("%s/module.odin", project, allocator = context.allocator)
+	defer delete(module_path, context.allocator)
+	write_file(t, justfile_path, VERIFY_JUSTFILE)
+	write_file(t, module_path, FAILING_TEST_MODULE)
+
+	// Selection: only the check stage runs, so the failing test cannot fail verify.
+	check_only, check_err := run_to_output([]string{build.binary, "verify", "--stages", "check", project})
+	defer output_destroy(&check_only)
+	testing.expectf(t, check_err == nil, "verify would not run: %v", check_err)
+	testing.expect_value(t, check_only.exit_code, 0)
+	testing.expectf(t, strings.contains(check_only.stdout, "rachel: check ok"), "missing check stage: %q", check_only.stdout)
+	testing.expectf(t, !strings.contains(check_only.stdout, "rachel: test"), "test stage ran when not selected: %q", check_only.stdout)
+
+	// Default ladder stops at the failing test.
+	stopped, stopped_err := run_to_output([]string{build.binary, "verify", "--stages", "check,test,e2e", project})
+	defer output_destroy(&stopped)
+	testing.expectf(t, stopped_err == nil, "verify would not run: %v", stopped_err)
+	testing.expect_value(t, stopped.exit_code, 1)
+	testing.expectf(t, strings.contains(stopped.stdout, "rachel: test fail"), "missing test failure: %q", stopped.stdout)
+	testing.expectf(t, !strings.contains(stopped.stdout, "rachel: e2e"), "e2e ran after a failed stage: %q", stopped.stdout)
+
+	// --all continues past the failure.
+	every, every_err := run_to_output([]string{build.binary, "verify", "--all", "--stages", "check,test,e2e", project})
+	defer output_destroy(&every)
+	testing.expectf(t, every_err == nil, "verify would not run: %v", every_err)
+	testing.expect_value(t, every.exit_code, 1)
+	testing.expectf(t, strings.contains(every.stdout, "rachel: e2e ok"), "--all did not run e2e: %q", every.stdout)
+
+	// A stage with no recipe is a skip, not a failure.
+	write_file(t, justfile_path, CUSTOM_JUSTFILE)
+	skipped, skipped_err := run_to_output([]string{build.binary, "verify", "--stages", "check,e2e", project})
+	defer output_destroy(&skipped)
+	testing.expectf(t, skipped_err == nil, "verify would not run: %v", skipped_err)
+	testing.expect_value(t, skipped.exit_code, 0)
+	testing.expectf(t, strings.contains(skipped.stdout, "rachel: e2e skip (no recipe)"), "missing skip line: %q", skipped.stdout)
+}

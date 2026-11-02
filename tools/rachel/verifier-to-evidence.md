@@ -125,9 +125,15 @@ Evidence: `odin run src -- verify .` reports `rachel: check ok (1 checked)` and
 `rachel: test fail (1 of 1 tests)` and `rachel: error module.odin:12:test_wants_two()
 expected value() to be 2, got 1`. `just test` (27) and `just e2e` (6) pass.
 
-**2. `e2e` stage and `--stages`.**
+**2. `e2e` stage and `--stages`. — implemented**
 Scope: third stage, `--stages` selection, `--all` to continue past failures.
 Tests: stage selection; a failing `test` does not run `e2e` unless `--all`.
+
+Evidence: `odin run src -- verify .` reports check and test; `--stages check`
+reports only check; `--stages e2e` runs this repository's e2e recipe and reports
+`ok (6 tests)`; a project whose test recipe declares `test: check` no longer runs
+the check twice (`--no-deps`), taking verify from 1.85 s to 1.58 s; a stage with no
+recipe prints `skip (no recipe)` and still exits 0.
 
 **3. Evidence on failure.**
 Scope: run directory, manifest, stdout capture, retention, `rachel evidence last`.
@@ -175,6 +181,26 @@ Done when an agent receives a `rachel_verdict` with no tool call, proven by a te
   default loop, build once per run rather than per stage.
 - **Stale evidence.** A verdict must name the run directory it produced; an agent
   reading an old directory is the failure mode to design out.
+
+## Findings from dogfooding
+
+Recorded as they were found, because each one changed the design.
+
+- **The check stage ran twice.** This repository's justfile declares `test: check`,
+  so `verify` executed the check, then the test recipe ran it again. Stages now run
+  with `just --no-deps`: verify has already run the earlier stage, and a recipe
+  dependency would repeat it. Any project that relies on a dependency's side effects
+  must do that work inside the stage itself.
+- **Two lines per run is the right shape.** No summary line is needed: the exit code
+  answers "did everything pass", and one line per stage answers "where". A third
+  summary line was written and removed.
+- **A missing recipe must be a skip, not a failure.** Most projects have no `e2e`
+  recipe; treating that as a failure would make `--stages check,e2e` useless.
+  A skipped stage does not change the exit code.
+- **Stage names must be validated at parse time.** A typo silently skipping a stage
+  is the worst failure mode for a verifier, because the run looks green.
+- **`just --summary` is a reliable recipe probe.** It prints space-separated recipe
+  names and exits 0, which is cheaper and more stable than matching an error string.
 
 ## Open questions
 

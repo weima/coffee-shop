@@ -751,3 +751,16 @@ test_test_failures_are_capped_but_counted :: proc(t: ^testing.T) {
 	testing.expect_value(t, failures[0], "a.odin:1:t1() first")
 	testing.expect(t, total >= 1)
 }
+
+@(test)
+test_parse_stages_selects_and_rejects :: proc(t: ^testing.T) {
+	options := CLI_Options{}
+	testing.expect(t, parse_stages("check,e2e", &options))
+	testing.expect(t, options.stage_check)
+	testing.expect(t, !options.stage_test)
+	testing.expect(t, options.stage_e2e)
+
+	testing.expect(t, !parse_stages("check,nope", &options))
+	testing.expect(t, !parse_stages("", &options))
+	testing.expect(t, !options.stage_check)
+}
