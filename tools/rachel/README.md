@@ -41,11 +41,20 @@ rachel: error module.odin(10:2) Error: Expected 1 return values, got 0
 rachel: error util.odin(9:1) Error: Other failure
 ```
 
-At most 10 errors are listed, followed by `rachel: error ... (N more)` when more
-were found. Distinctness is by message, so a repeated diagnostic does not repeat.
-The intent is that one read is enough to start fixing: reporting only the first
-error forced the reader to run the compiler again. The full compiler output,
-including snippets, still goes to stderr for a human in a terminal.
+`--max-errors N` sets the budget, because the two callers want opposite things.
+The default is 10: enough for an agent to fix several problems from one read
+without running the compiler again. A human at a terminal usually wants the first
+problem and knows the rest are there, so they pass `--max-errors 1`:
+
+```
+rachel: fail (1 of 1, 3 errors)
+rachel: error module.odin(4:2) Error: Expected 1 return values, got 0
+rachel: error ... (2 more)
+```
+
+`--max-errors 0` lists every distinct error. Distinctness is by message, so a
+repeated diagnostic does not repeat. The full compiler output, including
+snippets, always goes to stderr; the budget only shapes the verdict lines.
 
 A `path` narrows the check to the package of that `.odin` file. Any other path,
 an empty list, or a path outside the project checks the whole project, so a check
