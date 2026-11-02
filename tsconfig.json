@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": [
+      "node"
+    ],
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "guard/**/*.ts"
+  ]
+}

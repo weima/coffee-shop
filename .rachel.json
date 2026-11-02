@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "stages": {
+    "check": {
+      "command": [
+        "sh",
+        "-c",
+        "odin check src && (cd go && go vet ./...) && ./node_modules/.bin/tsc --noEmit -p tsconfig.json"
+      ],
+      "filters": [
+        "*.odin",
+        "*.go",
+        "*.ts",
+        "*.json",
+        "justfile"
+      ]
+    },
+    "test": {
+      "command": [
+        "sh",
+        "-c",
+        "odin test src && bun run guard/selftest.ts"
+      ],
+      "filters": [
+        "*.odin",
+        "*.ts"
+      ]
+    },
+    "e2e": {
+      "command": [
+        "sh",
+        "-c",
+        "odin test e2e && (cd go && go test ./...)"
+      ],
+      "filters": [
+        "*.odin",
+        "*.go"
+      ]
+    }
+  }
+}

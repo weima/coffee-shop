@@ -191,6 +191,23 @@ Done when an agent receives a `rachel_verdict` with no tool call, proven by a te
 - **Stale evidence.** A verdict must name the run directory it produced; an agent
   reading an old directory is the failure mode to design out.
 
+## Project commands
+
+Rachel's own watcher and diagnostics were Odin-shaped, which does not serve "most
+projects". The fix is not more language profiles: it is `.rachel.json`, where the
+project names its stages, and watchexec as the only trigger.
+
+- `check`, `test`, `e2e` each take `command` (argv), `filters`, `working_dir`.
+- A configured stage bypasses the justfile path entirely, including starter
+  justfiles and package narrowing.
+- `rachel watch` is a thin launcher: `watchexec -q -d 500ms -w <dir> -f ... -- rachel
+  verify --from-env <dir>`.
+- Everything downstream is unchanged: verdict lines, stage tags, evidence,
+  `.rachel/last.json`, and the guard's gates.
+
+This repository is the worked example: Odin (`odin check`, `odin test`), Go
+(`go vet`, `go test`) and TypeScript (`tsc --noEmit`) in three stages.
+
 ## Delivery and token shape
 
 The guard (outside this plan's slices) pushes `.rachel/last.json` into an agent's

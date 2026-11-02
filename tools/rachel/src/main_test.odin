@@ -911,3 +911,54 @@ test_tool_on_path_finds_odin_and_rejects_a_missing_tool :: proc(t: ^testing.T) {
 	testing.expect(t, tool_on_path("odin"))
 	testing.expect(t, !tool_on_path("rachel-definitely-not-a-tool"))
 }
+
+@(test)
+test_config_reads_stages_and_collects_watch_filters :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp("", "rachel-config-*", context.allocator)
+	testing.expect(t, make_err == nil)
+	defer {
+		_ = os.remove_all(root)
+		delete(root)
+	}
+	config_path := fmt.tprintf("%s/%s", root, RACHEL_CONFIG_FILE)
+	_, missing_ok := load_config(root)
+	testing.expect(t, !missing_ok)
+
+	_ = os.write_entire_file_from_string(
+		config_path,
+		`{"version":1,"stages":{"check":{"command":["tsc","--noEmit"],"filters":["*.ts"]},"test":{"command":["bun","test"],"filters":["*.tsx","*.ts"]}}}`,
+		os.Permissions{.Read_User, .Write_User},
+	)
+	defer free_all(context.temp_allocator)
+	config, ok := load_config(root)
+	testing.expect(t, ok)
+	check_entry, has_check := config.stages["check"]
+	testing.expect(t, has_check)
+	testing.expect_value(t, len(check_entry.command), 2)
+	testing.expect_value(t, check_entry.command[0], "tsc")
+
+	filters := stage_filters(config, context.allocator)
+	defer delete_string_slice(filters, context.allocator)
+	testing.expect_value(t, len(filters), 2)
+
+	_ = os.write_entire_file_from_string(config_path, "{ not json", os.Permissions{.Read_User, .Write_User})
+	_, bad_ok := load_config(root)
+	testing.expect(t, !bad_ok)
+}
+
+@(test)
+test_watch_argv_invokes_watchexec_around_verify :: proc(t: ^testing.T) {
+	config := Rachel_Config{version = 1}
+	config.stages = make(map[string]Stage_Config)
+	defer delete(config.stages)
+	config.stages["check"] = Stage_Config{command = []string{"tsc", "--noEmit"}, filters = []string{"*.ts"}}
+	config.stages["test"] = Stage_Config{command = []string{"bun", "test"}, filters = []string{"*.ts"}}
+	argv := watch_argv("/usr/local/bin/rachel", "/project", config, "500ms", context.allocator)
+	defer delete_string_slice(argv, context.allocator)
+	joined, join_err := strings.join(argv[:], " ", context.allocator)
+	testing.expect(t, join_err == nil)
+	defer delete(joined)
+	testing.expect(t, strings.has_prefix(joined, "watchexec -q -d 500ms -w /project"))
+	testing.expect(t, strings.contains(joined, "-f *.ts"))
+	testing.expect(t, strings.has_suffix(joined, "-- /usr/local/bin/rachel verify --from-env /project"))
+}
