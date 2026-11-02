@@ -7,16 +7,15 @@ import "core:sys/posix"
 import "core:testing"
 import "core:time"
 
-// End-to-end tests drive the real binary as separate processes, with fake
-// `herdr` and `pi` scripts standing in for the external tools. They need Git,
-// a POSIX shell and the Odin compiler, but no network, AI service or Herdr.
+// End-to-end tests drive the real binary as separate processes. They need Git,
+// a POSIX shell and the Odin compiler, but no network or AI service.
 
 E2E :: struct {
 	root, repo, state, binary: string,
 	env: []string,
 }
 
-e2e_setup :: proc(t: ^testing.T, _pi_sleep: string) -> E2E {
+e2e_setup :: proc(t: ^testing.T) -> E2E {
 	root := make_fixture_root(t)
 	repo := fmt.tprintf("%s/repo", root)
 	make_fixture_repo(t, repo)
@@ -80,7 +79,7 @@ e2e_exec :: proc(command: []string, env: []string) -> (code: int, stdout, stderr
 // the other exits, and the winner stays until it is idle.
 @(test)
 test_e2e_two_simultaneous_server_starts_leave_one_server :: proc(t: ^testing.T) {
-	e2e := e2e_setup(t, "0")
+	e2e := e2e_setup(t)
 	defer remove_fixture_root(e2e.root)
 
 	devnull, _ := os.open("/dev/null", {.Write})
@@ -121,7 +120,7 @@ test_e2e_two_simultaneous_server_starts_leave_one_server :: proc(t: ^testing.T) 
 // the next command starts a new one.
 @(test)
 test_e2e_server_exits_when_its_repository_is_idle :: proc(t: ^testing.T) {
-	e2e := e2e_setup(t, "0")
+	e2e := e2e_setup(t)
 	defer remove_fixture_root(e2e.root)
 
 	devnull, _ := os.open("/dev/null", {.Write})

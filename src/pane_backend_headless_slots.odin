@@ -3,11 +3,8 @@ package main
 import "core:fmt"
 import "core:strings"
 
-// Concurrency for the headless backend. The pane pool is not used (nothing is kept,
-// cleared or reused); what must survive is the limit: at most `capacity` Stations per
-// host, and the same machine-wide limit as the pool (machine_limit_try_acquire), so
-// headless and Herdr hosts share one budget. A slot is held from acquire until the Shot's
-// terminal report (headless_slot_release), as a pool pane's slot was.
+// Concurrency for headless Stations. Each host and the whole machine share one limit;
+// a slot is held from acquire until the Shot's terminal report.
 
 Headless_Slot :: struct {
 	key:  string,

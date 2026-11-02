@@ -5,6 +5,7 @@ import "core:os"
 import "core:strings"
 import "core:testing"
 import "core:thread"
+import "core:time"
 
 Request_Probe :: struct {
 	dir, line: string,
@@ -33,7 +34,7 @@ request_through_socket :: proc(listener: ^Activity_Listener, dir, line: string) 
 
 @(test)
 test_request_socket_routes_replies_and_rejects_the_rest :: proc(t: ^testing.T) {
-	// host_sessions and host_herdr_exe are process-global; the delivered test below
+	// host_sessions and host_history_root are process-global; the delivered test below
 	// changes them, so these two run one at a time.
 	host_pool_test_lock()
 	defer host_pool_test_unlock()
@@ -107,16 +108,7 @@ test_reply_exit_codes_without_a_deliverable_host :: proc(t: ^testing.T) {
 	testing.expect_value(t, probe.result, Host_Send_Result.Refused)
 }
 
-// A herdr that only records what it was asked to run: the point is that the reply
-// reached the Station's surface, not that herdr did anything with it.
-REPLY_HERDR :: `#!/bin/sh
-echo "$*" >> "$FAKE_HERDR_DIR/calls.log"
-echo '{}'
-`
-
-// The gate for the human channel without a pane: a reply sent by a separate CLI
-// process is delivered to the Station and recorded, with no pane and no Herdr
-// server involved beyond the fake this test puts in host_herdr_exe.
+// A reply sent through the request socket reaches the live headless Station stdin.
 @(test)
 test_request_socket_delivers_a_reply_to_its_station :: proc(t: ^testing.T) {
 	host_pool_test_lock()
@@ -131,23 +123,37 @@ test_request_socket_delivers_a_reply_to_its_station :: proc(t: ^testing.T) {
 	testing.expect(t, ok)
 	defer activity_listener_close(&listener)
 
-	herdr := fmt.tprintf("%s/herdr", root)
-	testing.expect_value(t, os.write_entire_file(herdr, REPLY_HERDR, os.Permissions{.Read_User, .Write_User, .Execute_User}), os.Error(nil))
-	_ = os.set_env("FAKE_HERDR_DIR", dir)
-	old_herdr := host_herdr_exe
+	old_state, state_set := os.lookup_env("CS_STATE_DIR", context.allocator)
+	_ = os.set_env("CS_STATE_DIR", root)
 	old_history := host_history_root
-	host_herdr_exe = herdr
-	host_history_root = dir
+	host_history_root = strings.clone(dir, context.allocator)
 	defer {
-		host_herdr_exe = old_herdr
+		if state_set {
+			_ = os.set_env("CS_STATE_DIR", old_state)
+		} else {
+			_ = os.unset_env("CS_STATE_DIR")
+		}
+		delete(old_state)
+		delete(host_history_root)
 		host_history_root = old_history
 	}
-	append(&host_sessions, Host_Session{request_id = strings.clone("req-1"), shot_id = strings.clone("shot-a"), pane_id = strings.clone("p0")})
+
+	surface := headless_session_surface(root)
+	opened, open_err := surface.ops.tab_create(surface, "req-1", "shot-a", root, context.temp_allocator)
+	testing.expect_value(t, open_err, "")
+	marker := fmt.tprintf("%s/reply.txt", root)
+	quoted_marker := shell_quote(marker)
+	command := fmt.aprintf("IFS= read -r line; printf 'got:%%s' \"$line\" > %s", quoted_marker)
+	defer delete(quoted_marker)
+	defer delete(command)
+	testing.expect_value(t, surface.ops.pane_run(surface, opened.pane_id, command), "")
+	append(&host_sessions, Host_Session{request_id = strings.clone("req-1"), shot_id = strings.clone("shot-a"), session_id = strings.clone(opened.pane_id)})
 	defer {
+		_ = headless_close(opened.pane_id)
 		for session in host_sessions {
 			delete(session.request_id)
 			delete(session.shot_id)
-			delete(session.pane_id)
+			delete(session.session_id)
 		}
 		delete(host_sessions)
 		host_sessions = nil
@@ -158,9 +164,17 @@ test_request_socket_delivers_a_reply_to_its_station :: proc(t: ^testing.T) {
 	testing.expect_value(t, result, Host_Send_Result.Delivered)
 	testing.expect_value(t, reason, "")
 
-	calls, calls_err := os.read_entire_file(fmt.tprintf("%s/calls.log", dir), context.temp_allocator)
-	testing.expect_value(t, calls_err, os.Error(nil))
-	testing.expect_value(t, string(calls), "pane run p0 hello\n")
+	reply_data: []byte
+	reply_err: os.Error
+	for _ in 0..<100 {
+		reply_data, reply_err = os.read_entire_file(marker, context.temp_allocator)
+		if reply_err == nil {
+			break
+		}
+		time.sleep(10 * time.Millisecond)
+	}
+	testing.expect_value(t, reply_err, os.Error(nil))
+	testing.expect_value(t, string(reply_data), "got:hello")
 
 	history, history_err := os.read_entire_file(host_history_path("req-1", context.temp_allocator), context.temp_allocator)
 	testing.expect_value(t, history_err, os.Error(nil))

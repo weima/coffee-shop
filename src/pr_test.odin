@@ -8,8 +8,8 @@ import "core:testing"
 import "core:time"
 
 // The PR and cleanup operations run against a real temporary Git repository with
-// a dev worktree and a Station worktree. gh, Herdr and process enumeration are
-// substituted, so no GitHub remote, Herdr server, or live Station is needed.
+// a dev worktree and a Station worktree. gh and process enumeration are
+// substituted, so no GitHub remote or live Station is needed.
 
 Pr_Fixture :: struct {
 	root:       string,
@@ -24,16 +24,9 @@ Pr_Fixture :: struct {
 
 Pr_Fake_Calls :: struct {
 	gh:    [dynamic]string,
-	herdr: [dynamic]string,
-}
-
-Pr_Fake_Herdr :: struct {
-	workspace_label:  string,
-	tabs_after_close: int,
 }
 
 pr_fake_calls: Pr_Fake_Calls
-pr_fake_herdr: Pr_Fake_Herdr
 pr_fake_processes: [dynamic]Process_Command
 // The test runner runs tests on several threads, and these fakes are shared, so
 // one test holds the lock for its whole duration.
@@ -127,37 +120,6 @@ fake_pr_gh :: proc(directory: string, args: []string) -> (out, detail: string, o
 	return "https://example.test/pr/1", "", true
 }
 
-fake_pr_herdr :: proc(args: []string) -> (out, detail: string, ok: bool) {
-	line := strings.join(args, " ", context.temp_allocator)
-	append(&pr_fake_calls.herdr, strings.clone(line))
-	if len(args) >= 2 {
-		switch args[0] {
-		case "workspace":
-			switch args[1] {
-			case "get":
-				return fmt.tprintf(`{{"result":{{"workspace":{{"workspace_id":"w1","label":"%s"}}}}}}`, pr_fake_herdr.workspace_label), "", true
-			case "close":
-				return "{}", "", true
-			}
-		case "pane":
-			if args[1] == "get" {
-				return `{"result":{"pane":{"tab_id":"w1:t1","workspace_id":"w1"}}}`, "", true
-			}
-		case "tab":
-			switch args[1] {
-			case "close":
-				return "{}", "", true
-			case "list":
-				if pr_fake_herdr.tabs_after_close == 0 {
-					return `{"result":{"tabs":[]}}`, "", true
-				}
-				return `{"result":{"tabs":[{"tab_id":"w1:t2"}]}}`, "", true
-			}
-		}
-	}
-	return "{}", "", true
-}
-
 fake_pr_processes :: proc() -> []Process_Command {
 	return pr_fake_processes[:]
 }
@@ -165,7 +127,6 @@ fake_pr_processes :: proc() -> []Process_Command {
 pr_test_backend :: proc() -> Pr_Backend {
 	backend := default_pr_backend()
 	backend.gh = fake_pr_gh
-	backend.herdr = fake_pr_herdr
 	backend.processes = fake_pr_processes
 	return backend
 }
@@ -174,8 +135,6 @@ pr_test_begin :: proc() {
 	sync.mutex_lock(&pr_test_lock)
 	pr_fake_calls = {}
 	pr_fake_calls.gh = make([dynamic]string, 0, 4)
-	pr_fake_calls.herdr = make([dynamic]string, 0, 8)
-	pr_fake_herdr = {workspace_label = "feat-x", tabs_after_close = 0}
 	pr_fake_processes = make([dynamic]Process_Command, 0, 2)
 }
 
@@ -184,10 +143,6 @@ pr_test_end :: proc() {
 		delete(line)
 	}
 	delete(pr_fake_calls.gh)
-	for line in pr_fake_calls.herdr {
-		delete(line)
-	}
-	delete(pr_fake_calls.herdr)
 	delete(pr_fake_processes)
 	sync.mutex_unlock(&pr_test_lock)
 }
@@ -252,17 +207,16 @@ test_pr_fast_forwards_pushes_and_opens_the_pr :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_pr_discovers_the_branch_from_the_run_workspace :: proc(t: ^testing.T) {
+test_pr_requires_explicit_branch_without_workspace_discovery :: proc(t: ^testing.T) {
 	pr_test_begin()
 	defer pr_test_end()
 	fx := make_pr_fixture(t, "run-1", "shot-a", "feat-x")
 	defer destroy_pr_fixture(&fx)
 
-	output, err := pr_operation(fx.state_root, "run-1", "shot-a", "", "", "", false, pr_test_backend())
-	testing.expect_value(t, err, "")
-	testing.expect(t, strings.contains(output, "https://example.test/pr/1"), output)
-	testing.expect_value(t, pr_test_rev(t, fx.dev, "HEAD"), fx.pull)
-	testing.expect(t, pr_test_calls_contain(pr_fake_calls.herdr[:], "workspace get w1"), fmt.tprintf("%v", pr_fake_calls.herdr))
+	_, err := pr_operation(fx.state_root, "run-1", "shot-a", "", "", "", false, pr_test_backend())
+	testing.expect_value(t, err, "branch must be explicit; pass --branch")
+	testing.expect_value(t, pr_test_rev(t, fx.dev, "HEAD"), fx.base)
+	testing.expect_value(t, len(pr_fake_calls.gh), 0)
 }
 
 @(test)
@@ -405,13 +359,12 @@ test_cleanup_refuses_while_a_station_is_working :: proc(t: ^testing.T) {
 	defer destroy_pr_fixture(&fx)
 	append(&pr_fake_processes, Process_Command{pid = 4242, args = []string{"temp-binary", "station", "--brew", "run-1", "--station", "shot-a"}})
 
-	_, err := cleanup_operation(fx.state_root, "run-1", "", "", pr_test_backend())
+	_, err := cleanup_operation(fx.state_root, "run-1", "", pr_test_backend())
 	testing.expect(t, strings.contains(err, "Refusing to clean run run-1"), err)
 	testing.expect(t, strings.contains(err, "shot-a"), err)
 	testing.expect(t, strings.contains(err, "4242"), err)
 	testing.expect(t, os.is_directory(fx.station), "the Station worktree must be kept")
 	testing.expect(t, os.is_directory(fx.dev), "the base worktree must be kept")
-	testing.expect_value(t, len(pr_fake_calls.herdr), 0)
 }
 
 @(test)
@@ -426,28 +379,13 @@ test_cleanup_removes_the_run_and_keeps_the_rest :: proc(t: ^testing.T) {
 	testing.expect(t, ok)
 	testing.expect_value(t, write_pr_record(fx.run_dir, Pr_Record{shot_id = "shot-a", branch = "feat-x", worktree = fx.dev, commit = fx.pull}), "")
 
-	output, err := cleanup_operation(fx.state_root, "run-1", "", "", pr_test_backend())
+	output, err := cleanup_operation(fx.state_root, "run-1", "", pr_test_backend())
 	testing.expect_value(t, err, "")
 	testing.expect(t, strings.contains(output, "Cleaned run run-1"), output)
 	testing.expect(t, !os.exists(fx.station), "the Station worktree must be removed")
 	testing.expect(t, !os.exists(fx.dev), "the base worktree must be removed")
 	testing.expect(t, os.is_directory(other), "an unrelated worktree must be kept")
 	testing.expect(t, os.exists(fmt.tprintf("%s/%s", fx.run_dir, HOST_HISTORY_FILE_NAME)), "run state must be kept")
-	testing.expect(t, pr_test_calls_contain(pr_fake_calls.herdr[:], "tab close w1:t1"), fmt.tprintf("%v", pr_fake_calls.herdr))
-	testing.expect(t, pr_test_calls_contain(pr_fake_calls.herdr[:], "workspace close w1"), fmt.tprintf("%v", pr_fake_calls.herdr))
-}
-
-@(test)
-test_cleanup_keeps_a_shared_workspace :: proc(t: ^testing.T) {
-	pr_test_begin()
-	defer pr_test_end()
-	fx := make_pr_fixture(t, "run-1", "shot-a", "feat-x")
-	defer destroy_pr_fixture(&fx)
-	pr_fake_herdr.tabs_after_close = 1
-
-	_, err := cleanup_operation(fx.state_root, "run-1", "", "", pr_test_backend())
-	testing.expect_value(t, err, "")
-	testing.expect(t, !pr_test_calls_contain(pr_fake_calls.herdr[:], "workspace close w1"), fmt.tprintf("%v", pr_fake_calls.herdr))
 }
 
 // ---------------------------------------------------------------------------

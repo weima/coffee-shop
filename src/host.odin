@@ -29,7 +29,6 @@ HOST_LOOP_POLL_MS :: 20
 
 // Set once by run_host and read by dispatch when it launches Station panes.
 host_report_socket: string
-host_herdr_exe := "herdr" // tests point this at a fake
 host_station_executable: string
 host_extension_path: string
 host_oreo_extension_path: string
@@ -38,12 +37,11 @@ host_history_root: string
 
 HOST_LOCK_FILE_NAME :: "host.lock"
 
-// Pane of each started Station, so a reply can be typed into the right pane and a
-// cancel can find the Station's process at cancel time.
+// Headless session key for each Station, used to deliver replies and find its process.
 Host_Session :: struct {
 	request_id: string,
 	shot_id:    string,
-	pane_id:    string,
+	session_id: string,
 	exited:     bool, // agent_exited was reported; the Station may still run its Taste
 	station:    Process_Identity, // reported by the Station itself; zero until it does
 	agent_pid:  int,
@@ -59,7 +57,7 @@ Host_Byte_Count :: union {
 }
 
 // One line on stdout per event. Encoded with json.marshal so that free-form
-// reasons from Git or Herdr cannot break the framing.
+// reasons from Git or a child process cannot break the framing.
 Host_Event :: struct {
 	type:        string `json:"type"`,
 	request_id:  string `json:"request_id"`,
@@ -89,10 +87,6 @@ run_host :: proc() -> int {
 	state_root, state_err := default_state_root(context.temp_allocator)
 	if state_err != "" {
 		host_write_line(fmt.tprintf(`{{"type":"error","reason":"%s"}}`, state_err))
-		return 1
-	}
-	if _, backend_err := pane_backend_from_env(); backend_err != "" {
-		host_emit(Host_Event{type = "error", reason = backend_err})
 		return 1
 	}
 	prepared, prepare_err := host_prepare_environment(state_root, context.allocator)
@@ -148,24 +142,14 @@ run_host :: proc() -> int {
 	host_write_line(fmt.tprintf(`{{"type":"ready","protocol":%d}}`, HOST_PROTOCOL))
 	span_end() // host start ends once the host is ready
 	span_started = false
-	// Initialize dispatch pool and recover from previous crash.
-	host_dispatch_init(host_pane_pool.workspace_id)
-	recovery_ok, _ := host_pool_recover(state_root, "herdr")
-	if !recovery_ok {
-		when ODIN_DEBUG {
-			log.warnf("run_host: pool recovery incomplete")
-		}
-	}
+	// Initialize headless slots and the dispatch queue.
+	host_dispatch_init()
 	// Initialize progress supervision ledger and rebuild from persisted history.
 	if !progress_supervision_init(host_history_root) {
 		// Ledger init failure is not fatal; continue with empty ledger.
 	}
 	host_recover_spool()
-	defer {
-		// Persist pool state and close all host-owned panes on exit.
-		_, _ = host_pool_persist(state_root)
-		_ = host_dispatch_cleanup("herdr")
-	}
+	defer host_dispatch_cleanup()
 	host_loop(&listener, &requests)
 	return 0
 }
@@ -277,17 +261,8 @@ host_relay_message :: proc(message: Activity_Message) {
 		_ = os.remove(spool_path)
 	}
 
-	// Handle pool reclamation for different report kinds.
+	// Release headless slots on terminal reports or process exit.
 	switch message.kind {
-	case "needs_input":
-		// Pin pane until reply or cancel.
-		for session in host_sessions {
-			if session.request_id == message.brew_id && session.shot_id == message.shot_id {
-				host_pane_pin(session.pane_id)
-				break
-			}
-		}
-
 	case "process_gone":
 		host_release_session(message.brew_id, message.shot_id, message.kind)
 
@@ -299,36 +274,6 @@ host_relay_message :: proc(message: Activity_Message) {
 				host_sessions[i].exited = true
 				break
 			}
-		}
-
-	case "reply_received":
-		// User replied to needs_input. Unpin and mark reclaimable.
-		pane_id := ""
-		for i in 0..<len(host_sessions) {
-			if host_sessions[i].request_id == message.brew_id && host_sessions[i].shot_id == message.shot_id {
-				pane_id = host_sessions[i].pane_id
-				break
-			}
-		}
-
-		if pane_id != "" {
-			host_pane_unpin(pane_id)
-			host_pane_mark_terminal(pane_id)
-		}
-
-	case "cancelled":
-		// User or system cancelled needs_input. Unpin and mark reclaimable.
-		pane_id := ""
-		for i in 0..<len(host_sessions) {
-			if host_sessions[i].request_id == message.brew_id && host_sessions[i].shot_id == message.shot_id {
-				pane_id = host_sessions[i].pane_id
-				break
-			}
-		}
-
-		if pane_id != "" {
-			host_pane_unpin(pane_id)
-			host_pane_mark_terminal(pane_id)
 		}
 
 	case "pulled", "taste_failed", "incomplete", "session_failed":
@@ -378,7 +323,7 @@ host_sample_sessions_throttled :: proc() {
 	}
 }
 
-// Finds the Station's pid from its own arguments (no herdr call, no child process) and folds
+// Finds the Station's pid from its own arguments (no separate process launch) and folds
 // one reading into <state>/host/<request>/workers/<shot>.resource. Never waits on anything.
 // A Station that cannot be found adds nothing: unknown stays unknown.
 host_sample_session :: proc(session: Host_Session) {
@@ -392,10 +337,10 @@ host_sample_session :: proc(session: Host_Session) {
 // Ends a Shot's session: frees its pane and machine slot, then starts queued Shots.
 // Used by a terminal report, process_gone, and a Station found gone with no report.
 host_release_session :: proc(request_id, shot_id, kind: string) {
-	pane_id := ""
+	session_id := ""
 	for session in host_sessions {
 		if session.request_id == request_id && session.shot_id == shot_id {
-			host_sample_session(session) // last look before the pane is reclaimed
+			host_sample_session(session) // last look before the session is closed
 			break
 		}
 	}
@@ -403,33 +348,20 @@ host_release_session :: proc(request_id, shot_id, kind: string) {
 		if host_sessions[i].request_id == request_id && host_sessions[i].shot_id == shot_id {
 			delete(host_sessions[i].request_id)
 			delete(host_sessions[i].shot_id)
-			pane_id = strings.clone(host_sessions[i].pane_id, context.temp_allocator)
-			delete(host_sessions[i].pane_id)
+			session_id = strings.clone(host_sessions[i].session_id, context.temp_allocator)
+			delete(host_sessions[i].session_id)
 			unordered_remove(&host_sessions, i)
 			break
 		}
 	}
-	if pane_id == "" {
+	if session_id == "" {
 		return
 	}
 	progress_supervision_finish(request_id, shot_id)
-	host_pane_mark_terminal(pane_id)
 	state_root, _ := default_state_root(context.temp_allocator)
 	_, _ = host_report_make_durable(state_root, request_id, shot_id, kind)
-	if pane_backend_is_headless() {
-		// The Station is done: reap it and free its session. No clearing, no reuse.
-		surface := session_surface_open(host_herdr_exe)
-		_ = surface.ops.tab_close(surface, pane_id)
-	} else if !pane_prepare_for_reuse(session_surface_open(host_herdr_exe), host_pane_pool.workspace_id, pane_id) {
-		when ODIN_DEBUG {
-			log.warnf("host_release_session: pane clear failed for %s", pane_id)
-		}
-	}
-	if !host_pane_reclaim(pane_id) {
-		when ODIN_DEBUG {
-			log.warnf("host_release_session: pane reclaim failed for %s", pane_id)
-		}
-	}
+	_ = headless_close(session_id)
+	_ = headless_slot_release(session_id)
 	dequeued := host_dispatch_dequeue_shots()
 	defer delete(dequeued)
 	host_retry_dequeued_shots(dequeued[:], state_root)
@@ -444,7 +376,7 @@ host_release_session :: proc(request_id, shot_id, kind: string) {
 host_reap_gone_sessions :: proc(commands: []Process_Command) -> int {
 	gone := make([dynamic][2]string, 0, 4, context.temp_allocator)
 	for session in host_sessions {
-		if !session.exited || host_pane_is_pinned(session.pane_id) {
+		if !session.exited {
 			continue
 		}
 		if host_station_is_live(commands, session.request_id, session.shot_id) {
@@ -466,11 +398,6 @@ host_station_is_live :: proc(commands: []Process_Command, request_id, shot_id: s
 		}
 	}
 	return false
-}
-
-host_pane_is_pinned :: proc(pane_id: string) -> bool {
-	idx, found := pane_pool_find(&host_pane_pool, pane_id)
-	return found && host_pane_pool.panes[idx].state == .WAITING_FOR_HUMAN
 }
 
 host_any_session_exited :: proc() -> bool {
@@ -718,11 +645,9 @@ host_handle_line :: proc(line: string) -> bool {
 	return false
 }
 
-// Validates the dispatch, then starts one interactive Pi session per Shot: a
-// Station (Git worktree) and a Herdr tab, with the Shot's prompt read from a
-// file by the Station. Each Shot ends in session_started or session_failed.
-// shortcut: the host blocks while sessions start; phase D relays reports but
-// replies are not yet routed back from the host.
+// Validates the dispatch, then starts one Station process per Shot in an isolated
+// Git worktree. Each Shot ends in session_started or session_failed.
+// shortcut: the host blocks while sessions start.
 host_dispatch :: proc(root: json.Object, request_id: string) {
 	span_begin("dispatch request")
 	defer span_end()
@@ -922,7 +847,7 @@ host_shot_options :: proc(shot: json.Object) -> (options: Shot_Options, reason: 
 }
 
 // A Shot with a taste is a Pull: it needs a commit message, and only an execute Shot
-// may commit. Both are checked here, before any worktree or Herdr call.
+// may commit. Both are checked here, before any worktree or Station starts.
 host_shot_taste :: proc(shot: json.Object, kind: string) -> (taste, message, reason: string) {
 	taste_value, taste_found := shot["taste"]
 	message_value, message_found := shot["message"]
@@ -1013,7 +938,6 @@ host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models
 		return
 	}
 
-	herdr := "herdr"
 	for id, i in ids {
 		prompt_name := fmt.aprintf("%s.md", id)
 		defer delete(prompt_name)
@@ -1033,38 +957,34 @@ host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models
 			continue
 		}
 
-		// Try to acquire a pane from the pool (may queue if at capacity).
-		pool_pane_id, queued, acquire_ok := host_dispatch_acquire(request_id, id)
+		// Acquire a headless session slot or queue until one is free.
+		slot_id, queued, acquire_ok := host_dispatch_acquire(request_id, id)
 		if !acquire_ok {
 			host_session_failed(request_id, id, "dispatch pool error")
 			continue
 		}
 		if queued {
-			// Pane not available; Shot is queued for retry when pane reclaims.
+			// No slot is available; queue the Shot for retry when one is released.
 			// Store full metadata now for auto-retry.
 			host_dispatch_queue_store_metadata(request_id, id, repo, prompts[i], models[i], providers[i], thinkings[i], kinds[i], runtimes[i], tastes[i], messages[i], station)
 			host_queued_options_remember(request_id, id, options[i])
 			host_emit(Host_Event{type = "dispatch_queued", request_id = request_id, shot_id = id})
 			continue
 		}
+		defer delete(slot_id)
 
-		// Acquired pane; proceed with Station launch.
-		pane_id, pane_err := host_open_shot_pane(herdr, state_root, repo, request_id, id, station)
+		// Acquired slot; create a headless Station session.
+		pane_id, pane_err := host_open_shot_pane(state_root, request_id, id, station)
 		if pane_err != "" {
-			host_pane_mark_terminal(pool_pane_id)
-			_ = host_pane_reclaim(pool_pane_id)
-			host_session_failed(request_id, id, pane_err)
-			continue
-		}
-		if pane_err != "" {
+			_ = headless_slot_release(slot_id)
 			host_session_failed(request_id, id, pane_err)
 			continue
 		}
 
 		launch, launch_err := child_launch_argv(host_station_executable)
 		if launch_err != "" {
-			host_pane_mark_terminal(pool_pane_id)
-			_ = host_pane_reclaim(pool_pane_id)
+			_ = headless_close(pane_id)
+			_ = headless_slot_release(slot_id)
 			host_session_failed(request_id, id, launch_err)
 			continue
 		}
@@ -1073,25 +993,23 @@ host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models
 			extension = host_oreo_extension_path
 		}
 		launcher := child_shell_prefix(launch)
-		command := host_spall_env_prefix(os.get_env(SPANS_ENV, context.temp_allocator), host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, id, request_id, prompt_path, models[i], providers[i], thinkings[i], kinds[i], runtimes[i], tastes[i], messages[i], options[i]))
-		if !host_station_command_is_ascii(command) {
-			delete(command)
-			host_pane_mark_terminal(pool_pane_id)
-			_ = host_pane_reclaim(pool_pane_id)
-			host_session_failed(request_id, id, "generated Station command contains non-ASCII bytes")
-			continue
+		trace_base := os.get_env(SPANS_ENV, context.temp_allocator)
+		station_command := host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, id, request_id, prompt_path, models[i], providers[i], thinkings[i], kinds[i], runtimes[i], tastes[i], messages[i], options[i])
+		command := host_spall_env_prefix(trace_base, station_command)
+		if trace_base != "" {
+			delete(station_command)
 		}
-		surface := session_surface_open(herdr)
+		surface := headless_session_surface(state_root)
 		run_err := surface.ops.pane_run(surface, pane_id, command)
 		delete(command)
 		if run_err != "" {
-			host_pane_mark_terminal(pool_pane_id)
-			_ = host_pane_reclaim(pool_pane_id)
+			_ = headless_close(pane_id)
+			_ = headless_slot_release(slot_id)
 			host_session_failed(request_id, id, fmt.tprintf("could not start the Station: %s", run_err))
 			continue
 		}
-		// Record session with pool-owned pane.
-		append(&host_sessions, Host_Session{request_id = strings.clone(request_id), shot_id = strings.clone(id), pane_id = strings.clone(pool_pane_id)})
+		// Record the running headless session.
+		append(&host_sessions, Host_Session{request_id = strings.clone(request_id), shot_id = strings.clone(id), session_id = strings.clone(slot_id)})
 		host_emit(Host_Event{type = "session_started", request_id = request_id, shot_id = id, pane_id = pane_id})
 		// Track in progress ledger.
 		progress_supervision_add_station(request_id, id, pane_id)
@@ -1099,70 +1017,16 @@ host_start_sessions_owned :: proc(repo, request_id: string, ids, prompts, models
 	}
 }
 
-// Opens the Shot's tab in the repository's workspace. The saved workspace is reused.
-// If none is saved or Herdr rejects it, a new workspace is created and saved; its
-// default tab then serves this Shot. A save that fails only warns: the Shot still runs.
-host_open_shot_pane :: proc(herdr, state_root, repo, request_id, shot_id, station: string) -> (pane_id, err: string) {
-	if pane_backend_is_headless() {
-		// No workspace or tab: the Shot gets a session whose log is under this request.
-		surface := session_surface_open(herdr)
-		opened, open_err := surface.ops.tab_create(surface, request_id, shot_id, station, context.temp_allocator)
-		return opened.pane_id, open_err
-	}
-	name := repository_name(repo)
-	defer delete(name)
-	workspaces_dir, _ := filepath.join({state_root, "host", "workspaces"}, context.temp_allocator)
-	if os.make_directory_all(workspaces_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}) != nil && !os.exists(workspaces_dir) {
-		return "", "could not create the Herdr workspaces directory"
-	}
-	saved_path := state_file_path(workspaces_dir, host_workspace_file_name(repo), context.temp_allocator)
-	surface := session_surface_open(herdr)
-	if saved_id := host_saved_workspace_id(saved_path); saved_id != "" {
-		tab, tab_err := surface.ops.tab_create(surface, saved_id, shot_id, station, context.temp_allocator)
-		if tab_err == "" {
-			return tab.pane_id, ""
-		}
-	}
-	workspace, herdr_err := surface.ops.workspace_create(surface, station, name, context.temp_allocator)
-	if herdr_err != "" {
-		return "", fmt.tprintf("Herdr workspace launch failed: %s", herdr_err)
-	}
-	if write_err := os.write_entire_file(saved_path, workspace.workspace_id, private_file_permissions()); write_err != nil {
-		host_emit(Host_Event{type = "warning", request_id = request_id, shot_id = shot_id, reason = "could not save the workspace id; the next dispatch will create a new workspace"})
-	}
-	// Initialize pool with actual workspace ID on first workspace creation.
-	if host_pane_pool.workspace_id == "" || host_pane_pool.workspace_id == "ws-host-default" {
-		host_pane_pool.workspace_id = strings.clone(workspace.workspace_id, context.allocator)
-	}
-	if rename_err := surface.ops.tab_rename(surface, workspace.tab_id, shot_id); rename_err != "" {
-		return "", fmt.tprintf("Herdr could not label the Shot tab: %s", rename_err)
-	}
-	return workspace.pane_id, ""
-}
-
-// Keyed by the full repository path, so two repositories with the same name never
-// share a workspace. The name part keeps the file readable; both parts are filesystem-safe.
-host_workspace_file_name :: proc(repo: string) -> string {
-	name := repository_name(repo)
-	defer delete(name)
-	digest := hash.hash_string(.SHA256, repo, context.temp_allocator)
-	digest_hex, _ := hex.encode(digest, context.temp_allocator)
-	return fmt.tprintf("%s-%s.txt", name, string(digest_hex))
-}
-
-// A missing or unreadable file means no workspace is saved for the repository.
-host_saved_workspace_id :: proc(path: string) -> string {
-	data, err := os.read_entire_file(path, context.temp_allocator)
-	if err != nil {
-		return ""
-	}
-	return strings.trim_space(string(data))
+// Opens an independent headless session for the Shot.
+host_open_shot_pane :: proc(state_root, request_id, shot_id, station: string) -> (pane_id, err: string) {
+	surface := headless_session_surface(state_root)
+	opened, open_err := surface.ops.tab_create(surface, request_id, shot_id, station, context.temp_allocator)
+	return opened.pane_id, open_err
 }
 
 // Cancels running Stations. A named shot_id signals just that Station; an omitted
 // shot_id signals every Station. Only a recorded positive PID is signalled with
-// SIGTERM, so the Station's own handler closes the agent's input; nothing is
-// killed and no Herdr pane is closed.
+// SIGTERM, so the Station's own handler closes the agent's input.
 host_cancel :: proc(root: json.Object, request_id: string) {
 	shot_id, has_shot := host_string(root, "shot_id")
 	if has_shot && !valid_shot_id(shot_id) {
@@ -1192,14 +1056,15 @@ host_cancel :: proc(root: json.Object, request_id: string) {
 	}
 }
 
-// A positive PID the Station reported (else the pane reports now) is asked to stop. A missing or unreadable identity
-// is not an error; it is reported as a reason instead of a signal.
+// Prefer the Station's reported identity; otherwise identify its headless session process.
 host_cancel_session :: proc(request_id: string, session: Host_Session) {
-	// The Station's own report first; the pane's foreground (read at cancel time, and only
-	// the Station once it is running) is the fallback for one that never reported.
 	identity := session.station
-	if session_station_pid(session) == 0 {
-		identity = host_pane_identity("herdr", session.pane_id)
+	if identity.pid <= 0 {
+		state_root, state_err := default_state_root(context.temp_allocator)
+		if state_err == "" {
+			surface := headless_session_surface(state_root)
+			identity = surface.ops.pane_process_info(surface, session.session_id)
+		}
 	}
 	if identity.pid > 0 {
 		stop_worker_gracefully(identity)
@@ -1207,15 +1072,6 @@ host_cancel_session :: proc(request_id: string, session: Host_Session) {
 		return
 	}
 	host_emit(Host_Event{type = "cancelled", request_id = request_id, shot_id = session.shot_id, reason = "the Station process could not be identified"})
-}
-
-// The foreground process group Herdr reports for the pane is the Station the
-// pane's shell started. A pane whose command has not started yet reports the
-// shell itself, which is not the Station, and a missing or unreadable answer
-// leaves the identity unknown rather than guessing.
-host_pane_identity :: proc(herdr, pane_id: string) -> Process_Identity {
-	surface := session_surface_open(herdr)
-	return surface.ops.pane_process_info(surface, pane_id)
 }
 
 // Types a reply into a Station's pane. The Station reads it from stdin and either
@@ -1236,8 +1092,14 @@ host_reply :: proc(root: json.Object, request_id: string) -> (reason: string) {
 	}
 	for session in host_sessions {
 		if session.request_id == request_id && session.shot_id == shot_id {
-			surface := session_surface_open(host_herdr_exe)
-			if err := surface.ops.pane_run(surface, session.pane_id, message); err != "" {
+			state_root, state_err := default_state_root(context.temp_allocator)
+			if state_err != "" {
+				reason = state_err
+				host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = reason})
+				return reason
+			}
+			surface := headless_session_surface(state_root)
+			if err := surface.ops.pane_run(surface, session.session_id, message); err != "" {
 				reason = fmt.tprintf("could not send the reply: %s", err)
 				host_emit(Host_Event{type = "error", request_id = request_id, shot_id = shot_id, reason = reason})
 				return reason
@@ -1251,24 +1113,11 @@ host_reply :: proc(root: json.Object, request_id: string) -> (reason: string) {
 	return reason
 }
 
-// Herdr's command argument is ASCII-only; checking the encoded bytes also catches
-// a command invalidated by a temporary-allocation lifetime error.
-host_station_command_is_ascii :: proc(command: string) -> bool {
-	for index in 0 ..< len(command) {
-		if command[index] > 0x7f {
-			return false
-		}
-	}
-	return true
-}
-
-// The Station runs in the Herdr pane and launches the agent. Paths and the
-// optional model and thinking level are quoted; the IDs are already restricted
-// to safe characters.
+// The Station launches the agent. Paths and optional model and thinking values are
+// quoted; the IDs are already restricted to safe characters.
 // A research Shot gets scratch-write tools; the Station then checks that it left the source as it found it.
 // A Pull passes its taste and message to the Station, which commits only if the taste passes.
-// Herdr panes do not inherit the host's environment, so pass the trace base on the
-// command line; each Station then writes "<base>.<station id>.<pid>".
+// Pass the trace base to each Station, which writes "<base>.<station id>.<pid>".
 host_spall_env_prefix :: proc(base, command: string) -> string {
 	if base == "" {
 		return command
@@ -1466,7 +1315,7 @@ host_request_id :: proc(root: json.Object) -> string {
 
 // Pool integration helpers wired into host dispatch and relay.
 
-// Check if a report kind is terminal (work is done, pane can be reclaimed).
+// Check if a report kind is terminal (work is done and the session can be closed).
 is_terminal_report :: proc(kind: string) -> bool {
 	switch kind {
 	case "pulled", "taste_failed", "incomplete", "session_failed":
@@ -1475,30 +1324,25 @@ is_terminal_report :: proc(kind: string) -> bool {
 	return false
 }
 
-// Auto-retry queued Shots when a pane is reclaimed.
+// Auto-retry queued Shots when a headless slot is released.
 // Called from host_relay_message after dequeue, before emit.
 host_retry_dequeued_shots :: proc(dequeued: []Queued_Shot, state_root: string) {
-	herdr := host_herdr_exe
 	for queued_shot in dequeued {
 		req_id := queued_shot.request_id
 		shot_id := queued_shot.shot_id
-		pane_id := queued_shot.pane_id
+		session_id := queued_shot.session_id
 		host_emit(Host_Event{type = "dispatch_dequeued", request_id = req_id, shot_id = shot_id})
 
-		// Open pane (workspace tab).
-		pane_from_herdr, pane_err := host_open_shot_pane(herdr, state_root, queued_shot.repo, req_id, shot_id, queued_shot.station_path)
-		if pane_err != "" {
-			host_pane_mark_terminal(pane_id)
-			_ = host_pane_reclaim(pane_id)
-			host_session_failed(req_id, shot_id, pane_err)
+		opened, open_err := headless_session_surface(state_root).ops.tab_create(headless_session_surface(state_root), req_id, shot_id, queued_shot.station_path, context.temp_allocator)
+		if open_err != "" {
+			_ = headless_slot_release(session_id)
+			host_session_failed(req_id, shot_id, open_err)
 			continue
 		}
-
-		// Launch Station.
 		launch, launch_err := child_launch_argv(host_station_executable)
 		if launch_err != "" {
-			host_pane_mark_terminal(pane_id)
-			_ = host_pane_reclaim(pane_id)
+			_ = headless_close(opened.pane_id)
+			_ = headless_slot_release(session_id)
 			host_session_failed(req_id, shot_id, launch_err)
 			continue
 		}
@@ -1507,39 +1351,26 @@ host_retry_dequeued_shots :: proc(dequeued: []Queued_Shot, state_root: string) {
 		if queued_shot.runtime == SHOT_RUNTIME_OREO {
 			extension = host_oreo_extension_path
 		}
-		launcher := child_shell_prefix(launch)
-
-		// Re-read prompt file (it was written during initial dispatch).
 		prompt_name := fmt.aprintf("%s.md", shot_id)
 		defer delete(prompt_name)
 		prompts_dir, _ := filepath.join({state_root, "host", req_id, "prompts"}, context.temp_allocator)
 		prompt_path, _ := filepath.join({prompts_dir, prompt_name}, context.temp_allocator)
-
-		command := host_spall_env_prefix(os.get_env(SPANS_ENV, context.temp_allocator), host_station_command(launcher, host_report_socket, extension, host_oreo_host_path, shot_id, req_id, prompt_path, queued_shot.model, queued_shot.provider, queued_shot.thinking, queued_shot.kind, queued_shot.runtime, queued_shot.taste, queued_shot.message, host_queued_options_take(req_id, shot_id)))
-		if !host_station_command_is_ascii(command) {
-			delete(command)
-			host_pane_mark_terminal(pane_id)
-			_ = host_pane_reclaim(pane_id)
-			host_session_failed(req_id, shot_id, "generated Station command contains non-ASCII bytes")
-			continue
+		trace_base := os.get_env(SPANS_ENV, context.temp_allocator)
+		station_command := host_station_command(child_shell_prefix(launch), host_report_socket, extension, host_oreo_host_path, shot_id, req_id, prompt_path, queued_shot.model, queued_shot.provider, queued_shot.thinking, queued_shot.kind, queued_shot.runtime, queued_shot.taste, queued_shot.message, host_queued_options_take(req_id, shot_id))
+		command := host_spall_env_prefix(trace_base, station_command)
+		if trace_base != "" {
+			delete(station_command)
 		}
-
-		surface := session_surface_open(herdr)
-		run_err := surface.ops.pane_run(surface, pane_from_herdr, command)
+		surface := headless_session_surface(state_root)
+		run_err := surface.ops.pane_run(surface, opened.pane_id, command)
 		delete(command)
 		if run_err != "" {
-			host_pane_mark_terminal(pane_id)
-			_ = host_pane_reclaim(pane_id)
+			_ = headless_close(opened.pane_id)
+			_ = headless_slot_release(session_id)
 			host_session_failed(req_id, shot_id, fmt.tprintf("queued retry failed: %s", run_err))
 			continue
 		}
-
-		// Record session with pool pane.
-		append(&host_sessions, Host_Session{request_id = strings.clone(req_id), shot_id = strings.clone(shot_id), pane_id = strings.clone(pane_id)})
-		host_emit(Host_Event{type = "session_started", request_id = req_id, shot_id = shot_id, pane_id = pane_from_herdr})
-
-		when ODIN_DEBUG {
-			log.infof("host_retry_dequeued_shots: relaunched %s/%s from queue", req_id, shot_id)
-		}
+		append(&host_sessions, Host_Session{request_id = strings.clone(req_id), shot_id = strings.clone(shot_id), session_id = strings.clone(session_id)})
+		host_emit(Host_Event{type = "session_started", request_id = req_id, shot_id = shot_id, pane_id = opened.pane_id})
 	}
 }

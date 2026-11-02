@@ -7,14 +7,13 @@ import "core:strings"
 SCALE :: 5 // Host concurrency limit shared by the activity and request listeners.
 import "core:time"
 
-// Dispatch queue for Shots waiting for a free pane.
-// When pool is at capacity, new Shots queue here until a pane reclaims.
+// Dispatch queue for Shots waiting for a free headless Station slot.
 
 Queued_Shot :: struct {
 	request_id:   string,
 	shot_id:      string,
 	created_at:   time.Time,
-	// Full metadata for retry when pane reclaims.
+	// Full metadata for retry when a slot is released.
 	repo:         string,
 	prompt:       string,
 	model:        string,
@@ -25,14 +24,14 @@ Queued_Shot :: struct {
 	taste:        string,
 	message:      string,
 	station_path: string,  // Worktree path (already created when queued)
-	pane_id:      string,  // Set by dequeue: the pool pane this Shot now holds
+	session_id:   string,  // Set by dequeue: the slot this Shot now holds
 }
 
 // Global dispatch queue.
 host_dispatch_queue: [dynamic]Queued_Shot
 host_dispatch_queue_lock: bool // Simple spin-lock for now; real code uses sync primitives
 
-// Initialize the dispatch pool and queue at host startup.
+// Initialize the headless slot budget and queue at host startup.
 host_dispatch_queued_shot_destroy :: proc(shot: Queued_Shot) {
 	delete(shot.request_id)
 	delete(shot.shot_id)
@@ -46,58 +45,55 @@ host_dispatch_queued_shot_destroy :: proc(shot: Queued_Shot) {
 	delete(shot.taste)
 	delete(shot.message)
 	delete(shot.station_path)
-	delete(shot.pane_id)
+	delete(shot.session_id)
 }
 
-host_dispatch_init :: proc(workspace_id: string) {
+host_dispatch_init :: proc() {
 	root, root_err := default_state_root(context.temp_allocator)
 	if root_err != "" {
 		root = "" // no state root: fall back to the per-host limit only
 	}
-	host_dispatch_init_at(workspace_id, root)
+	host_dispatch_init_at(root)
 }
 
-// Same as host_dispatch_init with an explicit machine-limit root. Production uses the
-// real state root (one limit for the whole machine); tests pass a private one.
-host_dispatch_init_at :: proc(workspace_id, machine_root: string) {
-	host_pane_pool_init(workspace_id, 5, machine_root) // Capacity = concurrency limit
+// Production uses the real state root (one limit for the whole machine); tests pass a private one.
+host_dispatch_init_at :: proc(machine_root: string) {
+	headless_slots_init(machine_root, SCALE)
 	host_dispatch_queue = make([dynamic]Queued_Shot, 0, 100, context.allocator)
 }
 
 // Cleanup on host exit.
-host_dispatch_cleanup :: proc(herdr_exe: string) -> int {
-	// Close all host-owned panes.
-	exit_code := host_pane_pool_close(herdr_exe) // 0, and nothing closed, when headless
+host_dispatch_cleanup :: proc() {
+	for i := 0; i < len(host_sessions); {
+		session := host_sessions[i]
+		_ = headless_close(session.session_id)
+		_ = headless_slot_release(session.session_id)
+		delete(session.request_id)
+		delete(session.shot_id)
+		delete(session.session_id)
+		unordered_remove(&host_sessions, i)
+	}
+	delete(host_sessions)
+	host_sessions = nil
 
-	// Clear queue (in case of early exit).
 	for shot in host_dispatch_queue {
 		host_dispatch_queued_shot_destroy(shot)
 	}
 	delete(host_dispatch_queue)
 	host_dispatch_queue = nil
-	if pane_backend_is_headless() {
-		headless_slots_destroy()
-	} else {
-		pane_pool_destroy(&host_pane_pool)
-	}
-
-	return exit_code
+	headless_slots_destroy()
 }
 
-// Try to acquire a pane for a Shot. If pool is at capacity, queue the Shot with full metadata for retry.
-// Returns (pane_id, queued, ok).
-// - ok=true, queued=false: pane acquired, ready to launch
-// - ok=true, queued=true: Shot queued, will retry when pane frees
-// - ok=false: fatal error
-host_dispatch_acquire :: proc(request_id, shot_id: string) -> (pane_id: string, queued: bool, ok: bool) {
-	// Try to acquire from pool.
-	acquired_pane_id, pool_ok := host_pane_acquire(request_id, shot_id)
-	if pool_ok {
-		return acquired_pane_id, false, true
+// Try to acquire a headless Station slot; queue the Shot when capacity is full.
+// Returns (session_id, queued, ok).
+host_dispatch_acquire :: proc(request_id, shot_id: string) -> (session_id: string, queued: bool, ok: bool) {
+	slot_id, slot_ok := headless_slot_acquire(request_id, shot_id)
+	if slot_ok {
+		return slot_id, false, true
 	}
 
-	// Pool at capacity. Say why, then queue the Shot (minimal metadata for now).
-	refusal := headless_slots.last_refusal if pane_backend_is_headless() else host_pane_pool.last_refusal
+	// No local or machine-wide slot. Queue with metadata added by the caller.
+	refusal := headless_slots.last_refusal
 	if refusal != "" {
 		fmt.eprintfln("shot %s waiting: %s", shot_id, refusal)
 	}
@@ -133,21 +129,21 @@ host_dispatch_queue_store_metadata :: proc(request_id, shot_id, repo, prompt, mo
 	}
 }
 
-// After a pane is reclaimed, take every queued Shot that now fits. Ownership of each
-// returned Queued_Shot (its metadata and held pane_id) passes to the caller.
+// After a slot is released, take every queued Shot that now fits. Ownership of each
+// returned Queued_Shot (its metadata and held session id) passes to the caller.
 host_dispatch_dequeue_shots :: proc() -> [dynamic]Queued_Shot {
 	result := make([dynamic]Queued_Shot, 0, 5, context.allocator)
 	for len(host_dispatch_queue) > 0 {
 		queued := host_dispatch_queue[0]
-		pane_id, ok := host_pane_acquire(queued.request_id, queued.shot_id)
+		session_id, ok := headless_slot_acquire(queued.request_id, queued.shot_id)
 		if !ok {
-			break // still no pane (or machine slot): leave it queued
+			break // still no host or machine slot: leave it queued
 		}
-		queued.pane_id = pane_id
+		queued.session_id = session_id
 		append(&result, queued)
 		ordered_remove(&host_dispatch_queue, 0)
 		when ODIN_DEBUG {
-			log.debugf("dequeued shot %s (request %s) for pane %s, queue depth %d", queued.shot_id, queued.request_id, pane_id, len(host_dispatch_queue))
+			log.debugf("dequeued shot %s (request %s) into slot %s, queue depth %d", queued.shot_id, queued.request_id, session_id, len(host_dispatch_queue))
 		}
 	}
 	return result

@@ -11,7 +11,7 @@ import "core:thread"
 import "core:time"
 
 // The headless implementation of Session_Surface: a Station is a plain child process
-// (`/bin/sh -c <command>`), with no Herdr, workspace, tab or pane. Its stdout and stderr
+// (`/bin/sh -c <command>`), with no external multiplexer or reusable workspace. Its stdout and stderr
 // go to <state root>/host/<request>/logs/<shot>.log, input is written to its stdin, and
 // closing the session terminates it.
 //
