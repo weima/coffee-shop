@@ -5,18 +5,22 @@ import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "core:sys/posix"
 import "core:time"
 
 CLI_Options :: struct {
 	root:       string,
 	paths:      [dynamic]string,
 	check_once: bool,
+	from_env:   bool,
 }
 
 Rachel_Justfile :: struct {
 	path: string,
 	generated: bool,
 }
+
+RACHEL_DEFAULT_JUSTFILE_MARKER :: "# Rachel-generated defaults"
 
 RACHEL_DEFAULT_JUSTFILE :: `# Rachel-generated defaults; edit for collections or custom linker flags.
 set shell := ["sh", "-cu"]
@@ -33,6 +37,10 @@ parse_cli_args :: proc(args: []string, allocator := context.allocator) -> (optio
 	if len(rest) > 0 && rest[0] == "check" {
 		options.check_once = true
 		rest = rest[1:]
+		if len(rest) > 0 && rest[0] == "--from-env" {
+			options.from_env = true
+			rest = rest[1:]
+		}
 	}
 	if len(rest) < 1 {
 		return {}, os.Error(.Invalid_Command)
@@ -78,7 +86,7 @@ ensure_project_justfile :: proc(root: string, allocator := context.allocator) ->
 			return {}, os.Error(path_err)
 		}
 		if os.is_file(path) {
-			return Rachel_Justfile{path=path}, nil
+			return Rachel_Justfile{path=path, generated=justfile_uses_rachel_defaults(path, allocator)}, nil
 		}
 		if os.exists(path) {
 			delete(path, allocator)
@@ -94,7 +102,7 @@ ensure_project_justfile :: proc(root: string, allocator := context.allocator) ->
 	file, open_err := os.open(path, {.Write, .Create, .Excl})
 	if open_err != nil {
 		if os.is_file(path) {
-			return Rachel_Justfile{path=path}, nil
+			return Rachel_Justfile{path=path, generated=justfile_uses_rachel_defaults(path, allocator)}, nil
 		}
 		delete(path, allocator)
 		return {}, open_err
@@ -113,6 +121,19 @@ ensure_project_justfile :: proc(root: string, allocator := context.allocator) ->
 	}
 	fmt.eprintfln("[RACHEL] Created default justfile %s", path)
 	return Rachel_Justfile{path=path, generated=true}, nil
+}
+
+// A justfile that still starts with Rachel's marker keeps the per-package
+// behaviour; a hand-written one is run once for the whole project. Detecting the
+// marker matters after the first run, when the created file is no longer new.
+@(private)
+justfile_uses_rachel_defaults :: proc(path: string, allocator := context.allocator) -> bool {
+	contents, read_err := os.read_entire_file(path, allocator)
+	if read_err != nil {
+		return false
+	}
+	defer delete(contents, allocator)
+	return strings.has_prefix(transmute(string)contents, RACHEL_DEFAULT_JUSTFILE_MARKER)
 }
 
 justfile_destroy :: proc(justfile: ^Rachel_Justfile, allocator := context.allocator) {
@@ -568,6 +589,19 @@ Check_Outcome :: struct {
 	detail: string, // owned; the first compiler diagnostic, or ""
 }
 
+// canonical_path resolves symlinks (macOS /var is /private/var) so a watcher's
+// absolute paths and a user's project root compare equal.
+@(private)
+canonical_path :: proc(path: string, allocator := context.allocator) -> (string, bool) {
+	cpath := strings.clone_to_cstring(path, context.temp_allocator)
+	buf: [4096]byte
+	resolved := posix.realpath(cpath, raw_data(buf[:]))
+	if resolved == nil {
+		return "", false
+	}
+	return strings.clone(string(resolved), allocator), true
+}
+
 // check_targets narrows a check to the packages of the given .odin paths.
 // Any other path checks the whole project, so a check is never skipped.
 check_targets :: proc(
@@ -582,6 +616,13 @@ check_targets :: proc(
 		transferred = true
 		return targets, true, nil
 	}
+	canonical_root := root
+	root_owned: string
+	if resolved, ok := canonical_path(root, allocator); ok {
+		root_owned = resolved
+		canonical_root = root_owned
+	}
+	defer delete(root_owned, allocator)
 	for path in paths {
 		resolved := path
 		owned: string
@@ -598,8 +639,14 @@ check_targets :: proc(
 			transferred = true
 			return targets, true, nil
 		}
-		package_dir := filepath.dir(resolved)
-		if !strings.has_prefix(package_dir, root) {
+		canonical, canonical_ok := canonical_path(resolved, allocator)
+		if !canonical_ok {
+			transferred = true
+			return targets, true, nil
+		}
+		defer delete(canonical, allocator)
+		package_dir := filepath.dir(canonical)
+		if !strings.has_prefix(package_dir, canonical_root) {
 			transferred = true
 			return targets, true, nil
 		}
@@ -657,6 +704,67 @@ first_diagnostic :: proc(stdout, stderr: string, allocator := context.allocator)
 	return "", false
 }
 
+WATCHEXEC_PATH_VARS :: []string{
+	"WATCHEXEC_WRITTEN_PATH",
+	"WATCHEXEC_CREATED_PATH",
+	"WATCHEXEC_REMOVED_PATH",
+	"WATCHEXEC_RENAMED_PATH",
+	"WATCHEXEC_META_CHANGED_PATH",
+	"WATCHEXEC_OTHERWISE_CHANGED_PATH",
+}
+
+// paths_from_watchexec_env reads the paths a watcher reported for one batch.
+// watchexec emits them relative to WATCHEXEC_COMMON_PATH, joined by the
+// platform path-list separator.
+paths_from_watchexec_env :: proc(allocator := context.allocator) -> (paths: [dynamic]string, err: os.Error) {
+	paths = make([dynamic]string, 0, allocator)
+	transferred := false
+	defer if !transferred { delete_string_slice(paths, allocator) }
+	common := os.get_env("WATCHEXEC_COMMON_PATH", allocator)
+	defer delete(common, allocator)
+	separator := fmt.aprintf("%c", rune(os.Path_List_Separator), allocator = allocator)
+	defer delete(separator, allocator)
+	for name in WATCHEXEC_PATH_VARS {
+		value := os.get_env(name, allocator)
+		if len(value) == 0 {
+			delete(value, allocator)
+			continue
+		}
+		// entries are slices into value, so value outlives them.
+		entries, split_err := strings.split(value, separator, allocator)
+		if split_err != nil {
+			delete(value, allocator)
+			return nil, os.Error(split_err)
+		}
+		for entry in entries {
+			if entry == "" {
+				continue
+			}
+			full := entry
+			owned: string
+			if len(common) > 0 && !filepath.is_abs(entry) {
+				joined, join_err := filepath.join({common, entry}, allocator)
+				if join_err != nil {
+					return nil, os.Error(join_err)
+				}
+				owned = joined
+				full = owned
+			}
+			append_err := append_unique_package(&paths, full, allocator)
+			delete(owned, allocator)
+			if append_err != nil {
+				delete(entries, allocator)
+				delete(value, allocator)
+				return nil, os.Error(append_err)
+			}
+		}
+		delete(entries, allocator)
+		delete(value, allocator)
+	}
+	transferred = true
+	return paths, nil
+}
+
 check_once :: proc(options: CLI_Options, allocator := context.allocator) -> int {
 	root := options.root
 	current, scan_err := scan_odin_project(root, allocator)
@@ -672,7 +780,23 @@ check_once :: proc(options: CLI_Options, allocator := context.allocator) -> int 
 	}
 	defer justfile_destroy(&justfile, allocator)
 
-	narrowed, whole_project, target_err := check_targets(root, options.paths[:], allocator)
+	paths := options.paths[:]
+	env_paths: [dynamic]string
+	if options.from_env {
+		loaded, env_err := paths_from_watchexec_env(allocator)
+		if env_err != nil {
+			fmt.eprintfln("[ERROR] cannot read watcher paths: %s", os.error_string(env_err))
+			return 1
+		}
+		env_paths = loaded
+		if len(env_paths) > 0 {
+			paths = env_paths[:]
+		}
+	}
+	// Function scope: a defer inside the if block frees this before check_targets reads it.
+	defer delete_string_slice(env_paths, allocator)
+
+	narrowed, whole_project, target_err := check_targets(root, paths, allocator)
 	if target_err != nil {
 		fmt.eprintfln("[ERROR] cannot resolve check paths: %s", os.error_string(target_err))
 		return 1

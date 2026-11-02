@@ -492,7 +492,11 @@ test_check_targets_narrows_to_packages_and_widens_for_other_files :: proc(t: ^te
 	testing.expect_value(t, targets_err, os.Error(nil))
 	testing.expect(t, !whole)
 	testing.expect_value(t, len(targets), 1)
-	testing.expect_value(t, targets[0], package_dir)
+	// check_targets resolves symlinks (macOS /var), so compare canonically.
+	canonical, canonical_ok := canonical_path(package_dir, context.allocator)
+	testing.expect(t, canonical_ok)
+	defer delete(canonical)
+	testing.expect_value(t, targets[0], canonical)
 
 	notes, notes_whole, notes_err := check_targets(root, []string{"notes.md"}, context.allocator)
 	defer delete_string_slice(notes, context.allocator)
@@ -532,4 +536,94 @@ test_check_once_reports_ok_and_failure :: proc(t: ^testing.T) {
 
 	_ = os.write_entire_file_from_string(module_path, "package sample\n\none :: proc() -> int {\n\treturn\n}\n", os.Permissions{.Read_User, .Write_User})
 	testing.expect_value(t, check_once(options), 1)
+}
+
+@(test)
+test_watchexec_env_paths_join_common_path :: proc(t: ^testing.T) {
+	for name in WATCHEXEC_PATH_VARS {
+		_ = os.unset_env(name)
+	}
+	common, make_err := os.make_directory_temp("", "rachel-wx-*", context.allocator)
+	testing.expect(t, make_err == nil)
+	defer {
+		_ = os.remove_all(common)
+		delete(common)
+	}
+	// Real files, so a corrupted path cannot compare equal by accident.
+	sub_dir, sub_err := filepath.join({common, "sub"}, context.allocator)
+	testing.expect(t, sub_err == nil)
+	defer delete(sub_dir)
+	testing.expect(t, os.make_directory(sub_dir) == nil)
+	_ = os.write_entire_file_from_string(
+		fmt.tprintf("%s/a.odin", common),
+		"package a\n",
+		os.Permissions{.Read_User, .Write_User},
+	)
+	_ = os.write_entire_file_from_string(
+		fmt.tprintf("%s/b.odin", sub_dir),
+		"package b\n",
+		os.Permissions{.Read_User, .Write_User},
+	)
+	testing.expect(t, os.set_env("WATCHEXEC_COMMON_PATH", common) == nil)
+	defer _ = os.unset_env("WATCHEXEC_COMMON_PATH")
+	testing.expect(t, os.set_env("WATCHEXEC_WRITTEN_PATH", "a.odin:sub/b.odin") == nil)
+	defer _ = os.unset_env("WATCHEXEC_WRITTEN_PATH")
+	testing.expect(t, os.set_env("WATCHEXEC_CREATED_PATH", "a.odin") == nil)
+	defer _ = os.unset_env("WATCHEXEC_CREATED_PATH")
+
+	paths, paths_err := paths_from_watchexec_env(context.allocator)
+	defer delete_string_slice(paths, context.allocator)
+	testing.expect_value(t, paths_err, os.Error(nil))
+	testing.expect_value(t, len(paths), 2)
+	joined, join_err := filepath.join({common, "a.odin"}, context.allocator)
+	testing.expect(t, join_err == nil)
+	defer delete(joined)
+	testing.expect_value(t, paths[0], joined)
+	nested, nested_err := filepath.join({common, "sub/b.odin"}, context.allocator)
+	testing.expect(t, nested_err == nil)
+	defer delete(nested)
+	testing.expect_value(t, paths[1], nested)
+	// Regression: entries are slices into the env value; freeing it early corrupted these.
+	for path in paths {
+		testing.expectf(t, os.exists(path), "watcher path does not exist: %q", path)
+	}
+
+	for name in WATCHEXEC_PATH_VARS {
+		_ = os.unset_env(name)
+	}
+	empty, empty_err := paths_from_watchexec_env(context.allocator)
+	defer delete_string_slice(empty, context.allocator)
+	testing.expect_value(t, empty_err, os.Error(nil))
+	testing.expect_value(t, len(empty), 0)
+}
+
+@(test)
+test_generated_justfile_keeps_per_package_behaviour_on_later_runs :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp("", "rachel-just-detect-*", context.allocator)
+	testing.expect(t, make_err == nil)
+	defer {
+		_ = os.remove_all(root)
+		delete(root)
+	}
+	created, created_err := ensure_project_justfile(root, context.allocator)
+	defer justfile_destroy(&created, context.allocator)
+	testing.expect_value(t, created_err, os.Error(nil))
+	testing.expect(t, created.generated)
+
+	// Regression: a second run used to treat Rachel's own file as hand-written,
+	// so package arguments stopped being passed and subpackages were never checked.
+	reopened, reopened_err := ensure_project_justfile(root, context.allocator)
+	defer justfile_destroy(&reopened, context.allocator)
+	testing.expect_value(t, reopened_err, os.Error(nil))
+	testing.expect(t, reopened.generated)
+
+	_ = os.write_entire_file_from_string(
+		reopened.path,
+		"check:\n    odin check -no-entry-point .\n",
+		os.Permissions{.Read_User, .Write_User},
+	)
+	handwritten, handwritten_err := ensure_project_justfile(root, context.allocator)
+	defer justfile_destroy(&handwritten, context.allocator)
+	testing.expect_value(t, handwritten_err, os.Error(nil))
+	testing.expect(t, !handwritten.generated)
 }
