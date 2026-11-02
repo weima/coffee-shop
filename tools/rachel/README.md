@@ -145,8 +145,14 @@ watchexec -q -d 500ms -w <dir> -f <filter>... -- <rachel> verify --from-env <dir
 ```
 
 and runs it. The trigger is watchexec; Rachel stays the checker, verdict and
-evidence. A project with no `.rachel.json` falls back to its justfile recipes,
-which is what every existing Odin project uses.
+evidence. A project with no `.rachel.json` still gets a watcher: no filters are passed, so
+watchexec watches the tree (honouring `.gitignore`) and `verify` falls back to the
+project's justfile recipes. `watch` therefore works for any project, configured or
+not.
+
+Run `watch` from an **installed** Rachel, not from `odin run`: `odin run` rebuilds a
+temporary binary in the project directory, and a watcher that captured that path
+fails on its next batch when the binary is replaced.
 
 The configuration at this repository's root is the worked example: Odin, Go and
 TypeScript in one project, with the fast stages in the loop and the slow Go suite

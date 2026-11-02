@@ -269,6 +269,13 @@ Recorded as they were found, because each one changed the design.
 - **`evidence_prune` could delete the run it had just written.** `readdir` order is
   arbitrary and the prune loop trusted it, so the newest directory could be evicted
   immediately, leaving a run with no manifest. Names are now ranked before pruning.
+- **`os.process_exec` captures stdout, so it cannot inherit a terminal.** The
+  launcher asserted at runtime the first time it ran; `os.process_start` plus
+  `process_wait` is the right pair for a child that must own the terminal and
+  receive its signals.
+- **A watcher started from `odin run` breaks on its next batch.** `odin run` builds
+  a temporary binary in the project directory; watchexec holds that path, and when
+  the binary is rebuilt or removed the re-run fails. Watch from an installed binary.
 - **A check-only dogfood loop is not enough.** With `check` in the loop I still ran
   the tests myself, which is exactly the redundancy the loop is supposed to remove.
   Running `verify` in the loop (check + tests, ~1.6 s per save) made one read

@@ -962,3 +962,17 @@ test_watch_argv_invokes_watchexec_around_verify :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(joined, "-f *.ts"))
 	testing.expect(t, strings.has_suffix(joined, "-- /usr/local/bin/rachel verify --from-env /project"))
 }
+
+@(test)
+test_watch_argv_without_a_config_omits_filters :: proc(t: ^testing.T) {
+	// A project with no .rachel.json still gets a watcher; it just has no filters,
+	// so watchexec watches the tree and honours .gitignore.
+	argv := watch_argv("/usr/local/bin/rachel", "/project", Rachel_Config{}, "300ms", context.allocator)
+	defer delete_string_slice(argv, context.allocator)
+	joined, join_err := strings.join(argv[:], " ", context.allocator)
+	testing.expect(t, join_err == nil)
+	defer delete(joined)
+	testing.expect(t, !strings.contains(joined, "-f "))
+	testing.expect(t, strings.has_prefix(joined, "watchexec -q -d 300ms -w /project"))
+	testing.expect(t, strings.has_suffix(joined, "-- /usr/local/bin/rachel verify --from-env /project"))
+}
