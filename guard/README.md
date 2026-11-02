@@ -3,13 +3,24 @@
 A Pi project extension that enforces the repository rules that agents otherwise
 ignore. Prompt rules live in `AGENTS.md`; this makes two of them mechanical.
 
-## Install
+## Where it goes
+
+Install it into **Coffee Shop only**, not into the projects Coffee Shop works on:
 
 ```sh
-guard/install.sh <project-dir>          # annotate: allow, but attach the verdict
-guard/install.sh <project-dir> --enforce # block raw build/test commands
-guard/install.sh <project-dir> --uninstall
+guard/install.sh .            # annotate: allow, but attach the verdict
+guard/install.sh . --enforce  # block raw build/test commands
+guard/install.sh . --uninstall
 ```
+
+A session started in Coffee Shop can be asked to work on another repository. The
+guard resolves the target project **per command** (`cd`, `git -C`, absolute paths,
+then a walk up to the nearest justfile), reads *that* project's evidence, and
+blocks only when that project is a Rachel project. A command that names a
+non-Rachel directory resolves to nothing, so the harness stays out of the way.
+
+That is why nothing is installed into the target project: the rules travel with
+the session, not with the repository being edited.
 
 The installer writes two files into the target project and adds them, plus
 `.rachel/`, to the repository's **local** exclude (`.git/info/exclude`). Nothing
