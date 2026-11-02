@@ -3,8 +3,10 @@ set shell := ["sh", "-cu"]
 check:
     odin check src
 
+# ODIN_TEST_FAIL_ON_BAD_MEMORY makes leaks and bad frees test failures, so a
+# memory error cannot ride along with "All tests were successful."
 test: check
-    TZ=UTC odin test src
+    TZ=UTC odin test src -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
 
 build: check
     mkdir -p build
@@ -17,3 +19,6 @@ e2e:
     sh e2e/watcher_e2e.sh
 typing-e2e:
     sh e2e/typing_e2e.sh
+
+watchexec-e2e:
+    sh e2e/watchexec_e2e.sh

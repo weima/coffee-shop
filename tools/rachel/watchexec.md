@@ -41,14 +41,28 @@ Rachel reads `$WATCHEXEC_COMMON_PATH`, `$WATCHEXEC_WRITTEN_PATH`,
 `$WATCHEXEC_CREATED_PATH`, and `$WATCHEXEC_REMOVED_PATH`, maps changed paths to
 packages, and runs one pass.
 
-`rachel check <project> [path ...]` already provides the one-shot half, and the
-quiet rule becomes `--debounce` instead of a hand-rolled window:
+`rachel check <project> [path ...]` provides the one-shot half, and
+`--from-env` reads the batch's paths from `$WATCHEXEC_*`, so the quiet rule is
+owned by `--debounce` alone:
 
 ```sh
-watchexec --debounce 500ms --exit-on-eof -- rachel check <project>
+watchexec --debounce 500ms --exit-on-eof -f '*.odin' --emit-events-to=environment -- \
+  rachel check --from-env <project>
 ```
 
-Passing the changed paths from `$WATCHEXEC_*` into that command is not wired yet.
+Verified against watchexec 2.8.0 on macOS:
+
+- The path variables are set for the command, joined by the platform path-list
+  separator, and **relative to `$WATCHEXEC_COMMON_PATH`**, so a consumer must join
+  them. `--from-env` does.
+- The command runs once at startup before any event, with no `WATCHEXEC_*`
+  variables set; `rachel check` then checks the whole project.
+- With `--emit-events-to=json-stdio` the child's stdin closes at the end of a
+  batch, so a one-shot reader is safe. The environment mode was chosen because it
+  needs no JSON parser.
+- A command that writes into the watched tree triggers itself. `rachel check`
+  creates a starter justfile, which is not a `.odin` file, so the `-f '*.odin'`
+  filter stops the loop; the e2e asserts the run count stays bounded.
 
 This deletes roughly 250 lines: the project scan, the snapshot diff, and the
 poll/debounce loop. It adds roughly 50 lines of environment parsing.

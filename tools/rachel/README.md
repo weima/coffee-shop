@@ -34,11 +34,21 @@ an empty list, or a path outside the project checks the whole project, so a chec
 is never skipped. A hand-written justfile takes no package argument, so it always
 checks the project once.
 
-This is the form a file watcher drives. Changed-path forwarding is not wired yet:
+This is the form a file watcher drives. `--from-env` reads the paths a watcher
+reported for the current batch from `$WATCHEXEC_COMMON_PATH`,
+`$WATCHEXEC_WRITTEN_PATH`, `$WATCHEXEC_CREATED_PATH`, `$WATCHEXEC_REMOVED_PATH`,
+`$WATCHEXEC_RENAMED_PATH`, `$WATCHEXEC_META_CHANGED_PATH` and
+`$WATCHEXEC_OTHERWISE_CHANGED_PATH`, and narrows the check to those packages:
 
 ```sh
-watchexec --debounce 500ms --exit-on-eof -- rachel check /path/to/odin-project
+watchexec --debounce 500ms --exit-on-eof -f '*.odin' --emit-events-to=environment -- \
+  rachel check --from-env /path/to/odin-project
 ```
+
+watchexec is then the one owner of the quiet period. Without `--from-env`, or
+when the watcher reports no paths, the whole project is checked. `just
+watchexec-e2e` proves the pair against a real watchexec run and skips when
+watchexec is not installed.
 
 ## Test-file convention
 
