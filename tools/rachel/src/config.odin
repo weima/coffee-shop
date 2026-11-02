@@ -172,11 +172,9 @@ run_config_stage :: proc(
  * its own and works for any language the project configures.
  */
 run_watcher :: proc(options: CLI_Options, allocator := context.allocator) -> int {
-	config, has_config := load_config(options.root)
-	if !has_config {
-		fmt.eprintln("[ERROR] no .rachel.json with stages here; add one, or use `rachel <dir>` for Odin")
-		return 2
-	}
+	// The config is optional: without one, watchexec watches the project (respecting
+	// .gitignore) and verify falls back to the project's justfile recipes.
+	config, _ := load_config(options.root)
 	executable, exec_err := os.get_executable_path(allocator)
 	if exec_err != nil {
 		fmt.eprintfln("[ERROR] cannot locate the rachel binary: %s", os.error_string(exec_err))
@@ -185,13 +183,19 @@ run_watcher :: proc(options: CLI_Options, allocator := context.allocator) -> int
 	defer delete(executable, allocator)
 	argv := watch_argv(executable, options.root, config, options.debounce, allocator)
 	defer delete_string_slice(argv, allocator)
-	state, _, _, process_err := os.process_exec(
+	// process_start, not process_exec: exec captures stdout, and a watcher has to
+	// inherit the terminal so its output and signals reach the user.
+	process, start_err := os.process_start(
 		os.Process_Desc{command = argv[:], stdin = os.stdin, stdout = os.stdout, stderr = os.stderr},
-		allocator,
 	)
-	if process_err != nil {
-		fmt.eprintfln("[ERROR] cannot start watchexec: %s", os.error_string(process_err))
+	if start_err != nil {
+		fmt.eprintfln("[ERROR] cannot start watchexec: %s", os.error_string(start_err))
 		fmt.eprintln("        install watchexec, or run: watchexec -q -w <dir> -- rachel verify --from-env <dir>")
+		return 1
+	}
+	state, wait_err := os.process_wait(process)
+	if wait_err != nil {
+		fmt.eprintfln("[ERROR] watchexec failed: %s", os.error_string(wait_err))
 		return 1
 	}
 	if state.exited {
