@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/weima/coffee-shop/go/internal/proto"
@@ -51,6 +52,13 @@ func Run(ctx context.Context, opts Options) error {
 		now = time.Now
 	}
 	w := &writer{out: opts.Out, now: now, root: opts.StateRoot}
+	// The ledger is rebuilt from history so a restarted host still warns about a Station
+	// that was waiting for a reply or had gone quiet before the restart.
+	if opts.StateRoot != "" {
+		w.ledger = newProgressLedger(now)
+		w.ledger.rebuild(opts.StateRoot)
+		defer w.watchProgress(ctx)()
+	}
 
 	var server *activityServer
 	if opts.StateRoot != "" {
@@ -140,9 +148,55 @@ type writer struct {
 	out  io.Writer
 	now  func() time.Time
 	root string
+	// mu serializes stdout and history writes. Reports are relayed on one goroutine, but
+	// the staleness ticker emits from another, and a torn event line is unrecoverable.
+	mu sync.Mutex
 	// onTerminal frees a Shot's Slot as soon as its terminal report arrives, without
 	// waiting for the process to exit, so a queued Shot can start sooner.
 	onTerminal func(requestID, shotID string)
+	// ledger holds the host's progress supervision, nil in a host with no state root.
+	ledger *progressLedger
+}
+
+// watchProgress checks for staleness on a ticker until the host stops. Reports are
+// checked as they arrive, so the ticker only bounds a quiet Station's delay.
+func (w *writer) watchProgress(ctx context.Context) func() {
+	stop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(LedgerPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-stop:
+				return
+			case <-ticker.C:
+				w.checkLedger()
+			}
+		}
+	}()
+	return func() { close(stop) }
+}
+
+// stationStarted and stationFinished keep the ledger's view of live Stations in step with
+// the dispatcher, so a released Station can never warn afterwards.
+func (w *writer) stationStarted(requestID, shotID, paneID string) {
+	if w.ledger != nil {
+		w.ledger.addStation(requestID, shotID, paneID)
+	}
+}
+
+func (w *writer) stationFinished(requestID, shotID string) {
+	if w.ledger != nil {
+		w.ledger.finish(requestID, shotID)
+	}
+}
+
+func (w *writer) checkLedger() {
+	if w.ledger != nil {
+		w.ledger.checkAndEmit(w.emit)
+	}
 }
 
 // terminalReportKinds mirrors the Odin host's is_terminal_report. taste_passed is not
@@ -162,6 +216,11 @@ func (w *writer) relayReport(message proto.Message) {
 	if message.Kind == StationPIDKind {
 		return
 	}
+	// Record the report before releasing the Slot: a `needs_input` is a question, and a
+	// released Station must not alert after its report has been answered by the exit path.
+	if w.ledger != nil {
+		w.ledger.report(message.BrewID, message.ShotID, message.Kind)
+	}
 	if w.onTerminal != nil && terminalReportKinds(message.Kind) {
 		w.onTerminal(message.BrewID, message.ShotID)
 	}
@@ -172,6 +231,7 @@ func (w *writer) relayReport(message proto.Message) {
 		Kind:        message.Kind,
 		Description: reportText(message.Description),
 	})
+	w.checkLedger()
 }
 
 // handle acknowledges one line and then acts on it. Every line is acknowledged before it
@@ -227,6 +287,8 @@ func (w *writer) handleWith(line string, dispatch *dispatcher) (stop bool, err e
 }
 
 func (w *writer) emit(e proto.Event) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	e.At = stamp(w.now())
 	// History first, then stdout: a reader that sees an event can rely on it being
 	// recorded, and `status --stations` rebuilds liveness from this file.
@@ -273,6 +335,8 @@ func (w *writer) appendEvent(e proto.Event) error {
 }
 
 func (w *writer) raw(line string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	_, err := io.WriteString(w.out, line+"\n")
 	return err
 }

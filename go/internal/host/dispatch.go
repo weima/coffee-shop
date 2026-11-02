@@ -276,6 +276,9 @@ func (d *dispatcher) launch(ctx context.Context, requestID string, shot ShotRequ
 	d.mu.Lock()
 	d.running[slotKey(requestID, shot.ID)] = run
 	d.mu.Unlock()
+	// The slot key is the Station's session id, which is what a reply and a cancel
+	// address; the alert carries it so a reader can act on the same handle.
+	d.w.stationStarted(requestID, shot.ID, slotKey(requestID, shot.ID))
 	d.w.emit(proto.Event{Type: "session_started", RequestID: requestID, ShotID: shot.ID})
 
 	go func() {
@@ -394,6 +397,7 @@ func (d *dispatcher) release(requestID, shotID string) {
 	if !d.slots.release(requestID, shotID) {
 		return // already released by the other path
 	}
+	d.w.stationFinished(requestID, shotID)
 	d.drainQueue()
 }
 
