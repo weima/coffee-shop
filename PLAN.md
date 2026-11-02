@@ -1,56 +1,62 @@
 # Coffee Shop Implementation Plan
 
-**Reason for existence:** plan and verify Coffee Shop's end-to-end workflow: a main-agent/Barista session receives natural-language Orders (Pi first; Oreo may take this role once stable); a foreground Coffee Shop host starts interactive agent sessions in isolated Herdr workspaces and relays completion or input requests back to the Barista. This plan follows [the architecture](docs/architecture.md) and does not authorize code changes by itself.
+**Reason for existence:** plan and verify Coffee Shop's end-to-end workflow: a main-agent/Barista session receives natural-language Orders (Pi first; Oreo may take this role once stable); a foreground host, `csd`, starts interactive agent **Stations** in isolated Git worktrees and relays their reports and questions back to the Barista. This plan follows [the architecture](docs/architecture.md) and does not authorize code changes by itself.
 
 ## Target user workflow
 
 1. For the first usable path, the developer starts Pi from `~/work/coffee-shop`; this main agent session is the user-facing Barista. Oreo may take this role later once stable.
-2. The active main-agent harness starts Coffee Shop from the `coffee-shop` executable or `odin run src`. The foreground controller stays ready for structured dispatch and control requests; it is not a detached daemon.
+2. The active main-agent harness starts the Coffee Shop host. It is a foreground process serving structured dispatch and control requests; it is not a detached daemon.
 3. The developer gives the main agent a natural-language task for a repository.
-4. The Barista interprets and decomposes the Order, then sends Coffee Shop an explicit Recipe/dispatch request.
-5. Coffee Shop creates a Herdr workspace and isolated Git worktree(s), then starts an interactive Pi worker session. Oreo may be evaluated as an alternative only after the Pi-based Coffee Shop flow is usable.
-6. The worker changes only its worktree. The developer can follow up in the Herdr pane. `needs_input` and completion events return through Coffee Shop to the main agent; user replies route to the same session.
+4. The Barista interprets and decomposes the Order, then sends Coffee Shop an explicit dispatch request whose Shots carry their own prompts.
+5. Coffee Shop creates an isolated Git worktree per Shot and starts a Station: an interactive Pi session in a headless child process.
+6. The Station changes only its worktree. The developer follows it with `status --stations` and `log`. A question arrives as a `needs_input_alert` and is answered with `coffee-shop reply`; a Station that reports nothing for ten minutes raises `stale_warning`.
 7. The Barista reports the outcome. A person reviews and controls integration.
 
-**Input boundary:** The active main-agent window receives raw user text. Coffee Shop waits for structured dispatch/control requests and does not interpret Orders. The local transport is still to be selected.
+**Input boundary:** The active main-agent window receives raw user text. Coffee Shop waits for structured dispatch and control requests, and does not interpret Orders.
 
-## Current state and gap
+## Current state
 
-**The interactive workflow is implemented.** A foreground host reads one JSON request per line and creates a Herdr workspace with an isolated Git worktree per Shot; each Shot runs in an interactive Pi **Station** in a pane, reporting every turn over the activity socket and accepting lines typed into its pane as replies to its agent. `needs_input` reaches the main agent, and completion is reported with the commit and hash, the failure, or the reason.
+**The v0.6 cutover is complete (#173–#177).** Orchestration is Go: `csd` runs the host loop, both sockets, dispatch acceptance, the queue and Slot accounting, Station spawn and watch, the bounded per-Shot log, the relay, the spool, history, the progress ledger and cancel escalation. A Station is a headless Odin child process; no pane, tab or workspace layer exists. Odin keeps the CLI, the Station and its agent relay, the `prepare`/`release`/`station`/`blend` seams, Git worktrees, `pr` and `cleanup`.
 
-The one-shot `brew`/Worker CLI was retired in Wave 3 by decision A1. The foreground host is the supported execution path; `status` lists live host Stations and `log`/`reply` are its controls.
+The one-shot `brew`/Worker CLI was retired in #172, and the Odin host loop in #176. `status`, `log` and `reply` are the live controls; `pr`, `cleanup` and the seams are its other commands.
 
-What remains is in **v0.4**: Oreo as the runtime, the code mode's token measurement, the profiling, and the Station tab pool. Oreo's separate Host/Session work may take either agent role, but Coffee Shop's first usable path works with Pi alone and does not depend on Oreo or Rachel.
+What remains for v0.6 is measurement, not code: the WSL2 half of the five-Shot run and of the sustained-overlap gate, and a Station-side resource sampler that the Go host does not yet have.
 
-## Next interactive-workflow phases
+## How the interactive slices landed
 
-| Slice | Result | Gate |
+| Slice | Result | Evidence |
 | --- | --- | --- |
-| A. Lock the interactive contract | Structured dispatch, session identity, input/result events, transport, and shutdown rules | The main agent can issue a request and address a reply to the correct session without parsing terminal text |
-| B. Add the foreground host | Coffee Shop starts from Pi as an executable or `odin run src`, handles multiple requests, and exits cleanly | Fake-client test proves it remains ready between requests; it never daemonizes |
-| C. Start interactive Pi sessions | Herdr worker sessions remain open for follow-up and work only in isolated Stations | Fake harness verifies session startup, input, and output without an AI service |
-| D. Bridge events and replies | Each Station reports turns to the parent and relays replies to its agent; the host relays Station reports to the main agent | Tests cover turn reports, reply relay, agent exit, duplicate events, and failed delivery |
-| E. Persist and recover sessions | Preserve history across host/session close and reopen; report unfinished work honestly | Reopen tests retrieve closed sessions and never replay side effects automatically |
-| F. Verify the full workflow | Main-agent Order → Coffee Shop → Herdr → interactive Pi worker → main agent | Full E2E passes on Linux and macOS after phases A–E are green; no allocator-leak warnings |
-| G. Optional improvements | Evaluate Oreo for the main or worker agent role, or Rachel as a developer aid, only after the core flow is usable and Oreo is stable | Neither is needed to pass the Coffee Shop usability gate; treat each as a separately approved enhancement |
+| A. Lock the interactive contract | Structured dispatch, session identity, input/result events, transport, shutdown rules | Frozen in `go/internal/proto` with a black-box conformance suite (#147, #148, #162) |
+| B. Add the foreground host | Coffee Shop handles multiple requests and exits cleanly | Contract tests prove it stays ready between requests and never daemonizes |
+| C. Start interactive Pi sessions | Worker sessions stay open for follow-up and work only in isolated Stations | Fake-harness tests cover startup, input and output without an AI service |
+| D. Bridge events and replies | Each Station reports turns to the host; replies reach its agent | Tests cover turn reports, reply relay, agent exit, duplicate events, failed delivery |
+| E. Persist and recover sessions | History survives a host restart; unfinished work is reported honestly | Crash test (#164): a killed host relays the surviving spooled report after restart |
+| F. Verify the full workflow | Order → host → Station → Barista, end to end | Conformance, lifecycle, durability, concurrency and parity gates below |
+| G. Optional improvements | Oreo for either agent role, or Rachel as a developer aid | Neither is needed to pass the usability gate; each is a separately approved enhancement |
 
-**Phase E status: implemented.** The host durably records per-request history, lists recovered sessions, reports unconfirmed Stations as unfinished, and performs no automatic replay after restart.
+### Station (design)
 
-### Station (phase D design)
-
-A **Station** is a `coffee-shop station` process that runs in a Herdr pane for one Shot. It is harness-neutral:
+A **Station** is a `coffee-shop station` process started by the host for one Shot. It is harness-neutral:
 
 1. It launches the agent command (Pi or Oreo) and speaks the Pi RPC subset on the agent's stdin/stdout: `prompt` in, `agent_end` out.
-2. It reports each completed turn to the parent Coffee Shop over the activity socket (`turn_done`, then `agent_exited`).
-3. Lines typed into the Station's pane are replies. The Station sends each one to the agent as a follow-up prompt. Closing the pane's stdin ends the agent and the Station.
+2. It reports each turn to the host over the activity socket (`turn_done`, then `agent_exited`).
+3. Replies reach it as lines on its stdin: `coffee-shop reply` sends one through the host's request socket. Closing stdin ends the agent and the Station.
+4. A research Shot and a Pull are one turn: after the first `agent_end` the Station closes the agent's input so the post-exit checks run. `--interactive` keeps the session open instead.
 
-Each Station runs `pi --mode rpc -e <coffee-shop extension>` next to the user's installed extensions. The extension (`extensions/coffee-shop.ts`) is compiled into the binary and written to `<state>/host/extensions/` at host start. It adds the `coffee_shop_ask` tool, which raises a `select` dialog that reaches the main agent as `needs_input`.
+Each Station runs `pi --mode rpc -e <coffee-shop extension>` next to the user's installed extensions. `csd` installs the extension into `<state>/host/extensions/` at start. It adds the `coffee_shop_ask` tool, whose dialog reaches the main agent as `needs_input`.
 
-Long prompts travel in per-Shot files, and a Shot may choose a model. Shots open as tabs in one Herdr workspace per repository.
+Long prompts travel in per-Shot files, and a Shot may choose a model and thinking level. A Station's output goes to `<state>/host/<request>/logs/<shot>.log`, bounded and rotated once.
 
-The host relays Station reports to the main agent. Replies go to the Station, never to the host.
+The host relays Station reports to the main agent. Replies go to the Station, never to the host. Reports longer than the activity limit are written to `<state>/host/reports/` and relayed in full; the socket carries only the `file:` path. Dialog timeouts are still not tracked.
 
-Implemented: the `station` command and its fake-agent test (`src/station.odin`); the host listener on `<state>/host/activity.sock`, which relays Station reports to stdout as `station_report` events (`src/host.odin`); and Station panes launched by dispatch in place of raw `pi`. Reports longer than the activity limit are written to `<state>/host/reports/` and relayed in full; the socket carries only the `file:` path. Still to do: dialog timeouts.
+
+## Historical record (v0.1–v0.5)
+
+Everything below this point records what shipped in earlier releases. Those sections describe
+the system as it was then: Herdr workspaces and panes, the one-shot `brew`/Worker path, the
+Recipe file format, the Filter and the Tray. All of them have been retired or replaced, so
+read them as the evidence behind the decisions, not as a description of today. The live design
+is the `Current state` section above and [the architecture](docs/architecture.md).
 
 ## Completed one-shot foundation
 
@@ -604,9 +610,9 @@ Each wave is chosen so that the Shots in it own disjoint files. A Pull that need
 
 **Carried in from v0.5, and part of this release:**
 
-- **Delete the Herdr/pane paths** (v0.5 Wave 3 items 6–7): remove `pane_pool.odin`, `host_pane_pool.odin`'s pool half, `pane_clear.odin`, `pane_backend_herdr.odin`, `host_pool_persistence.odin`'s pane recovery half, the pane branches in `host.odin`, `pr.odin`'s pane discovery, `settle.odin`'s tab close; amend the guardrail that names Herdr as required. Retiring the pane-lifecycle document from that list is already done. The code deletions above remain open. This becomes moot for the moved code and must not be re-implemented in Go: the Go host has **no pane backend**.
-- **The sustained-overlap gate** that v0.5 did not prove: five Shots genuinely holding five Slots, with a sixth waiting for a freed one.
-- **The WSL2/macOS measurement** of the removal.
+- **Delete the Herdr/pane paths.** **Done (#174, #176).** The pane backend, the pool, clearing, pane recovery, `pr`'s pane discovery and the Odin host loop are gone; the guardrails no longer name Herdr. The Go host never had a pane backend and must not gain one.
+- **The sustained-overlap gate** that v0.5 did not prove: five Shots genuinely holding five Slots, with a sixth waiting for a freed one. **Passed on macOS (#176 verification).** WSL2 has not run it.
+- **The WSL2/macOS measurement** of the removal. **macOS done; WSL2 outstanding.**
 
 **Phases.**
 
@@ -624,17 +630,17 @@ Each wave is chosen so that the Shots in it own disjoint files. A Pull that need
 - **Concurrency: PASS on macOS.** `go test ./internal/host -run '^TestOverlapGateSustainedFiveSlotOverlap$' -count=1 -v` passed: five Go-host Slots were held while a sixth queued, then released in order and drained.
 - **Parity: Done (#173–#176).** The cutover and the deletions are complete, and no surviving test was weakened: 225 Odin tests and the Go race suite pass, and the conformance goldens recorded from the Odin host still pass against Go. The 95 tests that went with the Odin host exercised code that no longer exists; the behaviour they covered now lives in the Go suite, the conformance harness or the Station's own tests.
 
-### Still open for the cutover
+### Still open for v0.6
 
-Nothing below is claimed done; each item is listed with why it is still open.
+Everything here is measurement or housekeeping; no host code is outstanding.
 
-- **Pane/Herdr deletion is implemented in the current uncommitted branch; parity gate remains open.** The branch removes the pane backend and pool lifecycle while retaining headless reply, cancellation, report, slot, and queue behavior. Run full verification and review before integration.
-- **The sustained five-Slot overlap gate passed on macOS.** The Go integration gate held five real dispatcher Slots while a sixth queued, then verified ordered release, dequeue and completion. WSL2 has not been checked.
-- **macOS measured; WSL2 measurement open.** Five Shots each with a `sleep 30` Taste: per-Shot **31.473–31.859 s**, whole run **37.809 s** while the per-Shot sum was 158.368 s — the five genuinely overlapped. `csd` peaked at **7.6 MiB RSS** and **0.1% CPU** over 40 one-second samples (macOS 25.6, arm64, 10 cores). The measurement covers host-process resources only, not each Station/Pi tree; the Odin v0.4 tree numbers remain the only Station-side baseline. No WSL2 machine is available here, so the cross-platform gate stays open. Artifacts: `/tmp/coffee-shop-v06-macos-30s`.
-- **Blend request handling is restored (#177).** The Go host routes `{"type":"blend"}` to an Odin `blend` seam: the request goes to a file, the seam prints its events, and the host relays and records them. That is the shape `prepare` and `station` already use, so Blend's Git work stays in Odin and the wire contract is unchanged.
+- **The WSL2 half of the measurement.** The macOS run is recorded in phase 5 above; WSL2 is needed to close the cross-platform gate, on a machine that has Go, Odin and an authenticated Pi, with the project inside the Linux filesystem.
+- **The sustained five-Slot overlap gate on WSL2.** It passes on macOS; macOS numbers cannot be called representative until this box passes it too.
+- **Station-side resource sampling.** Gate 5.9 reads `<state>/**/workers/<shot>.resource`, but nothing writes those files since the Odin sampler went with the host in #176, and the Go host samples only itself. The v0.4 Station/tree numbers remain the only Station-side baseline. Closing this needs a sampler in `csd`, which owns the Station pids, before a run can record per-Station CPU and memory on either platform.
+- **Blend has no host-side test against real Git.** The seam is tested against real repositories in Odin, and the Go relay against a fake seam; nothing exercises Go → real seam → Git end to end. Worth adding when Blend is next touched.
 
 **Deliberately out of scope for v0.6:** a second agent runtime, a multiplexer, a detached daemon, remote workers, and rewriting the Git, Recipe, Taste or Blend paths.
 
 ## Scope guardrails
 
-The target is one machine, a main-agent/Barista session (Pi first), a foreground Coffee Shop host, and Herdr. Pi is required for the first usable path. The host and Station supervisor may be implemented in Go from v0.6, behind the same wire contract, and the v0.6 decision to delete Herdr and the pane paths stands: do not add a pane backend, tmux or zmx to the Go host without a separately approved requirement. Oreo may take the main or worker agent role after the Pi-based flow is usable and Oreo is stable; Rachel is an optional developer aid. Neither is a core dependency. Keep task decomposition with the Barista and integration decisions with the developer. The foreground host is in scope; a detached daemon is not. Do not add remote workers, unrelated agent harnesses, tmux or zmx backends, Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.
+The target is one machine, a main-agent/Barista session (Pi first), and a foreground Coffee Shop host. Pi is required for the first usable path. The host and Station supervisor may be implemented in Go from v0.6, behind the same wire contract, and the v0.6 decision to delete Herdr and the pane paths stands: do not add a pane backend, tmux or zmx to the Go host without a separately approved requirement. Oreo may take the main or worker agent role after the Pi-based flow is usable and Oreo is stable; Rachel is an optional developer aid. Neither is a core dependency. Keep task decomposition with the Barista and integration decisions with the developer. The foreground host is in scope; a detached daemon is not. Do not add a pane, tab or workspace layer, a tmux or zmx backend, remote workers, unrelated agent harnesses, Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.
