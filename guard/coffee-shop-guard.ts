@@ -14,8 +14,8 @@
  * Everything here fails open: a broken policy or a missing evidence directory
  * means no blocking and no annotation, never a broken session.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export type Mode = "annotate" | "block";
 
@@ -140,6 +140,86 @@ export function lastVerdict(project: string, now = Date.now()): LastVerdict | nu
   }
 }
 
+const PROJECT_MARKERS = ["justfile", "Justfile", ".justfile"];
+
+export function hasJustfile(dir: string): boolean {
+  return PROJECT_MARKERS.some((marker) => existsSync(join(dir, marker)));
+}
+
+export function hasOdinSources(dir: string): boolean {
+  try {
+    return readdirSync(dir).some((name) => name.endsWith(".odin"));
+  } catch {
+    return false;
+  }
+}
+
+/** A directory is a Rachel project when it has a justfile or any .odin file. */
+export function isRachelProject(dir: string): boolean {
+  return hasJustfile(dir) || hasOdinSources(dir);
+}
+
+/**
+ * projectOf walks up to the nearest justfile, because that is the directory whose
+ * recipes Rachel runs. A subdirectory with .odin files must not shadow it: a
+ * repository with src/ and a root justfile is one project, not two. Only when no
+ * ancestor has a justfile does the nearest directory with Odin sources count.
+ */
+export function projectOf(start: string): string | null {
+  let dir = resolve(start);
+  try {
+    if (!statSync(dir).isDirectory()) dir = dirname(dir);
+  } catch {
+    dir = dirname(dir);
+  }
+  let odinFallback: string | null = null;
+  for (;;) {
+    if (hasJustfile(dir)) return dir;
+    if (odinFallback === null && hasOdinSources(dir)) odinFallback = dir;
+    const parent = dirname(dir);
+    if (parent === dir) return odinFallback;
+    dir = parent;
+  }
+}
+
+function unquote(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length >= 2 && (trimmed[0] === '"' || trimmed[0] === "'") && trimmed.at(-1) === trimmed[0]) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+/**
+ * resolveProject finds the project a command touches, because the guard runs in
+ * Coffee Shop and must not be installed into the projects Coffee Shop works on.
+ *
+ * Candidates come from `cd`, `git -C`, and absolute paths. A command with no
+ * mappable candidate falls back to the session directory; a command that names a
+ * directory which is not a Rachel project returns null, so the guard stays out of
+ * the way of ordinary repositories.
+ */
+export function resolveProject(command: string, sessionDir: string): string | null {
+  const candidates: string[] = [];
+  for (const match of command.matchAll(/\bcd\s+("[^"]+"|'[^']+'|\S+)/g)) {
+    candidates.push(unquote(match[1]));
+  }
+  for (const match of command.matchAll(/\bgit\s+-C\s+("[^"]+"|'[^']+'|\S+)/g)) {
+    candidates.push(unquote(match[1]));
+  }
+  for (const match of command.matchAll(/(^|\s)(\/[^\s;&|"'`]+)/g)) {
+    candidates.push(match[2]);
+  }
+  for (const candidate of candidates) {
+    if (!candidate || candidate.startsWith("-")) continue;
+    const absolute = isAbsolute(candidate) ? candidate : resolve(sessionDir, candidate);
+    const project = projectOf(absolute);
+    if (project) return project;
+  }
+  if (candidates.length === 0) return projectOf(sessionDir);
+  return null;
+}
+
 export function humanAge(ms: number): string {
   if (ms < 1000) return "just now";
   const seconds = Math.floor(ms / 1000);
@@ -149,12 +229,13 @@ export function humanAge(ms: number): string {
   return `${Math.floor(minutes / 60)}h ago`;
 }
 
-export function verdictNote(project: string): string {
+export function verdictNote(project: string, sessionDir?: string): string {
+  const label = sessionDir && project !== sessionDir ? `${project.split("/").pop()}: ` : "";
   const last = lastVerdict(project);
   if (!last) {
-    return "[coffee-shop guard] no Rachel evidence in this project yet: run `rachel verify .` before claiming the work is done.";
+    return `[coffee-shop guard] ${label}no Rachel evidence yet: run \`rachel verify .\` before claiming the work is done.`;
   }
-  return `[coffee-shop guard] last Rachel verdict: ${last.line} (${humanAge(last.ageMs)}, evidence ${last.dir})`;
+  return `[coffee-shop guard] ${label}last Rachel verdict: ${last.line} (${humanAge(last.ageMs)}, evidence ${last.dir})`;
 }
 
 export function rulesSummary(policy: Policy): string {
@@ -166,8 +247,10 @@ export function rulesSummary(policy: Policy): string {
 }
 
 export default function (pi: any) {
-  const project = process.env.COFFEE_SHOP_GUARD_PROJECT || process.cwd();
-  const policy = loadPolicy(join(project, ".pi", "coffee-shop-guard.json"));
+  // Deliberately the session directory, not a target project: the guard is
+  // installed in Coffee Shop only, and resolves target projects per command.
+  const sessionDir = process.env.COFFEE_SHOP_GUARD_PROJECT || process.cwd();
+  const policy = loadPolicy(join(sessionDir, ".pi", "coffee-shop-guard.json"));
 
   pi.on("session_start", async () => {
     try {
@@ -182,16 +265,21 @@ export default function (pi: any) {
 
   pi.on("tool_call", async (event: any) => {
     if (event?.toolName !== "bash") return;
-    const decision = evaluate(policy, String(event?.input?.command ?? ""));
-    if (decision.action === "block") {
-      return { block: true, reason: decision.reason };
-    }
+    const command = String(event?.input?.command ?? "");
+    const decision = evaluate(policy, command);
+    if (decision.action !== "block") return;
+    // No resolved Rachel project means no alternative to offer, so do not block.
+    if (!resolveProject(command, sessionDir)) return;
+    return { block: true, reason: decision.reason };
   });
 
   pi.on("tool_result", async (event: any) => {
     if (event?.toolName !== "bash") return;
     try {
-      const note = verdictNote(project);
+      const command = String(event?.input?.command ?? "");
+      const project = resolveProject(command, sessionDir);
+      if (!project) return undefined;
+      const note = verdictNote(project, sessionDir);
       const content = Array.isArray(event.content)
         ? [...event.content, { type: "text", text: note }]
         : [{ type: "text", text: note }];

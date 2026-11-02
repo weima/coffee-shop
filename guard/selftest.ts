@@ -7,12 +7,19 @@ import {
   DEFAULT_POLICY,
   evaluate,
   humanAge,
+  isRachelProject,
   lastVerdict,
   parsePolicy,
+  projectOf,
+  resolveProject,
   verdictNote,
 } from "./coffee-shop-guard.ts";
 
 let failures = 0;
+
+function nutrition(): string {
+  return join(tmpdir(), "guard-no-such-session");
+}
 
 function check(name: string, actual: unknown, expected: unknown) {
   const a = JSON.stringify(actual);
@@ -88,6 +95,34 @@ try {
   check("verdict note names evidence", verdictNote(project).includes("evidence 00000000000000000001-test"), true);
 } finally {
   rmSync(project, { recursive: true, force: true });
+}
+
+// Project resolution: the guard runs in Coffee Shop and must find the project a
+// command touches, because it is never installed into that project.
+const sandbox = mkdtempSync(join(tmpdir(), "guard-projects-"));
+try {
+  const coffee = join(sandbox, "coffee-shop");
+  const target = join(sandbox, "target");
+  const plain = join(sandbox, "plain");
+  mkdirSync(coffee, { recursive: true });
+  writeFileSync(join(coffee, "justfile"), "check:\n    odin check src\n");
+  mkdirSync(join(target, "src"), { recursive: true });
+  writeFileSync(join(target, "justfile"), "check:\n    odin check -no-entry-point .\n");
+  writeFileSync(join(target, "src", "x.odin"), "package x\n");
+  mkdirSync(plain, { recursive: true });
+  writeFileSync(join(plain, "package.json"), "{}\n");
+
+  check("cd resolves the target", resolveProject(`cd ${target} && odin check .`, coffee), target);
+  check("git -C resolves the target", resolveProject(`git -C ${target} status`, coffee), target);
+  check("an absolute path resolves the target", resolveProject(`cat ${target}/src/x.odin`, coffee), target);
+  check("no path falls back to the session dir", resolveProject("odin check src", coffee), coffee);
+  check("a non-Rachel directory resolves to null", resolveProject(`cd ${plain} && npm test`, coffee), null);
+  check("projectOf walks up from a file", projectOf(join(target, "src", "x.odin")), target);
+  check("projectOf stops at the marker", projectOf(join(target, "src")), target);
+  check("plain is not a Rachel project", isRachelProject(plain), false);
+  check("guard stays quiet with no project", resolveProject(`cd ${plain} && npm test`, nutrition()), null);
+} finally {
+  rmSync(sandbox, { recursive: true, force: true });
 }
 
 if (failures > 0) {
