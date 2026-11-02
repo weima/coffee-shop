@@ -1421,6 +1421,8 @@ verify_stage :: proc(
 	per_package: bool,
 	options: CLI_Options,
 	failed: ^bool,
+	all_lines: ^[dynamic]string,
+	stages: ^[dynamic]string,
 	allocator := context.allocator,
 ) -> bool {
 	started := time.now()
@@ -1431,46 +1433,93 @@ verify_stage :: proc(
 		return false
 	}
 	lines := stage_verdict_lines(summary, fmt.tprintf("rachel: %s ", recipe), allocator)
-	defer delete_string_slice(lines, allocator)
+	stage_start := len(all_lines^)
 	for line in lines {
 		fmt.println(line)
+		_ = append(all_lines, line) // ownership moves to the caller's list
 	}
+	delete(lines)
+	_ = append(stages, strings.clone(recipe, allocator))
 	if summary.ok {
 		return true
 	}
 	failed^ = true
-	record_evidence(options.root, recipe, recipe, started, duration, summary.tests, summary.failure_count, lines[:], options.paths[:], allocator)
+	record_evidence(
+		options.root,
+		recipe,
+		recipe,
+		started,
+		duration,
+		summary.tests,
+		summary.failure_count,
+		all_lines[stage_start:],
+		options.paths[:],
+		allocator,
+	)
 	return options.all_stages
 }
 
+// verify_once writes .rachel/last.json on every path, so a passing run still
+// leaves a current signal for the guard. Failure evidence stays separate.
 verify_once :: proc(options: CLI_Options, allocator := context.allocator) -> int {
+	started := time.now()
 	failed := false
+	all_lines := make([dynamic]string, 0, allocator)
+	defer delete_string_slice(all_lines, allocator)
+	stages := make([dynamic]string, 0, allocator)
+	defer delete_string_slice(stages, allocator)
+
 	if options.stage_check {
-		started := time.now()
+		stage_clock := time.now()
 		check_summary, check_fatal := run_checks(options, allocator)
-		duration := time.since(started)
-		defer check_summary_destroy(&check_summary, allocator)
+		duration := time.since(stage_clock)
 		if check_fatal {
+			_ = last_verdict_write(options.root, started, false, stages[:], all_lines[:], allocator)
 			return 1
 		}
+		defer check_summary_destroy(&check_summary, allocator)
 		lines := check_verdict_lines(check_summary, "rachel: check ", allocator)
-		defer delete_string_slice(lines, allocator)
+		stage_start := len(all_lines)
 		for line in lines {
 			fmt.println(line)
+			_ = append(&all_lines, line)
 		}
+		delete(lines)
+		_ = append(&stages, strings.clone("check", allocator))
 		if !check_summary.ok {
 			failed = true
-			record_evidence(options.root, "check", "check", started, duration, check_summary.checked, check_summary.failures, lines[:], options.paths[:], allocator)
+			record_evidence(
+				options.root,
+				"check",
+				"check",
+				stage_clock,
+				duration,
+				check_summary.checked,
+				check_summary.failures,
+				all_lines[stage_start:],
+				options.paths[:],
+				allocator,
+			)
 			if !options.all_stages {
+				_ = last_verdict_write(options.root, started, false, stages[:], all_lines[:], allocator)
 				return 1
 			}
 		}
 	}
-	if options.stage_test && !verify_stage("test", true, options, &failed, allocator) {
-		return 1
+
+	if options.stage_test {
+		if !verify_stage("test", true, options, &failed, &all_lines, &stages, allocator) {
+			_ = last_verdict_write(options.root, started, failed == false && false, stages[:], all_lines[:], allocator)
+			return 1
+		}
 	}
-	if options.stage_e2e && !verify_stage("e2e", false, options, &failed, allocator) {
-		return 1
+	if options.stage_e2e {
+		if !verify_stage("e2e", false, options, &failed, &all_lines, &stages, allocator) {
+			_ = last_verdict_write(options.root, started, false, stages[:], all_lines[:], allocator)
+			return 1
+		}
 	}
+
+	_ = last_verdict_write(options.root, started, !failed, stages[:], all_lines[:], allocator)
 	return failed ? 1 : 0
 }

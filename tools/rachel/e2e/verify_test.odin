@@ -64,6 +64,18 @@ test_verify_runs_check_then_test_and_stops_on_failure :: proc(t: ^testing.T) {
 	testing.expectf(t, strings.has_prefix(ok_output.stdout, "rachel: check ok"), "missing check stage: %q", ok_output.stdout)
 	testing.expectf(t, strings.contains(ok_output.stdout, "rachel: test ok (1 test)"), "missing test stage: %q", ok_output.stdout)
 
+	// The guard pushes .rachel/last.json, so a passing run must leave one.
+	last_path := fmt.aprintf("%s/.rachel/last.json", project, allocator = context.allocator)
+	defer delete(last_path, context.allocator)
+	testing.expectf(t, os.is_file(last_path), "passing verify left no last verdict file")
+	last_data, last_err := os.read_entire_file(last_path, context.allocator)
+	if last_err == nil {
+		defer delete(last_data)
+		last_text := transmute(string)last_data
+		testing.expectf(t, strings.contains(last_text, "rachel: check ok"), "last verdict lacks the check line: %q", last_text)
+		testing.expectf(t, strings.contains(last_text, `"ok":true`), "last verdict is not marked ok: %q", last_text)
+	}
+
 	write_file(t, module_path, FAILING_TEST_MODULE)
 	fail_output, fail_err := run_to_output([]string{build.binary, "verify", project})
 	defer output_destroy(&fail_output)

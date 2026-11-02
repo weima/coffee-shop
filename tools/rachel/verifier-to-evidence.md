@@ -191,6 +191,22 @@ Done when an agent receives a `rachel_verdict` with no tool call, proven by a te
 - **Stale evidence.** A verdict must name the run directory it produced; an agent
   reading an old directory is the failure mode to design out.
 
+## Delivery and token shape
+
+The guard (outside this plan's slices) pushes `.rachel/last.json` into an agent's
+context with `pi.sendMessage(..., {triggerTurn: false})` on each turn start. That is
+why verify now writes a current signal on **every** run, not only failures:
+
+```
+.rachel/last.json   {"started_ns":…,"ok":true,"stages":["check","test"],
+                     "verdict":["rachel: check ok (1 checked)", …]}
+```
+
+Evidence directories stay failure-only; `last.json` is the cheap current signal.
+The guard annotates only commands a rule matches, because annotating every bash
+result pays on every call and collects the benefit only when the call duplicated
+Rachel.
+
 ## Findings from dogfooding
 
 Recorded as they were found, because each one changed the design.
@@ -218,6 +234,9 @@ Recorded as they were found, because each one changed the design.
 - **A passing stage must not dump its raw output.** `verify` in the dogfood loop
   printed the whole test log on success, burying the two verdict lines a reader
   came for. Raw output is now printed only when a stage fails.
+- **`evidence_prune` could delete the run it had just written.** `readdir` order is
+  arbitrary and the prune loop trusted it, so the newest directory could be evicted
+  immediately, leaving a run with no manifest. Names are now ranked before pruning.
 - **A check-only dogfood loop is not enough.** With `check` in the loop I still ran
   the tests myself, which is exactly the redundancy the loop is supposed to remove.
   Running `verify` in the loop (check + tests, ~1.6 s per save) made one read
