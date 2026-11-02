@@ -109,23 +109,3 @@ resolve_state_root :: proc(override, home: string, allocator := context.allocato
 	}
 	return joined, ""
 }
-
-state_error_message :: proc(err: State_Error) -> string {
-	switch err.kind {
-	case .Corrupt_Register: return "Register is missing or corrupt"
-	case .Corrupt_Receipt: return "Receipt is missing or corrupt"
-	case .Malformed_Receipt: return fmt.tprintf("Receipt line %d is malformed or incomplete", err.line)
-	case .Conflicting_Records: return "Register and Receipt records conflict; Brew state is unknown"
-	case .Invalid_Transition: return "Shot state transition is invalid"
-	case .Cancellation_Pending: return "Shot cancellation is pending"
-	case .Shot_Not_Found: return "Shot is missing from the Register"
-	case .Already_Exists: return "Brew state already exists"
-	case .Invalid_Register: return "Register is invalid"
-	case .Out_Of_Memory: return "not enough memory to update Brew state"
-	case .IO_Error: return "could not read or write Brew state"
-	case .Server_Unavailable: return "the repository server could not be reached"
-	case .Server_Refused: return "the repository server refused the change"
-	case .None: return ""
-	}
-	return "unknown state error"
-}

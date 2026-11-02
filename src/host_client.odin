@@ -72,7 +72,7 @@ host_acquire_lock :: proc(directory: string) -> (file: ^os.File, ok: bool) {
 	if open_err != nil {
 		return nil, false
 	}
-	if !server_lock_try(opened) {
+	if !file_lock_try(opened) {
 		_ = os.close(opened)
 		return nil, false
 	}

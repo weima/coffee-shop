@@ -320,7 +320,7 @@ write_pr_record :: proc(run_dir: string, record: Pr_Record) -> string {
 	if marshal_err != nil {
 		return "could not encode the PR record"
 	}
-	if write_err := write_all_to_file(path, data, os.O_WRONLY|os.O_CREATE|os.O_TRUNC); write_err.kind != .None {
+	if write_err := write_all_to_file(path, data, os.O_WRONLY|os.O_CREATE|os.O_TRUNC); write_err != nil {
 		return "could not write the PR record"
 	}
 	return ""

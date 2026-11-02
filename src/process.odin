@@ -105,7 +105,7 @@ write_file_atomic :: proc(path: string, data: []byte) -> bool {
 		return false
 	}
 	defer delete(temp_path)
-	if write_all_to_file(temp_path, data, os.O_WRONLY | os.O_CREATE | os.O_TRUNC).kind != .None {
+	if write_all_to_file(temp_path, data, os.O_WRONLY | os.O_CREATE | os.O_TRUNC) != nil {
 		_ = os.remove(temp_path)
 		return false
 	}
