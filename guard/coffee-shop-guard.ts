@@ -217,6 +217,49 @@ export function resolveProject(command: string, sessionDir: string): string | nu
   return null;
 }
 
+export interface Signal {
+  id: string;
+  line: string;
+  ageMs: number;
+  ok: boolean;
+}
+
+/**
+ * lastSignal reads .rachel/last.json, which Rachel writes after every verify,
+ * pass or fail. This is the cheap current signal: one file, one line.
+ */
+export function lastSignal(project: string, now = Date.now()): Signal | null {
+  try {
+    const raw = JSON.parse(readFileSync(join(project, ".rachel", "last.json"), "utf8"));
+    const verdict: string[] = Array.isArray(raw?.verdict) ? raw.verdict : [];
+    const started = Number(raw?.started_ns ?? 0) / 1e6;
+    return {
+      id: String(raw?.started_ns ?? 0),
+      line: verdict[0] ?? "no verdict",
+      ageMs: started > 0 ? Math.max(0, now - started) : 0,
+      ok: raw?.ok === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** shouldPush is true only for a signal the agent has not been told about yet. */
+export function shouldPush(lastPushedId: string, signal: Signal | null): boolean {
+  return signal !== null && signal.id !== lastPushedId;
+}
+
+/**
+ * shouldAnnotate is deliberately narrow. Annotating every bash result pays the
+ * cost on every call and collects the benefit only when the call duplicated
+ * Rachel. Only commands a rule already matches are annotated, and never Rachel's
+ * own invocation, which prints the verdict itself.
+ */
+export function shouldAnnotate(policy: Policy, command: string): boolean {
+  if (/^\s*rachel\b/.test(command)) return false;
+  return evaluate(policy, command).action !== "allow";
+}
+
 export function humanAge(ms: number): string {
   if (ms < 1000) return "just now";
   const seconds = Math.floor(ms / 1000);
@@ -228,11 +271,15 @@ export function humanAge(ms: number): string {
 
 export function verdictNote(project: string, sessionDir?: string): string {
   const label = sessionDir && project !== sessionDir ? `${project.split("/").pop()}: ` : "";
+  const signal = lastSignal(project);
+  if (signal) {
+    return `[coffee-shop guard] ${label}${signal.line} (${humanAge(signal.ageMs)})`;
+  }
   const last = lastVerdict(project);
   if (!last) {
-    return `[coffee-shop guard] ${label}no Rachel evidence yet: run \`rachel verify .\` before claiming the work is done.`;
+    return `[coffee-shop guard] ${label}no Rachel verdict yet: run \`rachel verify .\` before claiming the work is done.`;
   }
-  return `[coffee-shop guard] ${label}last Rachel verdict: ${last.line} (${humanAge(last.ageMs)}, evidence ${last.dir})`;
+  return `[coffee-shop guard] ${label}last failure evidence: ${last.line} (${humanAge(last.ageMs)}, evidence ${last.dir})`;
 }
 
 export function rulesSummary(policy: Policy): string {
@@ -260,6 +307,24 @@ export default function (pi: any) {
     }
   });
 
+  let lastPushedId = "";
+
+  // Push, don't make the agent pull: a changed verdict is added to the context
+  // with the next model call, which costs no extra turn.
+  pi.on("turn_start", async () => {
+    try {
+      const signal = lastSignal(sessionDir);
+      if (!shouldPush(lastPushedId, signal) || signal === null) return;
+      lastPushedId = signal.id;
+      await pi.sendMessage(
+        { customType: "coffee-shop-guard", content: `${signal.line} (${humanAge(signal.ageMs)})`, display: true },
+        { triggerTurn: false },
+      );
+    } catch {
+      // A failed push must never break a turn.
+    }
+  });
+
   pi.on("tool_call", async (event: any) => {
     if (event?.toolName !== "bash") return;
     const command = String(event?.input?.command ?? "");
@@ -275,6 +340,7 @@ export default function (pi: any) {
     if (event?.toolName !== "bash") return;
     try {
       const command = String(event?.input?.command ?? "");
+      if (!shouldAnnotate(policy, command)) return undefined;
       const project = resolveProject(command, sessionDir);
       if (!project) return undefined;
       const note = verdictNote(project, sessionDir);

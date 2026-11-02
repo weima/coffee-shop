@@ -812,3 +812,25 @@ test_evidence_writes_manifest_prunes_and_finds_last :: proc(t: ^testing.T) {
 	defer delete(last, context.allocator)
 	testing.expect(t, strings.contains(last, "test"))
 }
+
+@(test)
+test_last_verdict_file_records_a_passing_run :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp("", "rachel-last-*", context.allocator)
+	testing.expect(t, make_err == nil)
+	defer {
+		_ = os.remove_all(root)
+		delete(root)
+	}
+	verdict := []string{"rachel: check ok (1 checked)", "rachel: test ok (3 tests)"}
+	ok := last_verdict_write(root, time.now(), true, []string{"check", "test"}, verdict, context.allocator)
+	testing.expect(t, ok)
+	path := fmt.tprintf("%s/.rachel/%s", root, LAST_VERDICT_FILE)
+	testing.expectf(t, os.is_file(path), "last verdict file missing at %s", path)
+	data, read_err := os.read_entire_file(fmt.tprintf("%s/.rachel/%s", root, LAST_VERDICT_FILE), context.allocator)
+	testing.expect_value(t, read_err, os.Error(nil))
+	defer delete(data)
+	text := transmute(string)data
+	testing.expect(t, strings.contains(text, `"ok":true`))
+	testing.expect(t, strings.contains(text, "rachel: test ok (3 tests)"))
+	testing.expect(t, strings.contains(text, `"check","test"`))
+}

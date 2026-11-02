@@ -13,6 +13,9 @@ import {
   parsePolicy,
   projectOf,
   resolveProject,
+  shouldAnnotate,
+  shouldPush,
+  lastSignal,
   verdictNote,
 } from "./coffee-shop-guard.ts";
 
@@ -142,6 +145,40 @@ try {
 } finally {
   rmSync(sandbox, { recursive: true, force: true });
 }
+
+// Push-on-change and narrow annotation: the token-saving half.
+const signalProject = mkdtempSync(join(tmpdir(), "guard-signal-"));
+try {
+  mkdirSync(join(signalProject, ".rachel"), { recursive: true });
+  check("no signal file means no push", lastSignal(signalProject), null);
+  check("no signal never pushes", shouldPush("", null), false);
+
+  writeFileSync(
+    join(signalProject, ".rachel", "last.json"),
+    JSON.stringify({
+      started_ns: 2_000_000_000,
+      ok: true,
+      stages: ["check", "test"],
+      verdict: ["rachel: check ok (1 checked)", "rachel: test ok (29 tests)"],
+    }),
+  );
+  const signal = lastSignal(signalProject, 3_000);
+  check("signal id is the run start", signal?.id, "2000000000");
+  check("signal line is the summary", signal?.line, "rachel: check ok (1 checked)");
+  check("signal age", signal?.ageMs, 1_000);
+  check("signal ok", signal?.ok, true);
+  check("a new signal pushes", shouldPush("", signal), true);
+  check("the same signal does not push twice", shouldPush("2000000000", signal), false);
+  check("a passing verdict is annotated as ok", verdictNote(signalProject).includes("check ok"), true);
+} finally {
+  rmSync(signalProject, { recursive: true, force: true });
+}
+
+// Only commands a rule matches are annotated, never Rachel's own invocation.
+check("raw check is annotated", shouldAnnotate(policy, "odin check src"), true);
+check("just check is not annotated", shouldAnnotate(policy, "just check"), false);
+check("ls is not annotated", shouldAnnotate(policy, "ls src"), false);
+check("rachel invocation is not annotated", shouldAnnotate(policy, "rachel verify ."), false);
 
 if (failures > 0) {
   console.error(`${failures} guard check(s) failed`);

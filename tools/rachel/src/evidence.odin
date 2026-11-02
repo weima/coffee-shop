@@ -127,16 +127,31 @@ evidence_prune :: proc(root: string, keep: int, allocator := context.allocator) 
 		return
 	}
 	defer os.file_info_slice_delete(entries, allocator)
-	count := 0
-	for i := len(entries) - 1; i >= 0; i -= 1 {
-		if entries[i].type != .Directory {
+
+	// readdir order is arbitrary, so rank the names instead of trusting the
+	// listing order: an earlier version deleted the run it had just written.
+	names := make([dynamic]string, 0, allocator)
+	defer delete(names)
+	for entry in entries {
+		if entry.type == .Directory {
+			_ = append(&names, entry.name)
+		}
+	}
+	if len(names) <= keep {
+		return
+	}
+	threshold := len(names) - keep
+	for name in names {
+		rank := 0
+		for other in names {
+			if other < name {
+				rank += 1
+			}
+		}
+		if rank >= threshold {
 			continue
 		}
-		count += 1
-		if count <= keep {
-			continue
-		}
-		old, join_err := filepath.join({base, entries[i].name}, allocator)
+		old, join_err := filepath.join({base, name}, allocator)
 		if join_err != nil {
 			continue
 		}
@@ -174,4 +189,47 @@ evidence_last :: proc(root: string, allocator := context.allocator) -> (dir: str
 		return "", false
 	}
 	return joined, true
+}
+
+// .rachel/last.json exists after every verify, pass or fail, so a reader has one
+// small current signal instead of having to look for failure evidence.
+LAST_VERDICT_FILE :: "last.json"
+
+Last_Verdict :: struct {
+	started_ns: i64      `json:"started_ns"`,
+	ok:         bool     `json:"ok"`,
+	stages:     []string `json:"stages"`,
+	verdict:    []string `json:"verdict"`,
+}
+
+last_verdict_write :: proc(
+	root: string,
+	started: time.Time,
+	ok: bool,
+	stages: []string,
+	verdict: []string,
+	allocator := context.allocator,
+) -> bool {
+	dir, dir_err := filepath.join({root, ".rachel"}, allocator)
+	if dir_err != nil {
+		return false
+	}
+	defer delete(dir, allocator)
+	if !ensure_directory(dir) {
+		return false
+	}
+	path, path_err := filepath.join({dir, LAST_VERDICT_FILE}, allocator)
+	if path_err != nil {
+		return false
+	}
+	defer delete(path, allocator)
+	data, marshal_err := json.marshal(
+		Last_Verdict{started_ns = started._nsec, ok = ok, stages = stages, verdict = verdict},
+		allocator = context.allocator,
+	)
+	if marshal_err != nil {
+		return false
+	}
+	defer delete(data, context.allocator)
+	return os.write_entire_file_from_string(path, string(data), os.Permissions{.Read_User, .Write_User}) == nil
 }

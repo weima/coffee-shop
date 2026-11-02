@@ -36,14 +36,17 @@ common directory, so the exclusion applies to every worktree of that repository.
 
 ## What it does
 
-1. **Annotates every bash result** with the project's last Rachel verdict and its
-   age, read from `.rachel/evidence/*/manifest.json`. The verdict arrives without
-   the agent having to remember to ask for it, which is the failure this exists to
-   fix.
-2. **Blocks** commands the policy forbids, when installed with `--enforce`. The
+1. **Pushes a changed verdict into the context** on every turn start
+   (`pi.sendMessage(..., {triggerTurn: false})`), reading `.rachel/last.json`,
+   which Rachel writes after every verify, pass or fail. One line, no extra turn,
+   and the agent never has to remember to go looking.
+2. **Annotates only the commands that duplicate Rachel** — the ones a rule already
+   matches. Annotating every bash result pays the cost on every call and collects
+   the benefit only when the call was a redundant check.
+3. **Blocks** commands the policy forbids, when installed with `--enforce`. The
    block message names the rule and the alternative, and the escape token.
-3. **Announces** the active rules once per session with `sendMessage`, so the agent
-   knows enforcement exists.
+4. **Announces** the active rules once per session, so the agent knows enforcement
+   exists.
 
 ## Policy
 
@@ -62,6 +65,21 @@ build|check|test`, and no raw `git worktree`. Add rules as data:
 
 `mode` at the top level decides whether a block rule blocks (`block`) or only
 annotates (`annotate`). A rule may set `"mode": "annotate"` to never block.
+
+## Token shape
+
+The point is transport, not content: Rachel delivers the same diagnostics, so it
+cannot reduce the tokens needed to fix an error. It can reduce:
+
+- **turns**: a verdict that arrives with `triggerTurn: false` costs no tool call,
+  and replaces an `odin check` / `just test` round trip;
+- **output**: one summary line, no snippets, capped errors;
+- **repetition**: the same verdict is pushed once, and only rule-matched commands
+  carry an annotation.
+
+Measured caveat: in the session that produced this guard I read one verdict and
+then ran the compiler myself anyway. The saving exists only if the pushed verdict
+is actually used instead of the raw command.
 
 ## Limits
 
