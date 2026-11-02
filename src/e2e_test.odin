@@ -97,9 +97,12 @@ test_e2e_two_simultaneous_server_starts_leave_one_server :: proc(t: ^testing.T) 
 	testing.expect_value(t, first_err, os.Error(nil))
 	testing.expect_value(t, second_err, os.Error(nil))
 
-	// The loser exits at once; the winner keeps running for the idle timeout.
-	_, first_wait := os.process_wait(first, 3 * time.Second)
-	_, second_wait := os.process_wait(second, 3 * time.Second)
+	// The loser exits at once; the winner keeps running for the idle timeout. The bound is
+	// generous because a full suite runs ten tests at once: under that load the loser's
+	// exit has taken longer than three seconds, which failed this test while single runs
+	// were stable. The invariant is one survivor, not how fast the loser gets there.
+	_, first_wait := os.process_wait(first, 10 * time.Second)
+	_, second_wait := os.process_wait(second, 10 * time.Second)
 	winner := first
 	survivors := 0
 	if first_wait != nil {
