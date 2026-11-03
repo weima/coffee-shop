@@ -445,8 +445,15 @@ run_station :: proc(report_path, station_id, brew_id, prompt, prompt_file, shot_
 	if wait_err != nil || !state.success {
 		return 1
 	}
-	if taste == "" {
+	if shot_kind == SHOT_KIND_RESEARCH {
 		return 0
+	}
+	if taste == "" {
+		if options.interactive {
+			return 0
+		}
+		station_report(&sender, brew_id, station_id, "incomplete", "Execute Shot has no Taste; changes are unverified and remain in the Station worktree")
+		return 1
 	}
 	return station_pull(&sender, brew_id, station_id, taste, message, base_head)
 }
@@ -471,13 +478,13 @@ station_pull :: proc(sender: ^Activity_Sender, brew_id, station_id, taste, messa
 		return 1
 	}
 	if len(changes) == 0 && base_head != "" && station_head() != base_head {
-		return station_report_pulled(sender, brew_id, station_id)
+		return station_report_pulled(sender, brew_id, station_id, base_head, taste)
 	}
 	if len(changes) == 0 {
 		station_report(sender, brew_id, station_id, "taste_passed", "Taste passed with no changes")
 		return 0
 	}
-	return station_commit(sender, brew_id, station_id, message)
+	return station_commit(sender, brew_id, station_id, message, base_head, taste)
 }
 
 // The taste runs through sh in the Station's directory. Its stdin is closed so it
@@ -496,14 +503,14 @@ station_run_taste :: proc(taste: string) -> (exit_code: int, ran: bool) {
 
 // Stages every change and commits it with the Pull's message, using the repository's
 // Git configuration. The report carries the short hash of the new commit.
-station_commit :: proc(sender: ^Activity_Sender, brew_id, station_id, message: string) -> int {
+station_commit :: proc(sender: ^Activity_Sender, brew_id, station_id, message, base_head, taste: string) -> int {
 	add_state, _, _, add_err := os.process_exec(os.Process_Desc{command = {"git", "add", "-A"}}, context.temp_allocator)
 	commit_state, _, _, commit_err := os.process_exec(os.Process_Desc{command = {"git", "commit", "-m", message}}, context.temp_allocator)
 	if add_err != nil || !add_state.success || commit_err != nil || !commit_state.success {
 		station_report(sender, brew_id, station_id, "taste_failed", "commit failed")
 		return 1
 	}
-	return station_report_pulled(sender, brew_id, station_id)
+	return station_report_pulled(sender, brew_id, station_id, base_head, taste)
 }
 
 // The full HEAD hash in the Station's directory, or empty when Git cannot say.
@@ -517,12 +524,25 @@ station_head :: proc() -> string {
 }
 
 // Reports `pulled` with the short hash of HEAD.
-station_report_pulled :: proc(sender: ^Activity_Sender, brew_id, station_id: string) -> int {
+station_report_pulled :: proc(sender: ^Activity_Sender, brew_id, station_id, base_head, taste: string) -> int {
 	hash_state, hash_stdout, _, hash_err := os.process_exec(os.Process_Desc{command = {"git", "rev-parse", "--short", "HEAD"}}, context.temp_allocator)
-	description := "Committed; the commit hash is unavailable"
+	commit := "unavailable"
 	if hash_err == nil && hash_state.success {
-		description = strings.trim_space(string(hash_stdout))
+		commit = strings.trim_space(string(hash_stdout))
 	}
+
+	paths_state, paths_stdout, _, paths_err := os.process_exec(os.Process_Desc{
+		command = {"git", "diff", "--name-only", base_head, "HEAD"},
+	}, context.temp_allocator)
+	defer delete(paths_stdout, context.temp_allocator)
+	paths := "unavailable"
+	if paths_err == nil && paths_state.success {
+		paths = strings.trim_space(string(paths_stdout))
+		if paths == "" {
+			paths = "none"
+		}
+	}
+	description := fmt.tprintf("Commit: %s\nTaste passed (exit 0): %s\nChanged paths:\n%s", commit, taste, paths)
 	station_report(sender, brew_id, station_id, "pulled", description)
 	return 0
 }

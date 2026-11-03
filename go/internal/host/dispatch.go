@@ -17,7 +17,7 @@ import (
 )
 
 // DefaultStationModel is the Pi Station default. An explicit Shot model overrides it.
-const DefaultStationModel = "opencode-go/deepseek-v4.1-flash"
+const DefaultStationModel = "openai-codex/gpt-6-luna"
 
 // ReplyStyle is prepended to every Shot's prompt, as the Odin host does, so a Station's
 // answer is readable without the Barista repeating the rule.

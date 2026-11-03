@@ -4,7 +4,7 @@
 
 Coffee Shop is a local orchestrator for work initiated from a long-lived main-agent session. Pi is the first user-facing **Barista**: it receives a natural-language **Order**, decides the work, and asks a foreground host to run each piece in an isolated Git worktree as an interactive agent **Station**. The first usable workflow uses Pi for both main and worker sessions. Oreo may take either agent role once stable; Oreo and Rachel are optional improvements, not prerequisites.
 
-> **Current status:** The v0.6 cutover is complete. The foreground host is `csd`, written in Go; it dispatches interactive Pi **Stations** as headless child processes, one isolated Git worktree each, relays their reports and alerts, and answers them through `coffee-shop reply`. Odin keeps the Station itself, the CLI, the worktree and `pr`/`cleanup`/`blend` commands. The retired one-shot `brew`/Worker path and the Herdr pane layer are gone. `status`, `log` and `reply` are the live controls. What remains is measurement, which `PLAN.md` lists.
+> **Current status:** The v0.6 cutover is complete. The foreground host is `csd`, written in Go; it dispatches interactive Pi **Stations** as headless child processes, one isolated Git worktree each, relays their reports and alerts, and answers them through `coffee-shop reply`. Odin keeps the Station itself, the CLI, the worktree and `pr`/`cleanup`/`blend` commands. The Pi Barista extension starts the foreground host on the first approved dispatch and relays host events into Pi. The retired one-shot `brew`/Worker path and the Herdr pane layer are gone. `status`, `log` and `reply` are the live controls. What remains is measurement, which `PLAN.md` lists.
 
 
 ## The story behind the names
@@ -54,17 +54,15 @@ Two things to know:
 
 ## Intended interaction flow
 
-1. For the first usable path, start Pi from `~/work/coffee-shop` and keep its main session open. Pi is the user-facing Barista; Oreo may take this role later once stable.
-2. The active main-agent harness starts Coffee Shop from the `coffee-shop` executable or `odin run src`. The foreground host stays ready for structured dispatch and control requests; it is not a detached daemon or a second natural-language agent.
-3. The user gives the main agent a repository task. The Barista interprets the Order, decides the Shots, and sends Coffee Shop a dispatch request.
-4. Coffee Shop creates an isolated Git worktree per Shot and starts an interactive Pi **Station**. Oreo may be evaluated as an alternative only after the Pi-based flow is usable.
-5. The user follows a Station with `status --stations` and `log`, and sends follow-up instructions with `coffee-shop reply`; all project edits stay in the isolated worktree. A Station that asks a question raises `needs_input_alert`.
-6. Coffee Shop relays a Station's reports and questions to the main agent; the Barista brings the question or result to the user and routes the reply back to the same Station.
-7. The Barista reports completion. A person reviews and decides whether to integrate; Coffee Shop does not merge or publish automatically.
+1. Run `just barista` from `~/work/coffee-shop` and keep the Pi session open. The `coffee_shop_dispatch` tool starts the foreground host on demand; it stops with the Pi session. Pi is the user-facing Barista; Oreo may take this role later once stable.
+2. Give the main agent a repository task. The Barista interprets the Order, decides the Shots, reviews the dispatch summary, and sends an approved structured request to the host. Coffee Shop does not decompose natural-language tasks.
+3. Coffee Shop creates an isolated Git worktree per Shot and starts an interactive Pi **Station**. Oreo may be evaluated as an alternative only after the Pi-based flow is usable.
+4. The user follows a Station with `coffee-shop status --stations` and `coffee-shop log`, and sends follow-up instructions with `coffee-shop reply`; all project edits stay in the isolated worktree. A Station that asks a question raises `needs_input_alert`.
+5. Host events and terminal reports appear as Pi notifications. The Barista can inspect durable history and logs with the CLI, then report completion. A person reviews and decides whether to integrate; Coffee Shop does not merge or publish automatically.
 
 **Input boundary:** “Coffee Shop waits for input” means the foreground host waits for structured requests from the active main-agent harness. Raw user text goes to that harness; Coffee Shop does not interpret it.
 
-**Current implementation:** the Go host dispatches interactive Pi Stations as headless child processes, described in [the architecture](docs/architecture.md). Station output goes to bounded per-Shot logs, and no pane, tab or workspace layer exists.
+**Current implementation:** the Pi Barista extension owns the Go host's foreground process for the session, dispatches approved requests over its stdin/stdout protocol, and relays reports as Pi notifications. The Go host dispatches interactive Pi Stations as headless child processes, described in [the architecture](docs/architecture.md). Station output goes to bounded per-Shot logs, and no pane, tab or workspace layer exists.
 
 
 ### The host
@@ -87,6 +85,8 @@ Oreo and Rachel are improvement tracks, not core dependencies: the Coffee Shop w
 | Human review before integration | Persistent second coordinators |
 
 ## Dispatch requests
+
+Start the Barista with `just barista`. When it proposes a recipe, `coffee_shop_dispatch` displays the repository, Shot kinds, prompt previews, and Taste commands for explicit user approval. The extension sends the existing host JSON-line protocol; it adds no second scheduler and does not merge or integrate results. Host progress and terminal reports appear as Pi notifications; use `coffee-shop status --stations` and `coffee-shop log <request-id> <shot-id>` for durable state and full output.
 
 The host reads one JSON request per line. A dispatch names the Beans repository and its Shots;
 each Shot carries its own `prompt` (or a `prompt_file`), and may set `model`, `thinking`, `kind`

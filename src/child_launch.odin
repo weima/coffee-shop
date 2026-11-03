@@ -144,7 +144,7 @@ DEV_CANCEL_TIMEOUT_SECONDS :: 60
 DEV_CANCEL_KILL_SCRIPT :: `(sleep "$1"
 pg=$(ps -o pgid= -p "$2" 2>/dev/null | tr -d ' ')
 [ -n "$pg" ] && [ "$pg" != "$3" ] || exit 0
-if [ "$pg" = "$2" ]; then kill -KILL -- "-$2"; else kill -KILL "$2"; fi) 2>/dev/null </dev/null >/dev/null 2>&1 &`
+if [ "$pg" = "$2" ]; then kill -KILL "-$2"; else kill -KILL "$2"; fi) 2>/dev/null </dev/null >/dev/null 2>&1 &`
 
 // Schedules a guarded SIGKILL of the wrapper (and its group, when it leads one) after seconds.
 dev_cancel_escalate :: proc(wrapper, seconds: int) {
@@ -174,7 +174,7 @@ process_reap :: proc(process: os.Process) -> (state: os.Process_State, err: os.E
 			break
 		}
 		if errno := posix.errno(); errno != .EINTR {
-			return state, errno
+			return state, os.Platform_Error(i32(errno))
 		}
 	}
 	state.exited = true

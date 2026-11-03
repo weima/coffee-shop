@@ -285,7 +285,7 @@ func TestStationArgvNeedsNoQuoting(t *testing.T) {
 		"--prompt-file\x00/state/host/req-1/prompts/shot a.md",
 		"--\x00pi\x00--mode\x00rpc",
 		"--tools\x00+codemode",
-		"--model\x00opencode-go/deepseek-v4.1-flash",
+		"--model\x00openai-codex/gpt-6-luna",
 		"-e\x00/state/host/extensions/coffee-shop.ts",
 	} {
 		if !strings.Contains(joined, want) {

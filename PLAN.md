@@ -20,7 +20,7 @@
 
 The one-shot `brew`/Worker CLI was retired in #172, and the Odin host loop in #176. `status`, `log` and `reply` are the live controls; `pr`, `cleanup` and the seams are its other commands.
 
-What remains for v0.6 is measurement, not code: the WSL2 half of the five-Shot run and of the sustained-overlap gate, and a Station-side resource sampler that the Go host does not yet have.
+The Go host's Station-side resource sampler shipped in #182 and #183. The WSL2 synthetic five-Shot measurement and sustained-overlap gate are now recorded below. They establish headless host/Station behavior and synthetic resource use on WSL2; real Pi task performance and the reported 16 GB incident remain unmeasured.
 
 ## How the interactive slices landed
 
@@ -620,7 +620,7 @@ Each wave is chosen so that the Shots in it own disjoint files. A Pull that need
 2. **The Odin seam.** Add the subcommands Go needs — `prepare` and `release`, alongside the existing `station`, `pr` and `cleanup` — with a JSON failure shape and non-zero exit, so orchestration can drive the work without linking it. **Done (#149).** Both exist (`src/seam.odin`); they validate every path and branch before any Git call, print `{"type":"error","reason":"…"}` on stdout with exit 1, print nothing on success, and `prepare` then `release` is a tested round trip.
 3. **The Go orchestrator.** `csd` runs the host: loop, listeners, dispatch, queue, slots, Station spawn and watch, log pump, relay, spool, history, ledger and cancel escalation, headless only. The Odin Station keeps the turn deadline and the #143 cancel path; its regression tests must stay green, because that fix is now in the other language. **Done (#151, #152, #153, #154, #156, #157, #158, #160, #162, #175; #150 superseded by #151).** `csd` is the host and passes the conformance suite; it serves the activity socket — reports written to history, announced on stdout, spooled copy removed only after relay, and spool entries from a previous host replayed at start; it dispatches through the `prepare` seam, starts Stations with an argv, pumps output into a bounded log, queues Shots beyond five Slots, and releases a Slot on a terminal report; the machine-wide slot budget is shared with the Brew. It holds the host lock, serves the request socket (`reply`), escalates a cancel SIGTERM→SIGKILL, prepares the state directory and hands `CS_CLI` over, and `csd` is embedded in the Odin binary. #175 adds the progress ledger: `needs_input_alert` when a Station asks a question, `stale_warning` after ten minutes without a report, both rebuilt from history at start. The Odin host's alert path never fired — it only set the `needs_input` phase from a test helper — so the Go port derives the phase from the report itself.
 4. **Cut over, then delete.** Default to the Go host, remove the Odin host loop and Station supervisor, then do the v0.5 Wave 3 deletions in the same release. **Done (#173, #174, #175, #176).** Go is the only host: the Odin host loop, dispatch queue, history, request socket, slots, pane backend, ledger and Station sampler are deleted, along with the tests that exercised them. Odin keeps the CLI, the Station, Recipe parsing, Git worktrees, `pr` and `cleanup`. `--impl=odin` is gone, so a caller that asks for it is told there is one host.
-5. **Measure.** The same five-Shot run on macOS and WSL2, wall-clock per Shot, host CPU and resident memory, before and after. **macOS measured; WSL2 outstanding.** Five Shots each ran a `sleep 30` Taste: per-Shot 31.473–31.859 s, whole run 37.809 s, so the five ran concurrently (sum 158.368 s). `csd` peaked at 7.6 MiB RSS and 0.1% CPU over 40 one-second samples. WSL2 is still required to close the gate.
+5. **Measure.** The same five-Shot run on macOS and WSL2, wall-clock per Shot, host CPU and resident memory, before and after. **Measured on both platforms with a synthetic agent; real Pi task performance remains unmeasured.** The macOS run is above. WSL2 evidence is recorded below.
 
 **Gates.**
 
@@ -634,13 +634,64 @@ Each wave is chosen so that the Shots in it own disjoint files. A Pull that need
 
 Everything here is measurement or housekeeping; no host code is outstanding.
 
-- **The WSL2 half of the measurement.** The macOS run is recorded in phase 5 above; WSL2 is needed to close the cross-platform gate, on a machine that has Go, Odin and an authenticated Pi, with the project inside the Linux filesystem.
-- **The sustained five-Slot overlap gate on WSL2.** It passes on macOS; macOS numbers cannot be called representative until this box passes it too.
 - **Station-side resource sampling: done on both platforms.** The Go host samples each Station and its descendants every two seconds and writes `<state>/host/<request>/workers/<shot>.resource` in the format `tools/gates` reads. Linux reads `/proc`; macOS reads `proc_pid_rusage` and `proc_pidinfo` through libproc, which is the one place Coffee Shop uses cgo (`//go:build darwin && cgo`). A macOS build with `CGO_ENABLED=0` still compiles and reports every metric as unknown rather than zero, so the generated report says `not measured` instead of claiming a number.
 - **Blend has no host-side test against real Git.** The seam is tested against real repositories in Odin, and the Go relay against a fake seam; nothing exercises Go → real seam → Git end to end. Worth adding when Blend is next touched.
+
+### WSL2 measurement (2026-11-03)
+
+The five-Shot host measurement ran on WSL2 with the repository on ext4, Herdr absent from `PATH`, and the existing synthetic measurement agent. All five Shots reached `pulled`; their Taste held for 30 seconds. Per-Shot elapsed time was 32.883–34.316 seconds; whole-run span was 45.597 seconds versus 168.167 seconds summed across Shots. The Go host peaked at 12.2 MiB RSS and 1.8% CPU over 48 samples.
+
+The Station-tree sampler recorded 3 children and 473–476 MiB peak RSS per Shot; Station descriptors peaked at 49–58 and tree descriptors at 64. Machine: WSL2 kernel `6.18.54.1-microsoft-standard-WSL2`, ext4 Linux filesystem, 8 CPUs, 20,483,772 kB reported memory. Full artifacts: `/tmp/coffee-shop-v07-wsl2-20261103T154134Z` (`report.md`, `machine.txt`, `events.jsonl`, `host-peaks.csv`, `per-shot.csv`, and per-Station `.resource` records).
+
+**Limit.** The measurement substitutes a small scripted agent for Pi. It measures Coffee Shop, Odin Station, and the host under concurrent load, not model/runtime memory or the real-task 16 GB incident. The WSL2 sustained-overlap integration test passed in the same `just test` run. Keep the real Pi task and resource gate open in v0.7.
 
 **Deliberately out of scope for v0.6:** a second agent runtime, a multiplexer, a detached daemon, remote workers, and rewriting the Git, Recipe, Taste or Blend paths.
 
 ## Scope guardrails
 
 The target is one machine, a main-agent/Barista session (Pi first), and a foreground Coffee Shop host. Pi is required for the first usable path. The host and Station supervisor may be implemented in Go from v0.6, behind the same wire contract, and the v0.6 decision to delete Herdr and the pane paths stands: do not add a pane backend, tmux or zmx to the Go host without a separately approved requirement. Oreo may take the main or worker agent role after the Pi-based flow is usable and Oreo is stable; Rachel is an optional developer aid. Neither is a core dependency. Keep task decomposition with the Barista and integration decisions with the developer. The foreground host is in scope; a detached daemon is not. Do not add a pane, tab or workspace layer, a tmux or zmx backend, remote workers, unrelated agent harnesses, Relay, automatic merge, PR creation, publishing, or a general configuration system without a separately approved requirement.
+
+## Roadmap: v0.7.0 — one dependable task from dispatch to verified result
+
+**Goal.** Make the existing Pi Barista → Go host → isolated Station workflow dependable for one real development task on WSL2. A run must start predictably, stay within a measured resource budget, make progress visible, and end with evidence a person can review. This release improves execution and recovery; it does not make Coffee Shop interpret natural-language Orders or replace the Barista.
+
+**Why this is the next release.** Dogfood exposed failures at different boundaries: a host build error prevented any Station from launching; a repeated branch name prevented worktree creation; a Station did only part of a feature and reported it incomplete; a later implementation still lacked complete verification in the target worktree. A separate WSL session reported a 16 GB memory spike, but its cause was never established. These are evidence for explicit launch, completion, and resource gates—not proof of one shared root cause.
+
+**Settled decisions.** Herdr and pane management are removed; do not reintroduce them. Go owns orchestration because its process and asynchronous supervision model is a better fit for the host. Odin continues to own the CLI, Station, worktree operations, Taste, Blend, `pr` and cleanup. Preserve the current wire contract unless a concrete compatibility defect requires a versioned change.
+
+### Delivery slices
+
+1. **Safe launch.** Preflight the host, Pi route, repository and worktree; make startup and branch-collision failures explicit and recoverable without deleting prior work.
+2. **Controlled run.** Make queue, progress, stale state, deadlines, cancellation and host restart observable and bounded; choose WSL2 concurrency from measured Station-tree usage.
+3. **Verified result.** Distinguish turn completion from task completion; return the diff, branch/commit and Taste evidence, including checks not run. Keep incomplete work available for review and Barista-directed follow-up.
+4. **WSL2 dogfood.** Run a scoped real task through the normal Pi/Go/Odin path and repeat the deterministic launch, recovery and regression gates. Record measured evidence before calling the workflow usable.
+
+Deliver in order: safe launch before controlled-run changes, then verified-result reporting, then the WSL2 acceptance run. The slices stay within the existing Barista boundary; none adds autonomous task decomposition or integration.
+
+### Current progress
+
+| Slice | Status | Evidence |
+| --- | --- | --- |
+| Safe launch | In progress | Existing-branch preflight returns a non-destructive recovery message. The WSL2 dash-compatible cancellation fix and sampler-test fixture correction are covered by passing `just test`; `just check` also passes. |
+| Controlled run | Partial | WSL2 synthetic overlap/resource baseline recorded; a WSL-incompatible dev-cancel kill syntax was fixed. Queue/deadline and real-Pi resource behavior remain open. |
+| Verified result | In progress | Pull reports include commit, Taste command/result and changed paths; one-turn execute without Taste reports `incomplete`. The Go race suite and all 137 Odin tests pass, including exact commit/Taste/path report assertions; `odin check src`, `go vet ./...`, and `just build` pass. |
+| WSL2 dogfood | Partial | Synthetic five-Shot baseline recorded above. A real Pi task and its memory profile remain open. |
+
+### Work
+
+1. **Close the WSL2 baseline.** Run the existing five-Shot measurement and sustained-overlap gate on WSL2, with the repository on the Linux filesystem, no Herdr dependency, an authenticated Pi, and the Station resource sampler enabled. Record OS/kernel, machine facts, run artifacts, per-Station and descendant peak RSS, child counts, CPU where available, and elapsed time. The 16 GB incident remains unresolved until reproduced or ruled out; do not present macOS results as WSL2 evidence.
+2. **Make startup failures actionable.** Before accepting a dispatch, check the required host/CLI, Pi executable and model route, repository path/state, and the ability to prepare a worktree. On failure, emit one durable, specific terminal reason and leave existing branches and worktrees untouched. Detect an existing generated branch before attempting creation; report its name and a safe recovery action rather than repeatedly failing on the same collision.
+3. **Bound and expose the run.** Ensure startup, queued work, Station turns, cancellation, and shutdown cannot leave the user waiting without a deadline or an explanation. `status` must distinguish queued, starting, active, waiting for a reply, stale, cancelling, and terminal states using host evidence. A stale warning remains advisory; cancellation is explicit and must reach the Station and its agent.
+4. **Make completion reviewable.** Keep turn reports distinct from terminal outcomes. For a verified Pull, report the branch/commit, changed paths, and configured Taste command and exit result. An execute Shot without a Taste, a successful agent turn alone, or a failed check is never task completion: report `incomplete` or `taste_failed` and keep the worktree available for human inspection or a Barista-directed follow-up.
+5. **Choose concurrency from WSL evidence.** Use measured Station-plus-descendant resource peaks to set and document a safe initial concurrency for WSL2. Until that evidence exists, the dogfood gate uses one active Station. Do not add adaptive scheduling or a general resource-configuration framework in this release. Raise the limit only when the measured workload fits the documented machine budget without harming responsiveness.
+
+### Acceptance gates
+
+- **WSL2 launch:** From a fresh state root, a real Pi execute Shot starts on WSL2 with Herdr absent, in a worktree created from the expected repository `HEAD`. A missing executable, invalid model route, invalid repository, or branch collision produces an actionable failure before the user is left waiting.
+- **One real task:** Complete one scoped change in a real Beans repository through the normal Barista and Coffee Shop path. The Station works only in its isolated worktree; the final report identifies the diff, verification evidence, branch and commit. The Barista can inspect the result and direct a follow-up through `reply` when needed. Human review and integration remain explicit.
+- **Honest outcomes:** Exercise success, no changes, Taste failure, agent exit, missing/failed verification, cancellation, and a request for human input. Each produces the correct terminal or waiting state; no `turn_done` or lost report is represented as success.
+- **Recovery:** Kill the host during a real or deterministic Station run. On restart, every terminal report is either relayed or recoverable from durable state; no worktree or branch is silently deleted. A repeated request ID/branch cannot strand the run in an opaque failure.
+- **Resource safety:** Record a single-Station WSL2 baseline and the accepted initial concurrency's peak memory, process tree and elapsed time. The run stays within the documented machine budget and the machine remains responsive. If the gate cannot be run, record the blocker and keep the release gate open rather than guessing.
+- **Regression checks:** Go race tests, Odin tests, black-box protocol conformance, and the relevant real-Git worktree/Taste checks pass. Run the end-to-end dogfood gate three times from clean disposable state roots; report every failure and do not hide flakes with reruns.
+
+**Out of scope for v0.7.** Natural-language task decomposition inside Coffee Shop; autonomous task repair or unbounded follow-up; multiple agent runtimes; parallel task planning; Herdr, panes or another multiplexer; remote workers or a detached daemon; automatic merge, PR creation or publishing; broad cleanup of historical v0.1–v0.6 plan sections. These require separate evidence and approval.
