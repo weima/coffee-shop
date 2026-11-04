@@ -143,6 +143,7 @@ func fakeDurabilityStation(argv []string) {
 // TestDurabilityGateSpoolCarriesReportsAcrossAHostCrash is the gate: a host is killed
 // mid-run and the next host recovers the terminal report it never announced.
 func TestDurabilityGateSpoolCarriesReportsAcrossAHostCrash(t *testing.T) {
+	t.Setenv("CS_AGENT", fakePi(t, true))
 	if _, err := exec.LookPath("odin"); err != nil {
 		t.Skipf("odin is not on PATH: %v", err)
 	}
@@ -153,7 +154,7 @@ func TestDurabilityGateSpoolCarriesReportsAcrossAHostCrash(t *testing.T) {
 	// The replay reads the spool oldest first, so entry names sort by timestamp, as the
 	// real Station names them.
 	cliPath := writeDurabilityFakeCLI(t)
-	repo := shortRoot(t)
+	repo := committedDispatchRepo(t)
 
 	// The state root is the killed host's state and the restarted host's state: the gate
 	// is about what the first run leaves behind, so both run on the root. The host dir
@@ -236,7 +237,7 @@ func startHostProcess(t *testing.T, cliPath, stateRoot string) (*hostProcess, *s
 	// The state root must be short: the unix socket path has to fit the platform limit.
 	cmd := exec.Command("go", "run", "./cmd/csd")
 	cmd.Dir = moduleRoot
-	cmd.Env = hostEnvironment(cliPath, stateRoot)
+	cmd.Env = hostEnvironment(cliPath, stateRoot, fakePi(t, true))
 	setProcessGroup(cmd)
 
 	in, writeIn, err := os.Pipe()
@@ -293,7 +294,7 @@ func (h *hostProcess) WaitDone() <-chan struct{} { return h.waited }
 
 // hostEnvironment hands the child a clean CS_ surface: a stray CS_STATE_DIR or CS_CLI in
 // the shell running the suite would point the host at the wrong state or seam.
-func hostEnvironment(cliPath, stateRoot string) []string {
+func hostEnvironment(cliPath, stateRoot, agent string) []string {
 	env := make([]string, 0, len(os.Environ())+3)
 	for _, entry := range os.Environ() {
 		if strings.HasPrefix(entry, "CS_") {
@@ -304,9 +305,7 @@ func hostEnvironment(cliPath, stateRoot string) []string {
 	return append(env,
 		"CS_STATE_DIR="+stateRoot,
 		"CS_CLI="+cliPath,
-		// csd's dispatcher passes CS_AGENT through to the Station command; a fake Station
-		// ignores it, but the argv must stay valid.
-		"CS_AGENT=dummy",
+		"CS_AGENT="+agent,
 	)
 }
 

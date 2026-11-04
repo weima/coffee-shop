@@ -103,11 +103,10 @@ func cancelIntegrationHost(t *testing.T, root, fakeCLI string) (in io.WriteClose
 	t.Helper()
 	cmd := exec.Command("go", "run", "./cmd/csd")
 	cmd.Dir = filepath.Join(repoRoot(t), "go")
-	// CS_AGENT stays unset: the CLI's station argv supplies the agent, and the fake CLI
-	// swaps it for the blocked one.
+	// The fake CLI swaps the Pi executable for the blocked agent when it launches Odin.
 	env := make([]string, 0, len(os.Environ()))
 	for _, entry := range os.Environ() {
-		if strings.HasPrefix(entry, "CS_AGENT=") || strings.HasPrefix(entry, "CS_STATION_MODEL=") {
+		if strings.HasPrefix(entry, "CS_STATION_MODEL=") {
 			continue
 		}
 		env = append(env, entry)
@@ -238,6 +237,7 @@ func stationProcesses(brewArg string) (lines []string, err error) {
 }
 
 func TestCancelStopsARealOdinStationEvenWhenItsAgentBlockedOnAReply(t *testing.T) {
+	t.Setenv("CS_AGENT", fakePi(t, true))
 	if _, err := exec.LookPath("odin"); err != nil {
 		t.Skip("odin is not on PATH")
 	}
@@ -265,12 +265,7 @@ func TestCancelStopsARealOdinStationEvenWhenItsAgentBlockedOnAReply(t *testing.T
 	if err := os.WriteFile(filepath.Join(extensionDir, "coffee-shop.ts"), []byte("// stand-in"), 0o600); err != nil {
 		t.Fatalf("extension file: %v", err)
 	}
-	// The Shot's repo path only feeds the seam; the fake prepare creates directories
-	// rather than worktrees, so any existing path works.
-	repo := dir
-	if err := os.MkdirAll(repo, 0o700); err != nil {
-		t.Fatalf("repo dir: %v", err)
-	}
+	repo := committedDispatchRepo(t)
 
 	in, out, stop := cancelIntegrationHost(t, root, fakeCLI)
 	defer stop()

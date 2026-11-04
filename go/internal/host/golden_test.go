@@ -15,7 +15,7 @@ import (
 func TestDispatchEventSequenceIsStable(t *testing.T) {
 	_, out, input, stop := startHostWithInput(t)
 	defer stop()
-	repo := shortRoot(t)
+	repo := committedDispatchRepo(t)
 
 	request := `{"type":"dispatch","request_id":"req-1","repo":"` + repo + `","recipe":{"shots":[{"id":"shot-a","prompt":"work"}]}}` + "\n"
 	if _, err := input.Write([]byte(request)); err != nil {
@@ -50,7 +50,7 @@ func TestDispatchEventSequenceIsStable(t *testing.T) {
 func TestRelayedReportIsAlsoInHistory(t *testing.T) {
 	root, out, input, stop := startHostWithInput(t)
 	defer stop()
-	repo := shortRoot(t)
+	repo := committedDispatchRepo(t)
 
 	request := `{"type":"dispatch","request_id":"req-1","repo":"` + repo + `","recipe":{"shots":[{"id":"shot-a","prompt":"work"}]}}` + "\n"
 	if _, err := input.Write([]byte(request)); err != nil {

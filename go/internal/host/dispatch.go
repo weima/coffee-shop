@@ -177,13 +177,109 @@ func (d *dispatcher) dispatch(ctx context.Context, requestID string, raw json.Ra
 		shots = append(shots, ShotRequest{ID: shot.ID, Prompt: shot.Prompt, Model: model, Kind: kind, Taste: shot.Taste, Message: shot.Message, Codemode: codemode})
 	}
 
+	failures := make(map[string]string)
+	if reason := preflightRepository(request.Repo); reason != "" {
+		for _, shot := range shots {
+			failures[shot.ID] = reason
+		}
+	} else {
+		for _, shot := range shots {
+			if reason := preflightShot(d.root, requestID, request.Repo, shot); reason != "" {
+				failures[shot.ID] = reason
+			}
+		}
+	}
+
 	d.mu.Lock()
 	d.repo = request.Repo
 	d.mu.Unlock()
 	d.w.emit(proto.Event{Type: "dispatch_accepted", RequestID: requestID})
 	for _, shot := range shots {
+		if reason := failures[shot.ID]; reason != "" {
+			d.fail(requestID, shot.ID, reason)
+			continue
+		}
 		d.startOrQueue(ctx, requestID, request.Repo, shot)
 	}
+}
+
+// preflightRepository checks the read-only facts the final prepare seam will rely on.
+func preflightRepository(repo string) string {
+	if _, err := exec.LookPath("git"); err != nil {
+		return "Git is unavailable; install Git and retry this dispatch"
+	}
+	for _, args := range [][]string{{"rev-parse", "--is-inside-work-tree"}, {"rev-parse", "--verify", "HEAD"}} {
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		output, err := cmd.Output()
+		if err != nil || (args[1] == "--is-inside-work-tree" && strings.TrimSpace(string(output)) != "true") {
+			return fmt.Sprintf("repo %s is not a usable Git worktree with a commit; choose a committed, non-bare repository", repo)
+		}
+	}
+	return ""
+}
+
+// preflightShot validates the selected Pi route and both generated Git resources without
+// creating them. prepare remains the final race-safe check before a worktree is made.
+func preflightShot(root, requestID, repo string, shot ShotRequest) string {
+	agent := os.Getenv("CS_AGENT")
+	if agent == "" {
+		agent = "pi"
+	}
+	binary, err := exec.LookPath(agent)
+	if err != nil {
+		return fmt.Sprintf("Pi executable %q is unavailable; install Pi or set CS_AGENT to its executable path", agent)
+	}
+	provider, model, ok := strings.Cut(shot.Model, "/")
+	if !ok || provider == "" || model == "" {
+		return fmt.Sprintf("Pi model route %q must be provider/model; choose a route shown by pi --list-models", shot.Model)
+	}
+	if i := strings.IndexByte(model, ':'); i >= 0 {
+		model = model[:i]
+	}
+	output, err := exec.Command(binary, "--list-models", provider+"/"+model).Output()
+	if err != nil || !piListsRoute(string(output), provider, model) {
+		return fmt.Sprintf("Pi model route %q is unavailable; choose an installed route from pi --list-models", shot.Model)
+	}
+
+	branch := fmt.Sprintf("cs-host-%s-%s", requestID, shot.ID)
+	branchCheck := exec.Command("git", "-C", repo, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	if err := branchCheck.Run(); err == nil {
+		return fmt.Sprintf("generated Station branch %q already exists; use a new request id or inspect the branch without deleting it", branch)
+	} else if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 1 {
+		return fmt.Sprintf("could not verify generated Station branch %q: %v; check the repository and retry", branch, err)
+	}
+	stationDir := state.StationDir(root, requestID, shot.ID)
+	if _, err := os.Lstat(stationDir); err == nil {
+		return fmt.Sprintf("Station worktree destination %q already exists; use a new request id or inspect it without overwriting it", stationDir)
+	} else if !os.IsNotExist(err) {
+		return fmt.Sprintf("cannot inspect Station worktree destination %q: %v; check its parent directory and retry", stationDir, err)
+	}
+	for parent := filepath.Dir(stationDir); ; parent = filepath.Dir(parent) {
+		info, err := os.Stat(parent)
+		if err == nil {
+			if !info.IsDir() {
+				return fmt.Sprintf("Station worktree parent %q is not a directory; move the conflicting file and retry", parent)
+			}
+			break
+		}
+		if !os.IsNotExist(err) {
+			return fmt.Sprintf("cannot inspect Station worktree parent %q: %v; check its permissions and retry", parent, err)
+		}
+		if next := filepath.Dir(parent); next == parent {
+			return fmt.Sprintf("cannot find a usable parent for Station worktree destination %q; check the destination path", stationDir)
+		}
+	}
+	return ""
+}
+
+func piListsRoute(output, provider, model string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == provider && fields[1] == model {
+			return true
+		}
+	}
+	return false
 }
 
 // startOrQueue starts a Shot when a Slot is free, otherwise queues it.

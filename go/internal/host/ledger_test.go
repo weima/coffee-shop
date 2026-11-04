@@ -183,7 +183,7 @@ func TestNeedsInputAlertReachesTheHostStream(t *testing.T) {
 	_, out, writeIn, stop := dispatchHostWithInput(t)
 	defer stop()
 
-	repo := shortRoot(t)
+	repo := committedDispatchRepo(t)
 	if _, err := io.WriteString(writeIn, dispatchRequestJSON(repo, "shot-a")+"\n"); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
