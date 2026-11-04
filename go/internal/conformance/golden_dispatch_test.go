@@ -96,6 +96,17 @@ func TestGoldenDispatchStream(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 
+	// Dispatch preflight requires a committed Git worktree, even though the fake CLI
+	// does not create a real Station worktree.
+	for _, args := range [][]string{
+		{"-C", root, "init", "-q"},
+		{"-C", root, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+
 	// Dispatch refuses to launch without the extension csd installs before host.Run.
 	if _, err := extension.Install(root); err != nil {
 		t.Fatalf("install extension: %v", err)
@@ -106,7 +117,7 @@ func TestGoldenDispatchStream(t *testing.T) {
 		t.Fatalf("fake CLI: %v", err)
 	}
 	agent := filepath.Join(root, "agent")
-	if err := os.WriteFile(agent, []byte("#!/bin/sh\n"), 0o700); err != nil {
+	if err := os.WriteFile(agent, []byte("#!/bin/sh\nif [ \"$1\" = \"--list-models\" ]; then\n  printf '%s\\n' 'provider model context' 'openai-codex gpt-6-luna 272K'\n  exit 0\nfi\nexit 2\n"), 0o700); err != nil {
 		t.Fatalf("agent: %v", err)
 	}
 
@@ -159,11 +170,13 @@ func runGoldenHost(ctx context.Context, t *testing.T, modRoot, root, cli, agent,
 	t.Helper()
 
 	cmd := exec.CommandContext(ctx, "go", "run", "./cmd/csd")
+	cmd.WaitDelay = time.Second
 	cmd.Dir = modRoot
 	cmd.Env = append(os.Environ(),
 		"CS_STATE_DIR="+root,
 		"CS_CLI="+cli,
 		"CS_AGENT="+agent,
+		"CS_STATION_MODEL=openai-codex/gpt-6-luna",
 	)
 
 	var stderr strings.Builder
@@ -191,11 +204,21 @@ func runGoldenHost(ctx context.Context, t *testing.T, modRoot, root, cli, agent,
 	for scanner.Scan() {
 		line := scanner.Text()
 		lines = append(lines, line)
+		if strings.Contains(line, `"type":"session_failed"`) {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			t.Fatalf("dispatch rejected before the expected pulled report: %s\nstderr: %.2000s", line, stderr.String())
+		}
 		if !shutdownSent && strings.Contains(line, `"type":"station_report"`) && strings.Contains(line, `"kind":"pulled"`) {
 			_, _ = io.WriteString(stdin, shutdown)
 			_ = stdin.Close()
 			shutdownSent = true
 		}
+	}
+	if !shutdownSent {
+		_ = cmd.Process.Kill()
+		_ = stdout.Close()
+		t.Fatalf("host stdout closed before the expected pulled report:\n%s\nstderr: %.2000s", strings.Join(lines, "\n"), stderr.String())
 	}
 	if waitErr := cmd.Wait(); waitErr != nil {
 		t.Fatalf("host failed: %v\nstderr: %.2000s", waitErr, stderr.String())
