@@ -98,6 +98,8 @@ export default function coffeeShopBarista(pi: ExtensionAPI): void {
 			const terminal = TERMINAL_REPORTS.has(event.kind ?? "");
 			const severity = event.kind === "taste_failed" || event.kind === "incomplete" || event.kind === "session_failed" ? "warning" : "info";
 			notify(`${requestId}/${event.shot_id}: ${event.kind ?? "report"}${terminal ? " (finished)" : ""}${event.description ? ` — ${event.description}` : ""}`, severity);
+		} else if (event.type === "station_update") {
+			notify(`${requestId}/${event.shot_id}: ${event.kind ?? "active"} — ${event.description ?? "still running"}`);
 		} else if (event.type === "warning" || event.type === "stale_warning") {
 			notify(`${requestId}/${event.shot_id ?? ""}: ${event.reason ?? event.type}`, "warning");
 		}

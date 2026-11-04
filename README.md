@@ -108,7 +108,7 @@ These are behaviours observed while building and dogfooding Coffee Shop, not fut
 
 - **Linux, WSL and macOS.** On WSL, keep `CS_STATE_DIR` on the Linux filesystem, not under `/mnt/c`. Native Windows is not supported.
 - **Five Slots per host, and a machine-wide budget of the same size.** Shots beyond that queue and start as Slots free; there is no timeout.
-- **A Station is silent until it reports.** `status --stations` reads the host's history, not the process table, so a Station that has said nothing looks idle until `stale_warning` fires at ten minutes.
+- **Status polls are not model progress.** The Barista receives each live Station's phase and report age every three seconds. `status --stations` still reads host history, not the process table; a Station that has not reported for ten minutes also raises `stale_warning`.
 - **Stations start from the Beans' `HEAD` commit.** Uncommitted changes are invisible to a Station, so commit first.
 - **Nothing is deleted automatically.** Station worktrees, branches and state accumulate until you remove them: `pr` and `cleanup` are the supported path.
 - **Station output is capped.** A Shot's log is bounded and rotated once, so a Station that prints without end keeps only its newest output.

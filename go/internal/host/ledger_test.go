@@ -82,6 +82,16 @@ func TestControlledRunDeadlinesPersistFailuresAndCompletionDoesNotExpire(t *test
 	}
 }
 
+func eventsOfType(events []proto.Event, kind string) []proto.Event {
+	filtered := make([]proto.Event, 0, len(events))
+	for _, event := range events {
+		if event.Type == kind {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
+}
+
 func TestLedgerNeedsInputAlertsOncePerQuestion(t *testing.T) {
 	l, _ := newTestLedger()
 	l.addStation("req-1", "shot-a", "req-1/shot-a")
@@ -118,31 +128,63 @@ func TestLedgerStaleWarnsOnceAndProgressResetsIt(t *testing.T) {
 	l.updatePhase("req-1", "shot-a", phaseRunning)
 
 	clock.advance(StaleThreshold - time.Second)
-	if early := check(l); len(early) != 0 {
+	if early := eventsOfType(check(l), "stale_warning"); len(early) != 0 {
 		t.Fatalf("a Station under the threshold must not warn, got %v", early)
 	}
 
 	clock.advance(time.Second)
-	warned := check(l)
-	if len(warned) != 1 || warned[0].Type != "stale_warning" {
+	warned := eventsOfType(check(l), "stale_warning")
+	if len(warned) != 1 {
 		t.Fatalf("want one stale_warning at the threshold, got %v", warned)
 	}
 	if warned[0].Reason != "10 minutes without progress" {
 		t.Fatalf("warning must say how long: %q", warned[0].Reason)
 	}
-	if repeat := check(l); len(repeat) != 0 {
+	if repeat := eventsOfType(check(l), "stale_warning"); len(repeat) != 0 {
 		t.Fatalf("a stale Station warns once, got %v", repeat)
 	}
 
 	// Any report restarts the quiet period, so the next warning comes a full threshold later.
 	l.report("req-1", "shot-a", "turn_done")
 	clock.advance(StaleThreshold - time.Second)
-	if early := check(l); len(early) != 0 {
+	if early := eventsOfType(check(l), "stale_warning"); len(early) != 0 {
 		t.Fatalf("progress must reset the warning, got %v", early)
 	}
 	clock.advance(time.Second)
-	if again := check(l); len(again) != 1 || again[0].Type != "stale_warning" {
+	if again := eventsOfType(check(l), "stale_warning"); len(again) != 1 {
 		t.Fatalf("want a second warning after another quiet period, got %v", again)
+	}
+}
+
+func TestLedgerPollsEveryThreeSecondsWithoutResettingStaleness(t *testing.T) {
+	l, clock := newTestLedger()
+	l.addStation("req-1", "shot-a", "req-1/shot-a")
+	l.addStation("req-1", "shot-b", "req-1/shot-b")
+	l.report("req-1", "shot-b", "needs_input")
+
+	clock.advance(StationUpdateInterval - time.Nanosecond)
+	if updates := eventsOfType(check(l), "station_update"); len(updates) != 0 {
+		t.Fatalf("must not poll before three seconds: %v", updates)
+	}
+	clock.advance(time.Nanosecond)
+	updates := eventsOfType(check(l), "station_update")
+	byShot := map[string]proto.Event{}
+	for _, update := range updates {
+		byShot[update.ShotID] = update
+	}
+	if len(byShot) != 2 || byShot["shot-a"].Kind != string(phaseRunning) || byShot["shot-b"].Kind != string(phaseNeedsInput) {
+		t.Fatalf("poll should identify every live Station and phase: %v", updates)
+	}
+	if byShot["shot-a"].RequestID != "req-1" || byShot["shot-a"].Description != "last Station report 3s ago" {
+		t.Fatalf("poll should include the Station identity and report age: %+v", byShot["shot-a"])
+	}
+	if repeated := eventsOfType(check(l), "station_update"); len(repeated) != 0 {
+		t.Fatalf("poll repeated before its interval: %v", repeated)
+	}
+
+	clock.advance(StaleThreshold - StationUpdateInterval)
+	if warnings := eventsOfType(check(l), "stale_warning"); len(warnings) != 2 {
+		t.Fatalf("polling must not reset either Station's stale tracking: %v", warnings)
 	}
 }
 
@@ -204,18 +246,15 @@ func TestLedgerRebuildsWaitingAndQuietStationsFromHistory(t *testing.T) {
 	// past shot-a's ten minutes only shot-a is quiet enough to warn. Using the restart
 	// time instead would have warned about all three.
 	clock.advance(StaleThreshold + time.Second)
-	events = check(l)
-	if len(events) != 1 || events[0].Type != "stale_warning" || events[0].ShotID != "shot-a" {
+	events = eventsOfType(check(l), "stale_warning")
+	if len(events) != 1 || events[0].ShotID != "shot-a" {
 		t.Fatalf("want only the Station quiet since 12:00:01 to warn, got %v", events)
 	}
 
 	// Three seconds later the other two cross their own thresholds.
 	clock.advance(3 * time.Second)
 	warned := map[string]bool{}
-	for _, e := range check(l) {
-		if e.Type != "stale_warning" {
-			t.Fatalf("want only warnings, got %v", e)
-		}
+	for _, e := range eventsOfType(check(l), "stale_warning") {
 		warned[e.ShotID] = true
 	}
 	if !warned["shot-b"] || !warned["shot-c"] {

@@ -12,6 +12,7 @@ package host
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -25,6 +26,9 @@ import (
 // It is a warning, never a cancel: a long Taste is legitimate.
 const StaleThreshold = 10 * time.Minute
 
+// StationUpdateInterval keeps the Barista informed without pretending a heartbeat is progress.
+const StationUpdateInterval = 3 * time.Second
+
 // LedgerPollInterval is how often the host checks for staleness. Reports are checked
 // immediately when they arrive, so this only bounds the warning's delay.
 const LedgerPollInterval = time.Second
@@ -33,7 +37,6 @@ const LedgerPollInterval = time.Second
 type stationPhase string
 
 const (
-	phaseDispatched stationPhase = "dispatched"
 	phaseRunning    stationPhase = "running"
 	phaseNeedsInput stationPhase = "needs_input"
 	phaseDone       stationPhase = "done"
@@ -45,6 +48,7 @@ type progressStation struct {
 	paneID       string
 	phase        stationPhase
 	lastProgress time.Time
+	lastPoll     time.Time
 	lastReport   string
 	staleWarned  bool // the stale warning was emitted for this quiet period
 	alerted      bool // needs_input_alert was emitted for this question
@@ -72,12 +76,14 @@ func stationKey(requestID, shotID string) string { return requestID + "/" + shot
 func (l *progressLedger) addStation(requestID, shotID, paneID string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	now := l.now()
 	l.stations[stationKey(requestID, shotID)] = &progressStation{
 		requestID:    requestID,
 		shotID:       shotID,
 		paneID:       paneID,
-		phase:        phaseDispatched,
-		lastProgress: l.now(),
+		phase:        phaseRunning,
+		lastProgress: now,
+		lastPoll:     now,
 	}
 }
 
@@ -145,11 +151,22 @@ func (l *progressLedger) finish(requestID, shotID string) {
 func (l *progressLedger) checkAndEmit(emit func(proto.Event) error) {
 	l.mu.Lock()
 	events := make([]proto.Event, 0, 2)
+	now := l.now()
 	for _, station := range l.stations {
 		if station.terminal {
 			continue
 		}
-		if !station.staleWarned && l.now().Sub(station.lastProgress) >= StaleThreshold {
+		if now.Sub(station.lastPoll) >= StationUpdateInterval {
+			station.lastPoll = now
+			events = append(events, proto.Event{
+				Type:        "station_update",
+				RequestID:   station.requestID,
+				ShotID:      station.shotID,
+				Kind:        string(station.phase),
+				Description: fmt.Sprintf("last Station report %s ago", now.Sub(station.lastProgress).Round(time.Second)),
+			})
+		}
+		if !station.staleWarned && now.Sub(station.lastProgress) >= StaleThreshold {
 			station.staleWarned = true
 			events = append(events, proto.Event{
 				Type:      "stale_warning",
