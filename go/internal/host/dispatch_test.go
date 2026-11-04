@@ -226,11 +226,11 @@ func dispatchRequestJSON(repo string, shots ...string) string {
 // A dispatch creates the worktree through the seam, writes the prompt, starts the Station
 // and logs its output.
 func TestDispatchPreparesPromptAndLogAndStartsStation(t *testing.T) {
-	root, _, stop := dispatchHost(t)
+	root, out, stop := dispatchHost(t)
 	defer stop()
 	repo := committedDispatchRepo(t)
 
-	d := newDispatcher(root, []string{os.Args[0]}, state.ActivitySocket(root), installedExtension(t, root), "", &writer{out: &syncBuilder{}, now: fixedClock(), root: root})
+	d := newDispatcher(root, []string{os.Args[0]}, state.ActivitySocket(root), installedExtension(t, root), "", &writer{out: out, now: fixedClock(), root: root})
 	d.dispatch(t.Context(), "req-1", json.RawMessage(dispatchRequestJSON(repo, "shot-a")))
 
 	station := state.StationDir(root, "req-1", "shot-a")
@@ -246,6 +246,14 @@ func TestDispatchPreparesPromptAndLogAndStartsStation(t *testing.T) {
 	}
 	if _, err := os.Stat(state.LogPath(root, "req-1", "shot-a")); err != nil {
 		t.Fatalf("a per-Shot log should exist: %v", err)
+	}
+	waitFor(t, out, `"type":"station_report","request_id":"req-1","shot_id":"shot-a","kind":"pulled"`)
+	history, err := os.ReadFile(state.HistoryPath(root, "req-1"))
+	if err != nil || !strings.Contains(string(history), `"type":"dispatch_dequeued"`) || !strings.Contains(string(history), `"type":"session_started"`) || !strings.Contains(string(history), `"kind":"pulled"`) {
+		t.Fatalf("normal completion must persist phase and terminal evidence: %v\n%s", err, history)
+	}
+	if strings.Contains(out.String(), `"type":"session_failed"`) {
+		t.Fatalf("normal completion must not be a failure:\n%s", out.String())
 	}
 }
 

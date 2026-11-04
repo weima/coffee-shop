@@ -6,7 +6,9 @@ package host
 import (
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +35,51 @@ func check(l *progressLedger) []proto.Event {
 		return nil
 	})
 	return events
+}
+
+func TestControlledRunDeadlinesPersistFailuresAndCompletionDoesNotExpire(t *testing.T) {
+	root := t.TempDir()
+	out := &syncBuilder{}
+	w := &writer{out: out, now: fixedClock(), root: root}
+	d := newDispatcher(root, nil, "", "", "", w)
+	now := time.Now()
+
+	d.queue = append(d.queue, queuedShot{requestID: "req-1", shot: ShotRequest{ID: "queued"}, queuedAt: now.Add(-QueuedDeadline)})
+	if !d.slots.acquire("req-1", "starting") || !d.slots.acquire("req-1", "active") {
+		t.Fatal("reserve test slots")
+	}
+	d.starting[slotKey("req-1", "starting")] = now.Add(-StartingDeadline)
+	cmd := exec.Command("sleep", "10")
+	setProcessGroup(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	d.running[slotKey("req-1", "active")] = &stationRun{
+		requestID: "req-1", shotID: "active", cmd: cmd, activeAt: now.Add(-ActiveDeadline),
+	}
+	if !d.slots.acquire("req-1", "completed") {
+		t.Fatal("reserve completion slot")
+	}
+	d.running[slotKey("req-1", "completed")] = &stationRun{requestID: "req-1", shotID: "completed", activeAt: now}
+	d.running[slotKey("req-1", "completed")].terminal = true
+
+	d.expireDeadlines(now)
+	for shot, want := range map[string]string{
+		"queued":   "queued phase expired after 10 minutes",
+		"starting": "starting phase expired after 2 minutes",
+		"active":   "active phase expired after 35 minutes",
+	} {
+		if !strings.Contains(out.String(), `"type":"session_failed","request_id":"req-1","shot_id":"`+shot+`","reason":"`+want+`"`) {
+			t.Fatalf("%s must produce explicit failure, got:\n%s", shot, out.String())
+		}
+	}
+	if strings.Contains(out.String(), `"shot_id":"completed","reason":"active phase expired`) {
+		t.Fatalf("a normally completed run must not expire:\n%s", out.String())
+	}
+	history, err := os.ReadFile(state.HistoryPath(root, "req-1"))
+	if err != nil || strings.Count(string(history), `"type":"session_failed"`) != 3 {
+		t.Fatalf("all expiries must be durable failures: %v\n%s", err, history)
+	}
 }
 
 func TestLedgerNeedsInputAlertsOncePerQuestion(t *testing.T) {

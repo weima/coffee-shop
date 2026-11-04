@@ -84,16 +84,24 @@ history_live_stations :: proc(state_root, request_id: string) -> []Headless_Stat
 		index := -1
 		for station, i in live { if station.shot_id == event.shot_id { index = i } }
 		switch event.type {
+		case "dispatch_queued":
+			if index < 0 { append(&live, Headless_Station{event.shot_id, "queued"}) }
+		case "dispatch_dequeued":
+			if index < 0 { append(&live, Headless_Station{event.shot_id, "starting"}) }
+			else { live[index].phase = "starting" }
 		case "session_started":
-			if index < 0 { append(&live, Headless_Station{event.shot_id, "started"}) }
+			if index < 0 { append(&live, Headless_Station{event.shot_id, "active"}) }
+			else { live[index].phase = "active" }
 		case "session_failed":
 			if index >= 0 { ordered_remove(&live, index) }
 		case "station_report":
 			if index < 0 { continue }
-			if event.kind == "agent_exited" || event.kind == "process_gone" {
+			if event.kind == "agent_exited" || event.kind == "process_gone" || event.kind == "pulled" || event.kind == "taste_failed" || event.kind == "incomplete" || event.kind == "session_failed" {
 				ordered_remove(&live, index)
-			} else {
+			} else if event.kind == "needs_input" {
 				live[index].phase = event.kind
+			} else {
+				live[index].phase = "active"
 			}
 		}
 	}
