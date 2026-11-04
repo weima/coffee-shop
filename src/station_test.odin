@@ -693,9 +693,14 @@ test_pull_with_passing_taste_commits_with_message :: proc(t: ^testing.T) {
 	testing.expect(t, run.taste_after_exit, "the Taste must report after agent_exited")
 	testing.expect(t, strings.contains(run.description, "Commit: "), run.description)
 	testing.expect(t, strings.contains(run.description, "Taste passed (exit 0): true"), run.description)
+	testing.expect(t, strings.contains(run.description, "no additional verification run"), run.description)
 	testing.expect(t, strings.contains(run.description, "changed.txt"), run.description)
 
 	repo, _ := filepath.join({root, "beans"}, context.temp_allocator)
+	testing.expect(t, os.exists(repo), "the successful Pull worktree remains available")
+	branch := pull_git(t, repo, "branch", "--show-current")
+	defer delete(branch)
+	testing.expect(t, strings.contains(run.description, fmt.tprintf("Branch: %s", strings.trim_space(branch))), run.description)
 	subject := pull_git(t, repo, "log", "-1", "--format=%s")
 	defer delete(subject)
 	testing.expect_value(t, strings.trim_space(subject), "Add the change")
@@ -722,6 +727,7 @@ test_pull_with_failing_taste_sends_taste_failed_and_makes_no_commit :: proc(t: ^
 	testing.expect_value(t, run.description, "Taste exited with code 1")
 
 	repo, _ := filepath.join({root, "beans"}, context.temp_allocator)
+	testing.expect(t, os.exists(repo), "the failed Pull worktree remains available")
 	count := pull_git(t, repo, "rev-list", "--count", "HEAD")
 	defer delete(count)
 	testing.expect_value(t, strings.trim_space(count), "1")
@@ -768,6 +774,7 @@ test_execute_without_taste_reports_unverified_and_makes_no_commit :: proc(t: ^te
 	testing.expect_value(t, run.description, "Execute Shot has no Taste; changes are unverified and remain in the Station worktree")
 
 	repo, _ := filepath.join({root, "beans"}, context.temp_allocator)
+	testing.expect(t, os.exists(repo), "the incomplete Pull worktree remains available")
 	count := pull_git(t, repo, "rev-list", "--count", "HEAD")
 	defer delete(count)
 	testing.expect_value(t, strings.trim_space(count), "1")

@@ -531,6 +531,15 @@ station_report_pulled :: proc(sender: ^Activity_Sender, brew_id, station_id, bas
 		commit = strings.trim_space(string(hash_stdout))
 	}
 
+	branch_state, branch_stdout, _, branch_err := os.process_exec(os.Process_Desc{command = {"git", "branch", "--show-current"}}, context.temp_allocator)
+	branch := "unavailable"
+	if branch_err == nil && branch_state.success {
+		branch = strings.trim_space(string(branch_stdout))
+		if branch == "" {
+			branch = "unavailable"
+		}
+	}
+
 	paths_state, paths_stdout, _, paths_err := os.process_exec(os.Process_Desc{
 		command = {"git", "diff", "--name-only", base_head, "HEAD"},
 	}, context.temp_allocator)
@@ -542,7 +551,7 @@ station_report_pulled :: proc(sender: ^Activity_Sender, brew_id, station_id, bas
 			paths = "none"
 		}
 	}
-	description := fmt.tprintf("Commit: %s\nTaste passed (exit 0): %s\nChanged paths:\n%s", commit, taste, paths)
+	description := fmt.tprintf("Commit: %s\nBranch: %s\nTaste passed (exit 0): %s\nAdditional verification: no additional verification run\nChanged paths:\n%s", commit, branch, taste, paths)
 	station_report(sender, brew_id, station_id, "pulled", description)
 	return 0
 }
