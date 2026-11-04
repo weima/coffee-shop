@@ -124,6 +124,7 @@ func itoa(n int) string {
 func startHostWithInput(t *testing.T) (root string, out *syncBuilder, input *os.File, stop func()) {
 	t.Helper()
 	t.Setenv(fakeCLIEnv, "1")
+	t.Setenv("CS_AGENT", fakePi(t, true))
 	root = shortRoot(t)
 	out = &syncBuilder{}
 	extensionDir := root + "/host/extensions"
