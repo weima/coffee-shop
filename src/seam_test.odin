@@ -90,6 +90,28 @@ test_prepare_refuses_an_existing_directory :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_prepare_reports_an_existing_branch_without_touching_it :: proc(t: ^testing.T) {
+	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-seam-branch-*", context.allocator)
+	testing.expect_value(t, make_err, os.Error(nil))
+	if make_err != nil {
+		return
+	}
+	defer os.remove_all(root)
+	defer delete(root)
+
+	repo := seam_test_repo(t, root)
+	branch := "cs-host-req-3-shot-e"
+	_, branch_ok := exec_reaped({"git", "-C", repo, "branch", branch})
+	testing.expect(t, branch_ok, "the fixture branch exists")
+	dir, _ := filepath.join({root, "stations", "shot-e"}, context.temp_allocator)
+	testing.expect_value(t, os.make_directory_all(fmt_dir(dir)), os.Error(nil))
+
+	testing.expect_value(t, prepare_worktree(repo, branch, dir), "Station branch already exists: cs-host-req-3-shot-e; choose a new request id or inspect the existing branch before removing it")
+	testing.expect(t, seam_branch_exists(repo, branch), "the existing branch is preserved")
+	testing.expect(t, !os.exists(dir), "no worktree is created")
+}
+
+@(test)
 test_prepare_rejects_a_non_repository :: proc(t: ^testing.T) {
 	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-seam-norepo-*", context.allocator)
 	testing.expect_value(t, make_err, os.Error(nil))

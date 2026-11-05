@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,7 +18,7 @@ import (
 )
 
 // DefaultStationModel is the Pi Station default. An explicit Shot model overrides it.
-const DefaultStationModel = "opencode-go/deepseek-v4.1-flash"
+const DefaultStationModel = "openai-codex/gpt-6-luna"
 
 // ReplyStyle is prepended to every Shot's prompt, as the Odin host does, so a Station's
 // answer is readable without the Barista repeating the rule.
@@ -27,6 +28,11 @@ const ReplyStyle = "Keep replies concise: lead with the answer, use short lists,
 const (
 	ShotExecute  = "execute"
 	ShotResearch = "research"
+
+	QueuedDeadline   = 10 * time.Minute
+	StartingDeadline = 2 * time.Minute
+	ActiveDeadline   = 35 * time.Minute
+	DeadlinePoll     = time.Second
 )
 
 // ResearchTools is the read-only-plus-scratch allowlist. A research Shot gets no shell.
@@ -56,10 +62,13 @@ type dispatcher struct {
 	w       *writer
 	sampler *stationSampler
 
-	mu      sync.Mutex
-	running map[string]*stationRun
-	queue   []queuedShot
-	repo    string // repository of the current dispatch, for queued Shots
+	mu       sync.Mutex
+	running  map[string]*stationRun
+	queue    []queuedShot
+	starting map[string]time.Time
+	expired  map[string]bool
+	failed   map[string]bool
+	repo     string // repository of the current dispatch, for queued Shots
 }
 
 type stationRun struct {
@@ -68,8 +77,9 @@ type stationRun struct {
 	cmd       *exec.Cmd
 	log       *boundedLog
 	stdin     io.WriteCloser // the Station's input: a reply is one line written here
-	terminal  bool           // a terminal report was relayed
+	terminal  bool           // a terminal report was relayed or timeout was recorded
 	exited    bool           // the process is gone, so it must not be signalled again
+	activeAt  time.Time
 }
 
 // queuedShot is a Shot waiting for a Slot, with everything needed to start it later.
@@ -78,6 +88,7 @@ type queuedShot struct {
 	shot       ShotRequest
 	promptPath string
 	stationDir string
+	queuedAt   time.Time
 }
 
 func newDispatcher(root string, cli []string, socket, extension, model string, w *writer) *dispatcher {
@@ -94,6 +105,9 @@ func newDispatcher(root string, cli []string, socket, extension, model string, w
 		w:         w,
 		sampler:   newStationSampler(root),
 		running:   make(map[string]*stationRun),
+		starting:  make(map[string]time.Time),
+		expired:   make(map[string]bool),
+		failed:    make(map[string]bool),
 	}
 }
 
@@ -177,13 +191,109 @@ func (d *dispatcher) dispatch(ctx context.Context, requestID string, raw json.Ra
 		shots = append(shots, ShotRequest{ID: shot.ID, Prompt: shot.Prompt, Model: model, Kind: kind, Taste: shot.Taste, Message: shot.Message, Codemode: codemode})
 	}
 
+	failures := make(map[string]string)
+	if reason := preflightRepository(request.Repo); reason != "" {
+		for _, shot := range shots {
+			failures[shot.ID] = reason
+		}
+	} else {
+		for _, shot := range shots {
+			if reason := preflightShot(d.root, requestID, request.Repo, shot); reason != "" {
+				failures[shot.ID] = reason
+			}
+		}
+	}
+
 	d.mu.Lock()
 	d.repo = request.Repo
 	d.mu.Unlock()
 	d.w.emit(proto.Event{Type: "dispatch_accepted", RequestID: requestID})
 	for _, shot := range shots {
+		if reason := failures[shot.ID]; reason != "" {
+			d.fail(requestID, shot.ID, reason)
+			continue
+		}
 		d.startOrQueue(ctx, requestID, request.Repo, shot)
 	}
+}
+
+// preflightRepository checks the read-only facts the final prepare seam will rely on.
+func preflightRepository(repo string) string {
+	if _, err := exec.LookPath("git"); err != nil {
+		return "Git is unavailable; install Git and retry this dispatch"
+	}
+	for _, args := range [][]string{{"rev-parse", "--is-inside-work-tree"}, {"rev-parse", "--verify", "HEAD"}} {
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		output, err := cmd.Output()
+		if err != nil || (args[1] == "--is-inside-work-tree" && strings.TrimSpace(string(output)) != "true") {
+			return fmt.Sprintf("repo %s is not a usable Git worktree with a commit; choose a committed, non-bare repository", repo)
+		}
+	}
+	return ""
+}
+
+// preflightShot validates the selected Pi route and both generated Git resources without
+// creating them. prepare remains the final race-safe check before a worktree is made.
+func preflightShot(root, requestID, repo string, shot ShotRequest) string {
+	agent := os.Getenv("CS_AGENT")
+	if agent == "" {
+		agent = "pi"
+	}
+	binary, err := exec.LookPath(agent)
+	if err != nil {
+		return fmt.Sprintf("Pi executable %q is unavailable; install Pi or set CS_AGENT to its executable path", agent)
+	}
+	provider, model, ok := strings.Cut(shot.Model, "/")
+	if !ok || provider == "" || model == "" {
+		return fmt.Sprintf("Pi model route %q must be provider/model; choose a route shown by pi --list-models", shot.Model)
+	}
+	if i := strings.IndexByte(model, ':'); i >= 0 {
+		model = model[:i]
+	}
+	output, err := exec.Command(binary, "--list-models", provider+"/"+model).Output()
+	if err != nil || !piListsRoute(string(output), provider, model) {
+		return fmt.Sprintf("Pi model route %q is unavailable; choose an installed route from pi --list-models", shot.Model)
+	}
+
+	branch := fmt.Sprintf("cs-host-%s-%s", requestID, shot.ID)
+	branchCheck := exec.Command("git", "-C", repo, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	if err := branchCheck.Run(); err == nil {
+		return fmt.Sprintf("generated Station branch %q already exists; use a new request id or inspect the branch without deleting it", branch)
+	} else if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 1 {
+		return fmt.Sprintf("could not verify generated Station branch %q: %v; check the repository and retry", branch, err)
+	}
+	stationDir := state.StationDir(root, requestID, shot.ID)
+	if _, err := os.Lstat(stationDir); err == nil {
+		return fmt.Sprintf("Station worktree destination %q already exists; use a new request id or inspect it without overwriting it", stationDir)
+	} else if !os.IsNotExist(err) {
+		return fmt.Sprintf("cannot inspect Station worktree destination %q: %v; check its parent directory and retry", stationDir, err)
+	}
+	for parent := filepath.Dir(stationDir); ; parent = filepath.Dir(parent) {
+		info, err := os.Stat(parent)
+		if err == nil {
+			if !info.IsDir() {
+				return fmt.Sprintf("Station worktree parent %q is not a directory; move the conflicting file and retry", parent)
+			}
+			break
+		}
+		if !os.IsNotExist(err) {
+			return fmt.Sprintf("cannot inspect Station worktree parent %q: %v; check its permissions and retry", parent, err)
+		}
+		if next := filepath.Dir(parent); next == parent {
+			return fmt.Sprintf("cannot find a usable parent for Station worktree destination %q; check the destination path", stationDir)
+		}
+	}
+	return ""
+}
+
+func piListsRoute(output, provider, model string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == provider && fields[1] == model {
+			return true
+		}
+	}
+	return false
 }
 
 // startOrQueue starts a Shot when a Slot is free, otherwise queues it.
@@ -193,18 +303,36 @@ func (d *dispatcher) startOrQueue(ctx context.Context, requestID, repo string, s
 			d.w.emit(proto.Event{Type: "warning", RequestID: requestID, ShotID: shot.ID, Reason: reason})
 		}
 		d.mu.Lock()
-		d.queue = append(d.queue, queuedShot{requestID: requestID, shot: shot})
+		d.queue = append(d.queue, queuedShot{requestID: requestID, shot: shot, queuedAt: time.Now()})
 		d.mu.Unlock()
 		d.w.emit(proto.Event{Type: "dispatch_queued", RequestID: requestID, ShotID: shot.ID})
 		return
 	}
 
+	d.mu.Lock()
+	d.starting[slotKey(requestID, shot.ID)] = time.Now()
+	d.mu.Unlock()
+	d.w.record(proto.Event{Type: "dispatch_dequeued", RequestID: requestID, ShotID: shot.ID})
+	defer func() {
+		d.mu.Lock()
+		delete(d.starting, slotKey(requestID, shot.ID))
+		d.mu.Unlock()
+	}()
 	promptPath := state.PromptPath(d.root, requestID, shot.ID)
 	stationDir := state.StationDir(d.root, requestID, shot.ID)
 	branch := fmt.Sprintf("cs-host-%s-%s", requestID, shot.ID)
 
-	if err := d.prepare(requestID, shot, repo, branch, stationDir, promptPath); err != nil {
-		d.fail(requestID, shot.ID, err.Error())
+	stageCtx, cancel := context.WithTimeout(ctx, StartingDeadline)
+	defer cancel()
+	if err := d.prepare(stageCtx, requestID, shot, repo, branch, stationDir, promptPath); err != nil {
+		if errors.Is(stageCtx.Err(), context.DeadlineExceeded) {
+			d.fail(requestID, shot.ID, "starting phase expired after 2 minutes")
+		} else {
+			d.fail(requestID, shot.ID, err.Error())
+		}
+		return
+	}
+	if !d.isStarting(requestID, shot.ID) {
 		return
 	}
 	if err := d.launch(ctx, requestID, shot, promptPath, stationDir); err != nil {
@@ -214,7 +342,7 @@ func (d *dispatcher) startOrQueue(ctx context.Context, requestID, repo string, s
 
 // prepare writes the prompt and creates the Shot's worktree through the Odin seam, so the
 // repository work stays in one implementation while orchestration lives here.
-func (d *dispatcher) prepare(requestID string, shot ShotRequest, repo, branch, stationDir, promptPath string) error {
+func (d *dispatcher) prepare(ctx context.Context, requestID string, shot ShotRequest, repo, branch, stationDir, promptPath string) error {
 	if err := state.EnsureDir(filepath.Dir(promptPath), true); err != nil {
 		return fmt.Errorf("create prompts directory: %w", err)
 	}
@@ -226,7 +354,7 @@ func (d *dispatcher) prepare(requestID string, shot ShotRequest, repo, branch, s
 		return fmt.Errorf("create stations directory: %w", err)
 	}
 	argv := append(append([]string{}, d.cli...), "prepare", "--repo", repo, "--branch", branch, "--dir", stationDir)
-	output, err := runQuiet(argv)
+	output, err := runQuietContext(ctx, argv)
 	if err != nil {
 		return fmt.Errorf("%s", seamReason(output, err))
 	}
@@ -274,7 +402,7 @@ func (d *dispatcher) launch(ctx context.Context, requestID string, shot ShotRequ
 		return fmt.Errorf("could not start the Station: %w", err)
 	}
 
-	run := &stationRun{requestID: requestID, shotID: shot.ID, cmd: cmd, log: log, stdin: stdin}
+	run := &stationRun{requestID: requestID, shotID: shot.ID, cmd: cmd, log: log, stdin: stdin, activeAt: time.Now()}
 	d.mu.Lock()
 	d.running[slotKey(requestID, shot.ID)] = run
 	d.mu.Unlock()
@@ -324,6 +452,12 @@ func (d *dispatcher) stationArgv(requestID string, shot ShotRequest, promptPath 
 	}
 	argv = append(argv, "--model", shot.Model, "-e", d.extension)
 	return argv
+}
+
+func (d *dispatcher) reportExpired(requestID, shotID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.expired[slotKey(requestID, shotID)]
 }
 
 // terminalReport records a terminal report and releases the Shot.
@@ -424,21 +558,84 @@ func (d *dispatcher) drainQueue() {
 			d.mu.Unlock()
 			return
 		}
+		d.mu.Lock()
+		d.starting[slotKey(next.requestID, next.shot.ID)] = time.Now()
+		d.mu.Unlock()
 		d.w.emit(proto.Event{Type: "dispatch_dequeued", RequestID: next.requestID, ShotID: next.shot.ID})
 
 		repo := d.repoFor(next.requestID)
-		if err := d.prepare(next.requestID, next.shot, repo, fmt.Sprintf("cs-host-%s-%s", next.requestID, next.shot.ID), state.StationDir(d.root, next.requestID, next.shot.ID), state.PromptPath(d.root, next.requestID, next.shot.ID)); err != nil {
-			d.fail(next.requestID, next.shot.ID, err.Error())
-			continue
+		stageCtx, cancel := context.WithTimeout(context.Background(), StartingDeadline)
+		if err := d.prepare(stageCtx, next.requestID, next.shot, repo, fmt.Sprintf("cs-host-%s-%s", next.requestID, next.shot.ID), state.StationDir(d.root, next.requestID, next.shot.ID), state.PromptPath(d.root, next.requestID, next.shot.ID)); err != nil {
+			if errors.Is(stageCtx.Err(), context.DeadlineExceeded) {
+				d.fail(next.requestID, next.shot.ID, "starting phase expired after 2 minutes")
+			} else {
+				d.fail(next.requestID, next.shot.ID, err.Error())
+			}
+		} else if d.isStarting(next.requestID, next.shot.ID) {
+			if err := d.launch(context.Background(), next.requestID, next.shot, state.PromptPath(d.root, next.requestID, next.shot.ID), state.StationDir(d.root, next.requestID, next.shot.ID)); err != nil {
+				d.fail(next.requestID, next.shot.ID, err.Error())
+			}
 		}
-		if err := d.launch(context.Background(), next.requestID, next.shot, state.PromptPath(d.root, next.requestID, next.shot.ID), state.StationDir(d.root, next.requestID, next.shot.ID)); err != nil {
-			d.fail(next.requestID, next.shot.ID, err.Error())
-		}
+		cancel()
+		d.mu.Lock()
+		delete(d.starting, slotKey(next.requestID, next.shot.ID))
+		d.mu.Unlock()
 	}
 }
 
 // sampleStations reads every live Station once. The host calls it on a ticker.
 func (d *dispatcher) sampleStations() { d.sampler.sample() }
+
+func (d *dispatcher) isStarting(requestID, shotID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, ok := d.starting[slotKey(requestID, shotID)]
+	return ok
+}
+
+// expireDeadlines turns each phase expiry into a persisted terminal failure.
+func (d *dispatcher) expireDeadlines(now time.Time) {
+	d.mu.Lock()
+	var expiredQueue []queuedShot
+	kept := d.queue[:0]
+	for _, queued := range d.queue {
+		if now.Sub(queued.queuedAt) >= QueuedDeadline {
+			expiredQueue = append(expiredQueue, queued)
+		} else {
+			kept = append(kept, queued)
+		}
+	}
+	d.queue = kept
+	var expiredStarting []string
+	for key, started := range d.starting {
+		if now.Sub(started) >= StartingDeadline {
+			expiredStarting = append(expiredStarting, key)
+			delete(d.starting, key)
+		}
+	}
+	var expiredActive []*stationRun
+	for _, run := range d.running {
+		if !run.terminal && now.Sub(run.activeAt) >= ActiveDeadline {
+			run.terminal = true
+			d.expired[slotKey(run.requestID, run.shotID)] = true
+			expiredActive = append(expiredActive, run)
+		}
+	}
+	d.mu.Unlock()
+
+	for _, queued := range expiredQueue {
+		d.fail(queued.requestID, queued.shot.ID, "queued phase expired after 10 minutes")
+	}
+	for _, key := range expiredStarting {
+		requestID, shotID, _ := strings.Cut(key, "/")
+		d.fail(requestID, shotID, "starting phase expired after 2 minutes")
+	}
+	for _, run := range expiredActive {
+		_ = killProcessGroup(run.cmd)
+		d.w.emit(proto.Event{Type: "session_failed", RequestID: run.requestID, ShotID: run.shotID, Reason: "active phase expired after 35 minutes"})
+		d.release(run.requestID, run.shotID)
+	}
+}
 
 // shutdown returns every machine slot this host holds, so a restart is never blocked by
 // a host that exited while holding them.
@@ -449,6 +646,14 @@ func (d *dispatcher) repoFor(requestID string) string { return d.repo }
 
 // fail reports a Shot that could not start and frees its Slot.
 func (d *dispatcher) fail(requestID, shotID, reason string) {
+	d.mu.Lock()
+	key := slotKey(requestID, shotID)
+	if d.failed[key] {
+		d.mu.Unlock()
+		return
+	}
+	d.failed[key] = true
+	d.mu.Unlock()
 	d.w.emit(proto.Event{Type: "session_failed", RequestID: requestID, ShotID: shotID, Reason: reason})
 	if d.slots.release(requestID, shotID) {
 		go d.drainQueue()
@@ -472,8 +677,11 @@ func seamReason(output string, err error) string {
 }
 
 // runQuiet runs a seam command and returns its combined output.
-func runQuiet(argv []string) (string, error) {
-	cmd := exec.Command(argv[0], argv[1:]...)
+func runQuietContext(ctx context.Context, argv []string) (string, error) {
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	setProcessGroup(cmd)
+	cmd.Cancel = func() error { return killProcessGroup(cmd) }
+	cmd.WaitDelay = waitDelay
 	var out strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = io.Discard

@@ -42,7 +42,7 @@ func TestReplyReachesTheStationAndIsAcknowledged(t *testing.T) {
 	t.Setenv("CS_FAKE_ECHO", "1")
 	root, out, input, stop := dispatchHostWithInput(t)
 	defer stop()
-	repo := shortRoot(t)
+	repo := committedDispatchRepo(t)
 
 	dispatch := `{"type":"dispatch","request_id":"req-1","repo":"` + repo + `","recipe":{"shots":[{"id":"shot-a","prompt":"wait for a reply"}]}}` + "\n"
 	if _, err := input.Write([]byte(dispatch)); err != nil {
@@ -115,7 +115,7 @@ func TestCancelStopsTheStationAndFreesItsSlot(t *testing.T) {
 	t.Setenv("CS_FAKE_ECHO", "1") // the fake Station waits on stdin, so it is alive to cancel
 	_, out, input, stop := dispatchHostWithInput(t)
 	defer stop()
-	repo := shortRoot(t)
+	repo := committedDispatchRepo(t)
 
 	dispatch := `{"type":"dispatch","request_id":"req-1","repo":"` + repo + `","recipe":{"shots":[{"id":"shot-a","prompt":"wait"}]}}` + "\n"
 	if _, err := input.Write([]byte(dispatch)); err != nil {

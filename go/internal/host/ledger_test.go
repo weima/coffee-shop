@@ -6,7 +6,9 @@ package host
 import (
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +35,61 @@ func check(l *progressLedger) []proto.Event {
 		return nil
 	})
 	return events
+}
+
+func TestControlledRunDeadlinesPersistFailuresAndCompletionDoesNotExpire(t *testing.T) {
+	root := t.TempDir()
+	out := &syncBuilder{}
+	w := &writer{out: out, now: fixedClock(), root: root}
+	d := newDispatcher(root, nil, "", "", "", w)
+	now := time.Now()
+
+	d.queue = append(d.queue, queuedShot{requestID: "req-1", shot: ShotRequest{ID: "queued"}, queuedAt: now.Add(-QueuedDeadline)})
+	if !d.slots.acquire("req-1", "starting") || !d.slots.acquire("req-1", "active") {
+		t.Fatal("reserve test slots")
+	}
+	d.starting[slotKey("req-1", "starting")] = now.Add(-StartingDeadline)
+	cmd := exec.Command("sleep", "10")
+	setProcessGroup(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	d.running[slotKey("req-1", "active")] = &stationRun{
+		requestID: "req-1", shotID: "active", cmd: cmd, activeAt: now.Add(-ActiveDeadline),
+	}
+	if !d.slots.acquire("req-1", "completed") {
+		t.Fatal("reserve completion slot")
+	}
+	d.running[slotKey("req-1", "completed")] = &stationRun{requestID: "req-1", shotID: "completed", activeAt: now}
+	d.running[slotKey("req-1", "completed")].terminal = true
+
+	d.expireDeadlines(now)
+	for shot, want := range map[string]string{
+		"queued":   "queued phase expired after 10 minutes",
+		"starting": "starting phase expired after 2 minutes",
+		"active":   "active phase expired after 35 minutes",
+	} {
+		if !strings.Contains(out.String(), `"type":"session_failed","request_id":"req-1","shot_id":"`+shot+`","reason":"`+want+`"`) {
+			t.Fatalf("%s must produce explicit failure, got:\n%s", shot, out.String())
+		}
+	}
+	if strings.Contains(out.String(), `"shot_id":"completed","reason":"active phase expired`) {
+		t.Fatalf("a normally completed run must not expire:\n%s", out.String())
+	}
+	history, err := os.ReadFile(state.HistoryPath(root, "req-1"))
+	if err != nil || strings.Count(string(history), `"type":"session_failed"`) != 3 {
+		t.Fatalf("all expiries must be durable failures: %v\n%s", err, history)
+	}
+}
+
+func eventsOfType(events []proto.Event, kind string) []proto.Event {
+	filtered := make([]proto.Event, 0, len(events))
+	for _, event := range events {
+		if event.Type == kind {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
 }
 
 func TestLedgerNeedsInputAlertsOncePerQuestion(t *testing.T) {
@@ -71,31 +128,63 @@ func TestLedgerStaleWarnsOnceAndProgressResetsIt(t *testing.T) {
 	l.updatePhase("req-1", "shot-a", phaseRunning)
 
 	clock.advance(StaleThreshold - time.Second)
-	if early := check(l); len(early) != 0 {
+	if early := eventsOfType(check(l), "stale_warning"); len(early) != 0 {
 		t.Fatalf("a Station under the threshold must not warn, got %v", early)
 	}
 
 	clock.advance(time.Second)
-	warned := check(l)
-	if len(warned) != 1 || warned[0].Type != "stale_warning" {
+	warned := eventsOfType(check(l), "stale_warning")
+	if len(warned) != 1 {
 		t.Fatalf("want one stale_warning at the threshold, got %v", warned)
 	}
 	if warned[0].Reason != "10 minutes without progress" {
 		t.Fatalf("warning must say how long: %q", warned[0].Reason)
 	}
-	if repeat := check(l); len(repeat) != 0 {
+	if repeat := eventsOfType(check(l), "stale_warning"); len(repeat) != 0 {
 		t.Fatalf("a stale Station warns once, got %v", repeat)
 	}
 
 	// Any report restarts the quiet period, so the next warning comes a full threshold later.
 	l.report("req-1", "shot-a", "turn_done")
 	clock.advance(StaleThreshold - time.Second)
-	if early := check(l); len(early) != 0 {
+	if early := eventsOfType(check(l), "stale_warning"); len(early) != 0 {
 		t.Fatalf("progress must reset the warning, got %v", early)
 	}
 	clock.advance(time.Second)
-	if again := check(l); len(again) != 1 || again[0].Type != "stale_warning" {
+	if again := eventsOfType(check(l), "stale_warning"); len(again) != 1 {
 		t.Fatalf("want a second warning after another quiet period, got %v", again)
+	}
+}
+
+func TestLedgerPollsEveryThreeSecondsWithoutResettingStaleness(t *testing.T) {
+	l, clock := newTestLedger()
+	l.addStation("req-1", "shot-a", "req-1/shot-a")
+	l.addStation("req-1", "shot-b", "req-1/shot-b")
+	l.report("req-1", "shot-b", "needs_input")
+
+	clock.advance(StationUpdateInterval - time.Nanosecond)
+	if updates := eventsOfType(check(l), "station_update"); len(updates) != 0 {
+		t.Fatalf("must not poll before three seconds: %v", updates)
+	}
+	clock.advance(time.Nanosecond)
+	updates := eventsOfType(check(l), "station_update")
+	byShot := map[string]proto.Event{}
+	for _, update := range updates {
+		byShot[update.ShotID] = update
+	}
+	if len(byShot) != 2 || byShot["shot-a"].Kind != string(phaseRunning) || byShot["shot-b"].Kind != string(phaseNeedsInput) {
+		t.Fatalf("poll should identify every live Station and phase: %v", updates)
+	}
+	if byShot["shot-a"].RequestID != "req-1" || byShot["shot-a"].Description != "last Station report 3s ago" {
+		t.Fatalf("poll should include the Station identity and report age: %+v", byShot["shot-a"])
+	}
+	if repeated := eventsOfType(check(l), "station_update"); len(repeated) != 0 {
+		t.Fatalf("poll repeated before its interval: %v", repeated)
+	}
+
+	clock.advance(StaleThreshold - StationUpdateInterval)
+	if warnings := eventsOfType(check(l), "stale_warning"); len(warnings) != 2 {
+		t.Fatalf("polling must not reset either Station's stale tracking: %v", warnings)
 	}
 }
 
@@ -157,18 +246,15 @@ func TestLedgerRebuildsWaitingAndQuietStationsFromHistory(t *testing.T) {
 	// past shot-a's ten minutes only shot-a is quiet enough to warn. Using the restart
 	// time instead would have warned about all three.
 	clock.advance(StaleThreshold + time.Second)
-	events = check(l)
-	if len(events) != 1 || events[0].Type != "stale_warning" || events[0].ShotID != "shot-a" {
+	events = eventsOfType(check(l), "stale_warning")
+	if len(events) != 1 || events[0].ShotID != "shot-a" {
 		t.Fatalf("want only the Station quiet since 12:00:01 to warn, got %v", events)
 	}
 
 	// Three seconds later the other two cross their own thresholds.
 	clock.advance(3 * time.Second)
 	warned := map[string]bool{}
-	for _, e := range check(l) {
-		if e.Type != "stale_warning" {
-			t.Fatalf("want only warnings, got %v", e)
-		}
+	for _, e := range eventsOfType(check(l), "stale_warning") {
 		warned[e.ShotID] = true
 	}
 	if !warned["shot-b"] || !warned["shot-c"] {
@@ -183,7 +269,7 @@ func TestNeedsInputAlertReachesTheHostStream(t *testing.T) {
 	_, out, writeIn, stop := dispatchHostWithInput(t)
 	defer stop()
 
-	repo := shortRoot(t)
+	repo := committedDispatchRepo(t)
 	if _, err := io.WriteString(writeIn, dispatchRequestJSON(repo, "shot-a")+"\n"); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}

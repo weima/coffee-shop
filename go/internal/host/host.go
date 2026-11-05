@@ -98,6 +98,7 @@ func Run(ctx context.Context, opts Options) error {
 		extension := filepath.Join(state.HostDir(opts.StateRoot), "extensions", "coffee-shop.ts")
 		dispatch = newDispatcher(opts.StateRoot, cli, state.ActivitySocket(opts.StateRoot), extension, os.Getenv("CS_STATION_MODEL"), w)
 		w.onTerminal = dispatch.terminalReport
+		w.reportExpired = dispatch.reportExpired
 		defer dispatch.shutdown()
 
 		requests, err := listenRequests(opts.StateRoot, dispatch, w)
@@ -112,16 +113,20 @@ func Run(ctx context.Context, opts Options) error {
 		stopSampling := make(chan struct{})
 		defer close(stopSampling)
 		go func() {
-			ticker := time.NewTicker(SampleInterval)
-			defer ticker.Stop()
+			sampleTicker := time.NewTicker(SampleInterval)
+			deadlineTicker := time.NewTicker(DeadlinePoll)
+			defer sampleTicker.Stop()
+			defer deadlineTicker.Stop()
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				case <-stopSampling:
 					return
-				case <-ticker.C:
+				case <-sampleTicker.C:
 					dispatch.sampleStations()
+				case <-deadlineTicker.C:
+					dispatch.expireDeadlines(time.Now())
 				}
 			}
 		}()
@@ -172,7 +177,8 @@ type writer struct {
 	mu sync.Mutex
 	// onTerminal frees a Shot's Slot as soon as its terminal report arrives, without
 	// waiting for the process to exit, so a queued Shot can start sooner.
-	onTerminal func(requestID, shotID string)
+	onTerminal    func(requestID, shotID string)
+	reportExpired func(requestID, shotID string) bool
 	// ledger holds the host's progress supervision, nil in a host with no state root.
 	ledger *progressLedger
 }
@@ -232,7 +238,7 @@ func terminalReportKinds(kind string) bool {
 // recorded is still announced: a reader seeing it twice is better than a completion
 // nobody sees.
 func (w *writer) relayReport(message proto.Message) {
-	if message.Kind == StationPIDKind {
+	if message.Kind == StationPIDKind || (w.reportExpired != nil && w.reportExpired(message.BrewID, message.ShotID)) {
 		return
 	}
 	// Record the report before releasing the Slot: a `needs_input` is a question, and a
@@ -331,7 +337,7 @@ func (w *writer) emit(e proto.Event) error {
 // historyEvent is the set of events the durable history keeps, matching the Odin host.
 func historyEvent(eventType string) bool {
 	switch eventType {
-	case "dispatch_accepted", "session_started", "session_failed", "station_report", "reply_sent", "blended", "blend_failed":
+	case "dispatch_accepted", "dispatch_queued", "dispatch_dequeued", "session_started", "session_failed", "station_report", "reply_sent", "blended", "blend_failed":
 		return true
 	}
 	return false
@@ -357,6 +363,16 @@ func (w *writer) appendEvent(e proto.Event) error {
 	defer func() { _ = file.Close() }()
 	_, err = file.Write(line)
 	return err
+}
+
+// record stores host evidence without adding a line to the established wire stream.
+func (w *writer) record(e proto.Event) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	e.At = stamp(w.now())
+	if historyEvent(e.Type) {
+		_ = w.appendEvent(e)
+	}
 }
 
 func (w *writer) raw(line string) error {

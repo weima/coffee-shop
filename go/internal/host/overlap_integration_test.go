@@ -229,6 +229,7 @@ func killOverlapStations(t *testing.T, root string) {
 // five Slots for a controlled duration; the sixth Shot starts only when the test frees a
 // Slot, and every free relays exactly one agent_exited.
 func TestOverlapGateSustainedFiveSlotOverlap(t *testing.T) {
+	t.Setenv("CS_AGENT", fakePi(t, true))
 	if _, err := exec.LookPath("odin"); err != nil {
 		t.Skipf("odin is not on PATH: %v", err)
 	}
@@ -237,7 +238,7 @@ func TestOverlapGateSustainedFiveSlotOverlap(t *testing.T) {
 	}
 
 	cliPath := writeOverlapCLI(t)
-	repo := shortRoot(t)
+	repo := committedDispatchRepo(t)
 	root := shortRoot(t) // short: the unix socket path must fit the platform limit
 	if err := os.MkdirAll(filepath.Join(state.HostDir(root), "extensions"), 0o700); err != nil {
 		t.Fatalf("extension dir: %v", err)

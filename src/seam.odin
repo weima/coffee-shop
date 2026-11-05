@@ -63,6 +63,9 @@ prepare_worktree :: proc(repo, branch, dir: string) -> (reason: string) {
 	if os.exists(dir) {
 		return "dir already exists"
 	}
+	if _, _, exists := blend_git(repo, "rev-parse", "--verify", "--quiet", fmt.tprintf("refs/heads/%s", branch)); exists {
+		return fmt.tprintf("Station branch already exists: %s; choose a new request id or inspect the existing branch before removing it", branch)
+	}
 	if create_err := create_git_worktree(repo, branch, dir, context.temp_allocator); create_err != "" {
 		return create_err
 	}

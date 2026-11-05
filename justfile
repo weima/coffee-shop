@@ -12,7 +12,10 @@ build-go:
 # the binary is always built from the current source first.
 host-go:
     just build
-    ./coffee-shop host --impl=go
+    ./coffee-shop host
+
+barista:
+    pi -e extensions/barista.ts
 
 check:
     odin check src

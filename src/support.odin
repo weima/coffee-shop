@@ -53,7 +53,7 @@ write_all_to_file :: proc(path: string, data: []byte, flags: os.File_Flags) -> o
 		}
 		if count <= 0 {
 			_ = os.close(file)
-			return posix.Errno.EIO
+			return os.Platform_Error(i32(posix.Errno.EIO))
 		}
 		written += count
 	}

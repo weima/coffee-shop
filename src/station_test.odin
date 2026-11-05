@@ -585,7 +585,7 @@ test_research_station_sends_no_incomplete_when_agent_writes_nothing :: proc(t: ^
 }
 
 @(test)
-test_execute_station_sends_no_incomplete_when_agent_writes :: proc(t: ^testing.T) {
+test_execute_station_without_taste_reports_unverified_changes :: proc(t: ^testing.T) {
 	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-execute-write-*", context.allocator)
 	testing.expect_value(t, make_err, os.Error(nil))
 	if make_err != nil {
@@ -596,8 +596,8 @@ test_execute_station_sends_no_incomplete_when_agent_writes :: proc(t: ^testing.T
 
 	run := run_station_kind(t, root, "execute", FAKE_WRITING_AGENT)
 	defer delete(run.incomplete)
-	testing.expect_value(t, run.incomplete, "")
-	testing.expect_value(t, run.exit_code, 0)
+	testing.expect_value(t, run.incomplete, "Execute Shot has no Taste; changes are unverified and remain in the Station worktree")
+	testing.expect_value(t, run.exit_code, 1)
 }
 
 Pull_Run :: struct {
@@ -650,7 +650,7 @@ run_station_pull :: proc(t: ^testing.T, root, agent_script, taste, message: stri
 			switch result.message.kind {
 			case "agent_exited":
 				exited = true
-			case "taste_failed", "taste_passed", "pulled":
+			case "incomplete", "taste_failed", "taste_passed", "pulled":
 				delete(run.kind)
 				delete(run.description)
 				run.kind = strings.clone(result.message.kind)
@@ -691,8 +691,16 @@ test_pull_with_passing_taste_commits_with_message :: proc(t: ^testing.T) {
 	testing.expect_value(t, run.exit_code, 0)
 	testing.expect_value(t, run.kind, "pulled")
 	testing.expect(t, run.taste_after_exit, "the Taste must report after agent_exited")
+	testing.expect(t, strings.contains(run.description, "Commit: "), run.description)
+	testing.expect(t, strings.contains(run.description, "Taste passed (exit 0): true"), run.description)
+	testing.expect(t, strings.contains(run.description, "no additional verification run"), run.description)
+	testing.expect(t, strings.contains(run.description, "changed.txt"), run.description)
 
 	repo, _ := filepath.join({root, "beans"}, context.temp_allocator)
+	testing.expect(t, os.exists(repo), "the successful Pull worktree remains available")
+	branch := pull_git(t, repo, "branch", "--show-current")
+	defer delete(branch)
+	testing.expect(t, strings.contains(run.description, fmt.tprintf("Branch: %s", strings.trim_space(branch))), run.description)
 	subject := pull_git(t, repo, "log", "-1", "--format=%s")
 	defer delete(subject)
 	testing.expect_value(t, strings.trim_space(subject), "Add the change")
@@ -719,6 +727,7 @@ test_pull_with_failing_taste_sends_taste_failed_and_makes_no_commit :: proc(t: ^
 	testing.expect_value(t, run.description, "Taste exited with code 1")
 
 	repo, _ := filepath.join({root, "beans"}, context.temp_allocator)
+	testing.expect(t, os.exists(repo), "the failed Pull worktree remains available")
 	count := pull_git(t, repo, "rev-list", "--count", "HEAD")
 	defer delete(count)
 	testing.expect_value(t, strings.trim_space(count), "1")
@@ -748,7 +757,7 @@ test_pull_with_passing_taste_and_no_changes_sends_taste_passed :: proc(t: ^testi
 }
 
 @(test)
-test_shot_without_taste_sends_no_taste_report_and_makes_no_commit :: proc(t: ^testing.T) {
+test_execute_without_taste_reports_unverified_and_makes_no_commit :: proc(t: ^testing.T) {
 	root, make_err := os.make_directory_temp(TEMP_DIR, "coffee-shop-pull-none-*", context.allocator)
 	testing.expect_value(t, make_err, os.Error(nil))
 	if make_err != nil {
@@ -760,10 +769,12 @@ test_shot_without_taste_sends_no_taste_report_and_makes_no_commit :: proc(t: ^te
 	run := run_station_pull(t, root, FAKE_WRITING_AGENT, "", "")
 	defer delete(run.kind)
 	defer delete(run.description)
-	testing.expect_value(t, run.exit_code, 0)
-	testing.expect_value(t, run.kind, "")
+	testing.expect_value(t, run.exit_code, 1)
+	testing.expect_value(t, run.kind, "incomplete")
+	testing.expect_value(t, run.description, "Execute Shot has no Taste; changes are unverified and remain in the Station worktree")
 
 	repo, _ := filepath.join({root, "beans"}, context.temp_allocator)
+	testing.expect(t, os.exists(repo), "the incomplete Pull worktree remains available")
 	count := pull_git(t, repo, "rev-list", "--count", "HEAD")
 	defer delete(count)
 	testing.expect_value(t, strings.trim_space(count), "1")
@@ -1578,9 +1589,10 @@ test_bare_execute_shot_ends_after_its_first_turn :: proc(t: ^testing.T) {
 	run := run_station_held_open(t, root, FAKE_ONE_TURN_AGENT, "--kind", "execute")
 	defer held_station_destroy(&run)
 	testing.expect(t, !run.timed_out, "a bare execute Station must end after its first turn")
-	testing.expect_value(t, run.exit_code, 0)
+	testing.expect_value(t, run.exit_code, 1)
 	testing.expect(t, slice_contains(run.kinds[:], "turn_done"), "the first turn must be reported")
-	testing.expect(t, slice_contains(run.kinds[:], "agent_exited"), "the agent exit is the terminal report")
+	testing.expect(t, slice_contains(run.kinds[:], "agent_exited"), "the agent exit must be reported")
+	testing.expect(t, slice_contains(run.kinds[:], "incomplete"), "an execute Shot without Taste is not verified")
 }
 
 @(test)

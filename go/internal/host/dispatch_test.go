@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -141,6 +142,7 @@ func dispatchHost(t *testing.T) (root string, out *syncBuilder, stop func()) {
 func dispatchHostWithInput(t *testing.T) (root string, out *syncBuilder, input io.WriteCloser, stop func()) {
 	t.Helper()
 	t.Setenv(fakeCLIEnv, "1")
+	t.Setenv("CS_AGENT", fakePi(t, true))
 	root = shortRoot(t)
 	out = &syncBuilder{}
 	// The Odin host installs the Pi extension at start; a fake Station does not read it,
@@ -185,6 +187,34 @@ func waitForSocketNoErr(t *testing.T, path string) {
 	t.Fatalf("socket %s never appeared", path)
 }
 
+func committedDispatchRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"-C", repo, "init", "-q"},
+		{"-C", repo, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	return repo
+}
+
+func fakePi(t *testing.T, available bool) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pi")
+	listing := "No models matching requested route"
+	if available {
+		listing = "provider model context\nopenai-codex gpt-6-luna 272K"
+	}
+	script := "#!/bin/sh\n[ \"$1\" = \"--list-models\" ] || exit 2\nprintf '%s\\n' '" + listing + "'\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake Pi: %v", err)
+	}
+	return path
+}
+
 func dispatchRequestJSON(repo string, shots ...string) string {
 	quoted := make([]string, len(shots))
 	for i, shot := range shots {
@@ -196,11 +226,11 @@ func dispatchRequestJSON(repo string, shots ...string) string {
 // A dispatch creates the worktree through the seam, writes the prompt, starts the Station
 // and logs its output.
 func TestDispatchPreparesPromptAndLogAndStartsStation(t *testing.T) {
-	root, _, stop := dispatchHost(t)
+	root, out, stop := dispatchHost(t)
 	defer stop()
-	repo := shortRoot(t)
+	repo := committedDispatchRepo(t)
 
-	d := newDispatcher(root, []string{os.Args[0]}, state.ActivitySocket(root), installedExtension(t, root), "", &writer{out: &syncBuilder{}, now: fixedClock(), root: root})
+	d := newDispatcher(root, []string{os.Args[0]}, state.ActivitySocket(root), installedExtension(t, root), "", &writer{out: out, now: fixedClock(), root: root})
 	d.dispatch(t.Context(), "req-1", json.RawMessage(dispatchRequestJSON(repo, "shot-a")))
 
 	station := state.StationDir(root, "req-1", "shot-a")
@@ -217,6 +247,14 @@ func TestDispatchPreparesPromptAndLogAndStartsStation(t *testing.T) {
 	if _, err := os.Stat(state.LogPath(root, "req-1", "shot-a")); err != nil {
 		t.Fatalf("a per-Shot log should exist: %v", err)
 	}
+	waitFor(t, out, `"type":"station_report","request_id":"req-1","shot_id":"shot-a","kind":"pulled"`)
+	history, err := os.ReadFile(state.HistoryPath(root, "req-1"))
+	if err != nil || !strings.Contains(string(history), `"type":"dispatch_dequeued"`) || !strings.Contains(string(history), `"type":"session_started"`) || !strings.Contains(string(history), `"kind":"pulled"`) {
+		t.Fatalf("normal completion must persist phase and terminal evidence: %v\n%s", err, history)
+	}
+	if strings.Contains(out.String(), `"type":"session_failed"`) {
+		t.Fatalf("normal completion must not be a failure:\n%s", out.String())
+	}
 }
 
 // A Shot waits for a Slot rather than failing, and starts when one frees. The Slots are
@@ -224,7 +262,7 @@ func TestDispatchPreparesPromptAndLogAndStartsStation(t *testing.T) {
 func TestDispatchQueuesBeyondCapacityAndStartsOnRelease(t *testing.T) {
 	root, out, stop := dispatchHost(t)
 	defer stop()
-	repo := shortRoot(t)
+	repo := committedDispatchRepo(t)
 
 	d := newDispatcher(root, []string{os.Args[0]}, state.ActivitySocket(root), installedExtension(t, root), "", &writer{out: out, now: fixedClock(), root: root})
 	for i := 0; i < SlotCapacity; i++ {
@@ -243,6 +281,72 @@ func TestDispatchQueuesBeyondCapacityAndStartsOnRelease(t *testing.T) {
 	d.release("busy", "shot-0")
 	waitFor(t, out, `"type":"dispatch_dequeued","request_id":"req-1","shot_id":"shot-a"`)
 	waitFor(t, out, `"type":"session_started","request_id":"req-1","shot_id":"shot-a"`)
+}
+
+func TestDispatchPreflightsPiRouteBeforeAcceptingAndStartsWhenAvailable(t *testing.T) {
+	root, out, stop := dispatchHost(t)
+	defer stop()
+	t.Setenv("CS_AGENT", fakePi(t, true))
+	repo := committedDispatchRepo(t)
+	d := newDispatcher(root, []string{os.Args[0]}, state.ActivitySocket(root), installedExtension(t, root), "", &writer{out: out, now: fixedClock(), root: root})
+
+	d.dispatch(t.Context(), "req-1", json.RawMessage(dispatchRequestJSON(repo, "shot-a")))
+	waitFor(t, out, `"type":"session_started","request_id":"req-1","shot_id":"shot-a"`)
+	if !strings.Contains(out.String(), `"type":"dispatch_accepted","request_id":"req-1"`) {
+		t.Fatalf("successful preflight should accept dispatch:\n%s", out.String())
+	}
+}
+
+func TestDispatchPersistsSpecificPreflightFailures(t *testing.T) {
+	root, out, stop := dispatchHost(t)
+	defer stop()
+	repo := committedDispatchRepo(t)
+
+	branch := "cs-host-branch-shot-a"
+	if output, err := exec.Command("git", "-C", repo, "branch", branch).CombinedOutput(); err != nil {
+		t.Fatalf("create branch fixture: %v\\n%s", err, output)
+	}
+	occupied := state.StationDir(root, "destination", "shot-a")
+	if err := os.MkdirAll(occupied, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(occupied, "keep"), []byte("safe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		requestID string
+		repo      string
+		pi        string
+		want      string
+	}{
+		{"invalid-repo", filepath.Join(t.TempDir(), "not-a-repo"), fakePi(t, true), "choose a committed, non-bare repository"},
+		{"branch", repo, fakePi(t, true), "use a new request id or inspect the branch without deleting it"},
+		{"destination", repo, fakePi(t, true), "use a new request id or inspect it without overwriting it"},
+		{"pi-missing", repo, filepath.Join(t.TempDir(), "missing-pi"), "install Pi or set CS_AGENT"},
+		{"route-missing", repo, fakePi(t, false), "choose an installed route from pi --list-models"},
+	}
+	for _, c := range cases {
+		t.Run(c.requestID, func(t *testing.T) {
+			t.Setenv("CS_AGENT", c.pi)
+			d := newDispatcher(root, []string{os.Args[0]}, state.ActivitySocket(root), installedExtension(t, root), "", &writer{out: out, now: fixedClock(), root: root})
+			d.dispatch(t.Context(), c.requestID, json.RawMessage(dispatchRequestJSON(c.repo, "shot-a")))
+			waitFor(t, out, `"type":"session_failed","request_id":"`+c.requestID+`"`)
+			if !strings.Contains(out.String(), c.want) {
+				t.Fatalf("failure should include safe next step %q:\\n%s", c.want, out.String())
+			}
+			history, err := os.ReadFile(state.HistoryPath(root, c.requestID))
+			if err != nil || !strings.Contains(string(history), `"type":"session_failed"`) || !strings.Contains(string(history), c.want) {
+				t.Fatalf("preflight failure should be persisted with its next step: %v\\n%s", err, history)
+			}
+		})
+	}
+	if data, err := os.ReadFile(filepath.Join(occupied, "keep")); err != nil || string(data) != "safe" {
+		t.Fatalf("preflight must preserve existing destination contents: %v %q", err, data)
+	}
+	if _, err := os.Stat(state.StationDir(root, "branch", "shot-a")); !os.IsNotExist(err) {
+		t.Fatalf("branch rejection must not create a worktree: %v", err)
+	}
 }
 
 // Capability: a request that fails validation touches nothing.
@@ -285,7 +389,7 @@ func TestStationArgvNeedsNoQuoting(t *testing.T) {
 		"--prompt-file\x00/state/host/req-1/prompts/shot a.md",
 		"--\x00pi\x00--mode\x00rpc",
 		"--tools\x00+codemode",
-		"--model\x00opencode-go/deepseek-v4.1-flash",
+		"--model\x00openai-codex/gpt-6-luna",
 		"-e\x00/state/host/extensions/coffee-shop.ts",
 	} {
 		if !strings.Contains(joined, want) {

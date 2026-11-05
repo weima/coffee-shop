@@ -22,7 +22,9 @@ func TestSamplerWritesTheRecordGateFiveNineReads(t *testing.T) {
 	sampler := newStationSampler(root)
 
 	// A Station that is a real process, so the reading is real.
-	process, err := os.StartProcess("/bin/sh", []string{"sh", "-c", "sleep 30"}, &os.ProcAttr{})
+	process, err := os.StartProcess("/bin/sh", []string{"sh", "-c", "sleep 30"}, &os.ProcAttr{
+		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
+	})
 	if err != nil {
 		t.Fatalf("start a stand-in Station: %v", err)
 	}
