@@ -30,20 +30,26 @@ test_history_live_stations :: proc(t: ^testing.T) {
 {"type":"session_started","request_id":"req-1","shot_id":"active","pane_id":"p"}
 {"type":"session_started","request_id":"req-1","shot_id":"a","pane_id":"p"}
 {"type":"session_started","request_id":"req-1","shot_id":"b"}
+{"type":"session_started","request_id":"req-1","shot_id":"stale"}
+{"type":"station_report","request_id":"req-1","shot_id":"active","kind":"turn_done"}
+{"type":"stale_warning","request_id":"req-1","shot_id":"stale","reason":"10 minutes without progress"}
+{"type":"station_update","request_id":"req-1","shot_id":"stale","kind":"running"}
 {"type":"station_report","request_id":"req-1","shot_id":"a","kind":"needs_input"}
 {"type":"station_report","request_id":"req-1","shot_id":"b","kind":"agent_exited"}
 `
 	_ = os.write_entire_file(fmt.tprintf("%s/history.ndjson", dir), history)
 	live := history_live_stations(root, "req-1")
-	testing.expect_value(t, len(live), 4)
+	testing.expect_value(t, len(live), 5)
 	testing.expect_value(t, live[0].shot_id, "queued")
 	testing.expect_value(t, live[0].phase, "queued")
 	testing.expect_value(t, live[1].shot_id, "starting")
 	testing.expect_value(t, live[1].phase, "starting")
 	testing.expect_value(t, live[2].shot_id, "active")
-	testing.expect_value(t, live[2].phase, "active")
+	testing.expect_value(t, live[2].phase, "waiting_for_reply")
 	testing.expect_value(t, live[3].shot_id, "a")
 	testing.expect_value(t, live[3].phase, "needs_input")
+	testing.expect_value(t, live[4].shot_id, "stale")
+	testing.expect_value(t, live[4].phase, "stale")
 }
 
 @(test)

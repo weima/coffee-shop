@@ -94,12 +94,18 @@ history_live_stations :: proc(state_root, request_id: string) -> []Headless_Stat
 			else { live[index].phase = "active" }
 		case "session_failed":
 			if index >= 0 { ordered_remove(&live, index) }
+		case "stale_warning":
+			if index >= 0 { live[index].phase = "stale" }
+		case "station_update":
+			if index >= 0 && live[index].phase != "stale" { live[index].phase = event.kind }
 		case "station_report":
 			if index < 0 { continue }
 			if event.kind == "agent_exited" || event.kind == "process_gone" || event.kind == "pulled" || event.kind == "taste_failed" || event.kind == "incomplete" || event.kind == "session_failed" {
 				ordered_remove(&live, index)
 			} else if event.kind == "needs_input" {
 				live[index].phase = event.kind
+			} else if event.kind == "turn_done" {
+				live[index].phase = "waiting_for_reply"
 			} else {
 				live[index].phase = "active"
 			}
